@@ -1,0 +1,761 @@
+{
+ "bot": "bot_c2453561ef8c",
+ "cases": [
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: identity yes, hardship, then pay tomorrow",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "paise nahi hain abhi"
+    },
+    {
+     "text": "kal pay kar dunga"
+    },
+    {
+     "text": "theek hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "paise nahi hain abhi",
+     "signal": "hardship",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_hardship"
+     ],
+     "reply": "Main aapki baat samajh raha hun. Aapki financial ya family situation ke liye mujhe afsos hai. Main abhi payment ke liye aap par pressure nahi daalunga. Kya aap chahenge ki hum baad mein baat karein, ya main aapko support agent se connect karun?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "kal pay kar dunga",
+     "signal": "payment_intent",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hardship",
+      "n_callback"
+     ],
+     "reply": "Koi baat nahi, hum aapko baad mein call kar lenge. Kripya jitni jaldi ho sake mPokket app se apna payment complete kar dijiye, taaki koi extra charges na lagen. Dhanyavaad, aapka din shubh ho!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "theek hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: already paid claim",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "maine payment kar diya hai kal"
+    },
+    {
+     "text": "haan"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "maine payment kar diya hai kal",
+     "signal": "already_paid",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_paid"
+     ],
+     "reply": "Agar aapne payment already complete kar di hai, toh dhanyavaad! Main aapko hamare agent se connect kar raha hun jo aapki payment verify kar denge. Kripya line par bane rahiye.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: wrong number",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "galat number hai"
+    },
+    {
+     "text": "nahi"
+    }
+   ],
+   "expected": [
+    {
+     "text": "galat number hai",
+     "signal": "wrong_person",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "intent",
+      "reason": "configured_intent",
+      "intent": "wrong_person",
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_push",
+      "n_wrong"
+     ],
+     "reply": "Maaf kijiye, lagta hai yeh call galat number par lag gayi. Aapka samay lene ke liye khed hai. Dhanyavaad, aapka din shubh ho!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "short_signal",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_push",
+      "n_benefits"
+     ],
+     "reply": "Ek achhi baat bata dun — agar aap abhi call par payment complete karte hain, toh aapki credit limit gradually ₹50,000 tak badhne ke high chances hain. BHIM UPI se payment par ₹40 tak ka discount mil sakta hai, aur Paytm UPI se ₹10 se ₹300 tak ka cashback aur mahine mein ek baar ₹2,000 tak ka Paytm voucher milne ka chance bhi hai. Toh kya aap abhi UPI se payment complete karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: callback + refusal",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "abhi busy hoon baad mein call karo"
+    },
+    {
+     "text": "nahi karunga"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "abhi busy hoon baad mein call karo",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_callback"
+     ],
+     "reply": "Koi baat nahi, hum aapko baad mein call kar lenge. Kripya jitni jaldi ho sake mPokket app se apna payment complete kar dijiye, taaki koi extra charges na lagen. Dhanyavaad, aapka din shubh ho!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "nahi karunga",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "short_signal",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_push",
+      "n_benefits"
+     ],
+     "reply": "Ek achhi baat bata dun — agar aap abhi call par payment complete karte hain, toh aapki credit limit gradually ₹50,000 tak badhne ke high chances hain. BHIM UPI se payment par ₹40 tak ka discount mil sakta hai, aur Paytm UPI se ₹10 se ₹300 tak ka cashback aur mahine mein ek baar ₹2,000 tak ka Paytm voucher milne ka chance bhi hai. Toh kya aap abhi UPI se payment complete karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: payment intent upi",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "ji haan"
+    },
+    {
+     "text": "UPI se pay kar dunga aaj"
+    },
+    {
+     "text": "haan sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "ji haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "UPI se pay kar dunga aaj",
+     "signal": "payment_intent",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_ptype"
+     ],
+     "reply": "Bahut achha! Kya aap apna poora overdue amount pay karenge, ya partial payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ptype"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: agent request + hold",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "ek minute ruko"
+    },
+    {
+     "text": "agent se baat karao"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ek minute ruko",
+     "signal": "hold",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "agent se baat karao",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_agent"
+     ],
+     "reply": "Main aapko hamare ek agent se connect kar raha hun. Kripya line par bane rahiye.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: english flow",
+   "language": "en-IN",
+   "turns": [
+    {
+     "text": "yes speaking"
+    },
+    {
+     "text": "I already paid yesterday"
+    },
+    {
+     "text": "ok"
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes speaking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "I already paid yesterday",
+     "signal": "already_paid",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_paid"
+     ],
+     "reply": "Agar aapne payment already complete kar di hai, toh dhanyavaad! Main aapko hamare agent se connect kar raha hun jo aapki payment verify kar denge. Kripya line par bane rahiye.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ok",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: malayalam yes / no money",
+   "language": "ml-IN",
+   "turns": [
+    {
+     "text": "അതെ"
+    },
+    {
+     "text": "പണം ഇല്ല"
+    },
+    {
+     "text": "ശരി"
+    }
+   ],
+   "expected": [
+    {
+     "text": "അതെ",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "പണം ഇല്ല",
+     "signal": "hardship",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_hardship"
+     ],
+     "reply": "Main aapki baat samajh raha hun. Aapki financial ya family situation ke liye mujhe afsos hai. Main abhi payment ke liye aap par pressure nahi daalunga. Kya aap chahenge ki hum baad mein baat karein, ya main aapko support agent se connect karun?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ശരി",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hardship",
+      "n_callback"
+     ],
+     "reply": "Koi baat nahi, hum aapko baad mein call kar lenge. Kripya jitni jaldi ho sake mPokket app se apna payment complete kar dijiye, taaki koi extra charges na lagen. Dhanyavaad, aapka din shubh ho!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_c2453561ef8c",
+   "name": "collections: tamil yes / will pay",
+   "language": "ta-IN",
+   "turns": [
+    {
+     "text": "ஆமாம்"
+    },
+    {
+     "text": "கட்டுகிறேன்"
+    },
+    {
+     "text": "சரி"
+    }
+   ],
+   "expected": [
+    {
+     "text": "ஆமாம்",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_0_7_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "கட்டுகிறேன்",
+     "signal": "payment_intent",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_ptype"
+     ],
+     "reply": "Bahut achha! Kya aap apna poora overdue amount pay karenge, ya partial payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "சரி",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 0-7 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ptype"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,1177 @@
+{
+ "bot": {
+  "id": "bot_99177674902a",
+  "name": "OYO Property Verification",
+  "tenant_id": "tn_de5cc992b1e9",
+  "status": "draft"
+ },
+ "workflows": [
+  {
+   "id": "wf_3af528f9908e",
+   "name": "OYO property verification journey",
+   "version": 7,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 300,
+     "y": 40,
+     "id": "n_ask_bid",
+     "kind": "ask",
+     "label": "Confirm booking ID",
+     "config": {
+      "pattern": "(?:BK[-\\s]?)?([0-9]{4,10})",
+      "question": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+      "variable": "booking_id",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 560,
+     "y": 40,
+     "id": "n_api_booking",
+     "kind": "api",
+     "label": "Booking Details API",
+     "config": {
+      "connection": "OYO Booking Details"
+     }
+    },
+    {
+     "x": 820,
+     "y": 40,
+     "id": "n_intent_pm",
+     "kind": "intent",
+     "label": "Will you honor?",
+     "config": {
+      "prompt": "Thank you. Could you please confirm whether this booking will be honored for check-in?"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 40,
+     "id": "n_ask_reason",
+     "kind": "ask",
+     "label": "Ask deny reason",
+     "config": {
+      "question": "I understand. Could you please help me understand the reason for declining the booking?",
+      "variable": "deny_reason",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 40,
+     "id": "n_cond_r_overbook",
+     "kind": "condition",
+     "label": "reason: overbook?",
+     "config": {
+      "value": "overbook",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 40,
+     "y": 170,
+     "id": "n_cond_r_full",
+     "kind": "condition",
+     "label": "reason: full?",
+     "config": {
+      "value": "full",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 300,
+     "y": 170,
+     "id": "n_cond_r_noroom",
+     "kind": "condition",
+     "label": "reason: no room?",
+     "config": {
+      "value": "no room",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 560,
+     "y": 170,
+     "id": "n_cond_r_mnt",
+     "kind": "condition",
+     "label": "reason: maintenance?",
+     "config": {
+      "value": "maintenance",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 820,
+     "y": 170,
+     "id": "n_cond_r_renov",
+     "kind": "condition",
+     "label": "reason: renovation?",
+     "config": {
+      "value": "renovat",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 170,
+     "id": "n_cond_r_repair",
+     "kind": "condition",
+     "label": "reason: repair?",
+     "config": {
+      "value": "repair",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 170,
+     "id": "n_cond_r_price",
+     "kind": "condition",
+     "label": "reason: price?",
+     "config": {
+      "value": "price",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 40,
+     "y": 300,
+     "id": "n_cond_r_rate",
+     "kind": "condition",
+     "label": "reason: rate?",
+     "config": {
+      "value": "rate",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 300,
+     "y": 300,
+     "id": "n_cond_r_low",
+     "kind": "condition",
+     "label": "reason: low?",
+     "config": {
+      "value": "low",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 560,
+     "y": 300,
+     "id": "n_cond_r_tariff",
+     "kind": "condition",
+     "label": "reason: tariff?",
+     "config": {
+      "value": "tariff",
+      "operator": "contains",
+      "variable": "deny_reason"
+     }
+    },
+    {
+     "x": 820,
+     "y": 300,
+     "id": "n_api_occ",
+     "kind": "api",
+     "label": "Property Occupancy API",
+     "config": {
+      "connection": "OYO Property Occupancy"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 300,
+     "id": "n_cond_avail",
+     "kind": "condition",
+     "label": "Inventory available?",
+     "config": {
+      "value": "true",
+      "operator": "equals",
+      "variable": "has_availability"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 300,
+     "id": "n_msg_penalty",
+     "kind": "message",
+     "label": "Penalty advisory",
+     "config": {
+      "text": "I'd like to flag one thing: our records show available inventory at your property for these dates. Please note that denying a valid booking despite availability can lead to penalties under your agreement with OYO."
+     }
+    },
+    {
+     "x": 40,
+     "y": 430,
+     "id": "n_intent_penalty",
+     "kind": "intent",
+     "label": "Honor after advisory?",
+     "config": {
+      "prompt": "Considering this, would you be able to honor the booking?"
+     }
+    },
+    {
+     "x": 300,
+     "y": 430,
+     "id": "n_intent_altroom",
+     "kind": "intent",
+     "label": "Alternate room?",
+     "config": {
+      "prompt": "I'm sorry to hear about the maintenance. Do you have any alternate rooms available that could accommodate this booking?"
+     }
+    },
+    {
+     "x": 560,
+     "y": 430,
+     "id": "n_api_pricing",
+     "kind": "api",
+     "label": "Property Pricing API",
+     "config": {
+      "connection": "OYO Property Pricing"
+     }
+    },
+    {
+     "x": 820,
+     "y": 430,
+     "id": "n_cond_arr",
+     "kind": "condition",
+     "label": "Rate meets ARR?",
+     "config": {
+      "value": "meets",
+      "operator": "equals",
+      "variable": "rate_vs_arr"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 430,
+     "id": "n_msg_arr",
+     "kind": "message",
+     "label": "ARR pitch",
+     "config": {
+      "text": "I checked our records — this booking actually meets or exceeds your average realized rate over the last seven days. We request you to honor the booking to avoid potential penalties and to ensure a positive guest experience."
+     }
+    },
+    {
+     "x": 1340,
+     "y": 430,
+     "id": "n_intent_arr",
+     "kind": "intent",
+     "label": "Honor at ARR?",
+     "config": {
+      "prompt": "Can we count on you to honor this booking?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 560,
+     "id": "n_msg_comp",
+     "kind": "message",
+     "label": "Compensation offer",
+     "config": {
+      "text": "I understand the concern on the rate. To bridge the gap, OYO can add a complimentary compensation amount to this reservation from our side."
+     }
+    },
+    {
+     "x": 300,
+     "y": 560,
+     "id": "n_intent_comp",
+     "kind": "intent",
+     "label": "Honor with compensation?",
+     "config": {
+      "prompt": "With this additional compensation added, would you be willing to honor the booking?"
+     }
+    },
+    {
+     "x": 560,
+     "y": 560,
+     "id": "n_api_comp",
+     "kind": "api",
+     "label": "Add Complimentary API",
+     "config": {
+      "text": "Excellent — I've added the complimentary amount to this booking on OYO's side.",
+      "connection": "OYO Add Complimentary Amount"
+     }
+    },
+    {
+     "x": 820,
+     "y": 560,
+     "id": "n_api_report_h",
+     "kind": "api",
+     "label": "Report: honored",
+     "config": {
+      "connection": "OYO PM Report Honored"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 560,
+     "id": "n_api_report_nh",
+     "kind": "api",
+     "label": "Report: not honored",
+     "config": {
+      "connection": "OYO PM Report Not Honored"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 560,
+     "id": "n_end_ok",
+     "kind": "end",
+     "label": "End (honored)",
+     "config": {
+      "text": "Thank you for confirming — the guest will proceed with check-in as planned. We appreciate your support. Have a good day!"
+     }
+    },
+    {
+     "x": 40,
+     "y": 690,
+     "id": "n_end_deny",
+     "kind": "end",
+     "label": "End (not honored)",
+     "config": {
+      "text": "I understand. We will arrange an alternate stay for the guest, and our team may follow up regarding this booking. Thank you for your time."
+     }
+    },
+    {
+     "x": 300,
+     "y": 690,
+     "id": "n_end_nobid",
+     "kind": "end",
+     "label": "End (no booking ref)",
+     "config": {
+      "text": "No problem — our team will call back with the booking details shortly. Thank you for your time."
+     }
+    },
+    {
+     "x": 40,
+     "y": 1000,
+     "id": "n_api_report_h_penalty",
+     "kind": "api",
+     "label": "Report Honored — Penalty Advisory",
+     "config": {
+      "connection": "OYO PM Report Honored — Penalty Advisory"
+     }
+    },
+    {
+     "x": 340,
+     "y": 1000,
+     "id": "n_api_report_h_altroom",
+     "kind": "api",
+     "label": "Report Honored — Alternate Room",
+     "config": {
+      "connection": "OYO PM Report Honored — Alternate Room"
+     }
+    },
+    {
+     "x": 640,
+     "y": 1000,
+     "id": "n_api_report_h_arr",
+     "kind": "api",
+     "label": "Report Honored — ARR Pitch",
+     "config": {
+      "connection": "OYO PM Report Honored — ARR Pitch"
+     }
+    },
+    {
+     "x": 40,
+     "y": 1130,
+     "id": "n_api_report_h_comp",
+     "kind": "api",
+     "label": "Report Honored — Compensation",
+     "config": {
+      "connection": "OYO PM Report Honored — Compensation"
+     }
+    },
+    {
+     "x": 340,
+     "y": 1130,
+     "id": "n_api_report_nh_ob",
+     "kind": "api",
+     "label": "Report Denied — Overbooked",
+     "config": {
+      "connection": "OYO PM Report Denied — Overbooked"
+     }
+    },
+    {
+     "x": 640,
+     "y": 1130,
+     "id": "n_api_report_nh_mnt",
+     "kind": "api",
+     "label": "Report Denied — Maintenance",
+     "config": {
+      "connection": "OYO PM Report Denied — Maintenance"
+     }
+    },
+    {
+     "x": 40,
+     "y": 1260,
+     "id": "n_api_report_nh_price",
+     "kind": "api",
+     "label": "Report Denied — Price",
+     "config": {
+      "connection": "OYO PM Report Denied — Price"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_n_start__n_ask_bid",
+     "to": "n_ask_bid",
+     "from": "n_start"
+    },
+    {
+     "id": "e_n_ask_bid__n_api_booking",
+     "to": "n_api_booking",
+     "from": "n_ask_bid"
+    },
+    {
+     "id": "e_n_ask_bid__n_end_nobid__4634",
+     "to": "n_end_nobid",
+     "from": "n_ask_bid",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_api_booking__n_intent_pm__3784",
+     "to": "n_intent_pm",
+     "from": "n_api_booking",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_booking__n_end_nobid__9881",
+     "to": "n_end_nobid",
+     "from": "n_api_booking",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_intent_pm__n_api_report_h__2823",
+     "to": "n_api_report_h",
+     "from": "n_intent_pm",
+     "label": "yes/confirmed/we will honor/honour it/honor it/no problem/sure/of course/accept/haan/हाँ/जी हाँ/ठीक है/okay"
+    },
+    {
+     "id": "e_n_intent_pm__n_api_occ__2935",
+     "to": "n_api_occ",
+     "from": "n_intent_pm",
+     "label": "we are overbooked/fully overbooked/overbooked/house full/sold out/no rooms left"
+    },
+    {
+     "id": "e_n_intent_pm__n_intent_altroom__459",
+     "to": "n_intent_altroom",
+     "from": "n_intent_pm",
+     "label": "under maintenance/maintenance work/maintenance/renovation/repair work"
+    },
+    {
+     "id": "e_n_intent_pm__n_api_pricing__6335",
+     "to": "n_api_pricing",
+     "from": "n_intent_pm",
+     "label": "price is too low/price is very low/price too low/rate is too low/rate too low/price is low/low tariff"
+    },
+    {
+     "id": "e_n_intent_pm__n_ask_reason__3606",
+     "to": "n_ask_reason",
+     "from": "n_intent_pm",
+     "label": "no/we cannot/cannot accommodate/cannot honor/cannot/can't/cant/not possible/won't/wont/unable/deny/refuse/nahi/नहीं/decline"
+    },
+    {
+     "id": "e_n_ask_reason__n_cond_r_overbook",
+     "to": "n_cond_r_overbook",
+     "from": "n_ask_reason"
+    },
+    {
+     "id": "e_n_cond_r_overbook__n_api_occ__2850",
+     "to": "n_api_occ",
+     "from": "n_cond_r_overbook",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_overbook__n_cond_r_full__9202",
+     "to": "n_cond_r_full",
+     "from": "n_cond_r_overbook",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_full__n_api_occ__2850",
+     "to": "n_api_occ",
+     "from": "n_cond_r_full",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_full__n_cond_r_noroom__9202",
+     "to": "n_cond_r_noroom",
+     "from": "n_cond_r_full",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_noroom__n_api_occ__2850",
+     "to": "n_api_occ",
+     "from": "n_cond_r_noroom",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_noroom__n_cond_r_mnt__9202",
+     "to": "n_cond_r_mnt",
+     "from": "n_cond_r_noroom",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_mnt__n_intent_altroom__2850",
+     "to": "n_intent_altroom",
+     "from": "n_cond_r_mnt",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_mnt__n_cond_r_renov__9202",
+     "to": "n_cond_r_renov",
+     "from": "n_cond_r_mnt",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_renov__n_intent_altroom__2850",
+     "to": "n_intent_altroom",
+     "from": "n_cond_r_renov",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_renov__n_cond_r_repair__9202",
+     "to": "n_cond_r_repair",
+     "from": "n_cond_r_renov",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_repair__n_intent_altroom__2850",
+     "to": "n_intent_altroom",
+     "from": "n_cond_r_repair",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_repair__n_cond_r_price__9202",
+     "to": "n_cond_r_price",
+     "from": "n_cond_r_repair",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_price__n_api_pricing__2850",
+     "to": "n_api_pricing",
+     "from": "n_cond_r_price",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_price__n_cond_r_rate__9202",
+     "to": "n_cond_r_rate",
+     "from": "n_cond_r_price",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_rate__n_api_pricing__2850",
+     "to": "n_api_pricing",
+     "from": "n_cond_r_rate",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_rate__n_cond_r_low__9202",
+     "to": "n_cond_r_low",
+     "from": "n_cond_r_rate",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_low__n_api_pricing__2850",
+     "to": "n_api_pricing",
+     "from": "n_cond_r_low",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_low__n_cond_r_tariff__9202",
+     "to": "n_cond_r_tariff",
+     "from": "n_cond_r_low",
+     "label": "false"
+    },
+    {
+     "id": "e_n_cond_r_tariff__n_api_pricing__2850",
+     "to": "n_api_pricing",
+     "from": "n_cond_r_tariff",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_r_tariff__n_api_report_nh__9202",
+     "to": "n_api_report_nh",
+     "from": "n_cond_r_tariff",
+     "label": "false"
+    },
+    {
+     "id": "e_n_api_occ__n_cond_avail__3784",
+     "to": "n_cond_avail",
+     "from": "n_api_occ",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_occ__n_api_report_nh__9881",
+     "to": "n_api_report_nh",
+     "from": "n_api_occ",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_cond_avail__n_msg_penalty__2850",
+     "to": "n_msg_penalty",
+     "from": "n_cond_avail",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_avail__n_api_report_nh_ob__181",
+     "to": "n_api_report_nh_ob",
+     "from": "n_cond_avail",
+     "label": "false"
+    },
+    {
+     "id": "e_n_msg_penalty__n_intent_penalty",
+     "to": "n_intent_penalty",
+     "from": "n_msg_penalty"
+    },
+    {
+     "id": "e_n_intent_penalty__n_api_report_h_penalty__5437",
+     "to": "n_api_report_h_penalty",
+     "from": "n_intent_penalty",
+     "label": "yes/confirmed/we will honor/honour it/honor it/no problem/sure/of course/accept/haan/हाँ/जी हाँ/ठीक है/okay"
+    },
+    {
+     "id": "e_n_intent_penalty__n_api_report_nh_ob__4092",
+     "to": "n_api_report_nh_ob",
+     "from": "n_intent_penalty",
+     "label": "no/we cannot/cannot accommodate/cannot honor/cannot/can't/cant/not possible/won't/wont/unable/deny/refuse/nahi/नहीं/decline"
+    },
+    {
+     "id": "e_n_intent_altroom__n_api_report_h_altroom__8921",
+     "to": "n_api_report_h_altroom",
+     "from": "n_intent_altroom",
+     "label": "yes/we have/arrange/manage/haan/हाँ/okay/sure"
+    },
+    {
+     "id": "e_n_intent_altroom__n_api_report_nh_mnt__6147",
+     "to": "n_api_report_nh_mnt",
+     "from": "n_intent_altroom",
+     "label": "no/we cannot/cannot/none/nothing available/not available/nahi/नहीं/all blocked"
+    },
+    {
+     "id": "e_n_api_pricing__n_cond_arr__3784",
+     "to": "n_cond_arr",
+     "from": "n_api_pricing",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_pricing__n_api_report_nh__9881",
+     "to": "n_api_report_nh",
+     "from": "n_api_pricing",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_cond_arr__n_msg_arr__2850",
+     "to": "n_msg_arr",
+     "from": "n_cond_arr",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_arr__n_msg_comp__9202",
+     "to": "n_msg_comp",
+     "from": "n_cond_arr",
+     "label": "false"
+    },
+    {
+     "id": "e_n_msg_arr__n_intent_arr",
+     "to": "n_intent_arr",
+     "from": "n_msg_arr"
+    },
+    {
+     "id": "e_n_intent_arr__n_api_report_h_arr__5437",
+     "to": "n_api_report_h_arr",
+     "from": "n_intent_arr",
+     "label": "yes/confirmed/we will honor/honour it/honor it/no problem/sure/of course/accept/haan/हाँ/जी हाँ/ठीक है/okay"
+    },
+    {
+     "id": "e_n_intent_arr__n_api_report_nh_price__4092",
+     "to": "n_api_report_nh_price",
+     "from": "n_intent_arr",
+     "label": "no/we cannot/cannot accommodate/cannot honor/cannot/can't/cant/not possible/won't/wont/unable/deny/refuse/nahi/नहीं/decline"
+    },
+    {
+     "id": "e_n_msg_comp__n_intent_comp",
+     "to": "n_intent_comp",
+     "from": "n_msg_comp"
+    },
+    {
+     "id": "e_n_intent_comp__n_api_comp__2823",
+     "to": "n_api_comp",
+     "from": "n_intent_comp",
+     "label": "yes/confirmed/we will honor/honour it/honor it/no problem/sure/of course/accept/haan/हाँ/जी हाँ/ठीक है/okay"
+    },
+    {
+     "id": "e_n_intent_comp__n_api_report_nh_price__4092",
+     "to": "n_api_report_nh_price",
+     "from": "n_intent_comp",
+     "label": "no/we cannot/cannot accommodate/cannot honor/cannot/can't/cant/not possible/won't/wont/unable/deny/refuse/nahi/नहीं/decline"
+    },
+    {
+     "id": "e_n_api_comp__n_api_report_h_comp__6460",
+     "to": "n_api_report_h_comp",
+     "from": "n_api_comp",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_comp__n_api_report_nh_price__6675",
+     "to": "n_api_report_nh_price",
+     "from": "n_api_comp",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_api_report_h__n_end_ok",
+     "to": "n_end_ok",
+     "from": "n_api_report_h"
+    },
+    {
+     "id": "e_n_api_report_nh__n_end_deny",
+     "to": "n_end_deny",
+     "from": "n_api_report_nh"
+    },
+    {
+     "id": "e_n_api_report_h_penalty__end",
+     "to": "n_end_ok",
+     "from": "n_api_report_h_penalty"
+    },
+    {
+     "id": "e_n_api_report_h_altroom__end",
+     "to": "n_end_ok",
+     "from": "n_api_report_h_altroom"
+    },
+    {
+     "id": "e_n_api_report_h_arr__end",
+     "to": "n_end_ok",
+     "from": "n_api_report_h_arr"
+    },
+    {
+     "id": "e_n_api_report_h_comp__end",
+     "to": "n_end_ok",
+     "from": "n_api_report_h_comp"
+    },
+    {
+     "id": "e_n_api_report_nh_ob__end",
+     "to": "n_end_deny",
+     "from": "n_api_report_nh_ob"
+    },
+    {
+     "id": "e_n_api_report_nh_mnt__end",
+     "to": "n_end_deny",
+     "from": "n_api_report_nh_mnt"
+    },
+    {
+     "id": "e_n_api_report_nh_price__end",
+     "to": "n_end_deny",
+     "from": "n_api_report_nh_price"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_6cf0def22a9d",
+   "name": "pm_call_opening",
+   "code": "pm_call_opening",
+   "samples": [
+    "hello",
+    "hi",
+    "yes",
+    "speaking",
+    "haan",
+    "who is this",
+    "bolo",
+    "हाँ"
+   ],
+   "route": "workflow:oyo_property_verification_journey",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_a0be71569deb",
+   "name": "pm_confirms",
+   "code": "pm_confirms",
+   "samples": [
+    "the booking is confirmed",
+    "we will honor",
+    "booking is confirmed",
+    "confirmed",
+    "we can accommodate the guest"
+   ],
+   "route": "workflow:oyo_property_verification_journey",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_b8948df269b2",
+   "name": "pm_denies",
+   "code": "pm_denies",
+   "samples": [
+    "we cannot honor",
+    "cannot honor this booking",
+    "we are overbooked",
+    "overbooked",
+    "property is under maintenance",
+    "price is too low",
+    "booking price is low",
+    "cannot accommodate"
+   ],
+   "route": "workflow:oyo_property_verification_journey",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_04102ed52308",
+   "name": "OYO PM Report Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_0821972f0993",
+   "name": "OYO Booking Details",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "booking_status",
+     "target": "booking_status"
+    },
+    {
+     "source": "hotel_name",
+     "target": "hotel_name"
+    },
+    {
+     "source": "property_id",
+     "target": "property_id"
+    },
+    {
+     "source": "checkin_date",
+     "target": "checkin_date"
+    },
+    {
+     "source": "checkout_date",
+     "target": "checkout_date"
+    },
+    {
+     "source": "occupancy",
+     "target": "occupancy_details"
+    },
+    {
+     "source": "payment_status",
+     "target": "payment_status"
+    },
+    {
+     "source": "amount_pending",
+     "target": "amount_pending"
+    },
+    {
+     "source": "guest_email",
+     "target": "guest_email"
+    },
+    {
+     "source": "cancelled_on",
+     "target": "cancelled_on"
+    },
+    {
+     "source": "cancelled_by",
+     "target": "cancelled_by"
+    },
+    {
+     "source": "city",
+     "target": "hotel_city"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_0b158ef8ff5a",
+   "name": "OYO PM Report Denied — Price",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_1231ba6a72de",
+   "name": "OYO PM Report Honored — Alternate Room",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_1653f45e7bc0",
+   "name": "OYO Booking Voucher",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "sent",
+     "target": "voucher_sent"
+    },
+    {
+     "source": "email",
+     "target": "voucher_email"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_32d69da658d0",
+   "name": "OYO PM Verification Call",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "call_status",
+     "target": "pm_call_status"
+    },
+    {
+     "source": "booking_honored",
+     "target": "pm_booking_honored"
+    },
+    {
+     "source": "deny_reason",
+     "target": "pm_deny_reason"
+    },
+    {
+     "source": "resolution",
+     "target": "pm_resolution"
+    },
+    {
+     "source": "source",
+     "target": "pm_outcome_source"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_3942c3bf2ff4",
+   "name": "OYO Stock Report Not Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_39920ea4e04d",
+   "name": "OYO Stock Team Call",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "call_status",
+     "target": "stock_call_status"
+    },
+    {
+     "source": "stock_status",
+     "target": "stock_status"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_3a5d8d73d3b7",
+   "name": "OYO PM Report Honored — Compensation",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_4ddfe5df0a42",
+   "name": "OYO Property Status",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "under_maintenance",
+     "target": "under_maintenance"
+    },
+    {
+     "source": "operational_status",
+     "target": "operational_status"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_65f49efab9f1",
+   "name": "OYO Shift Booking",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "status",
+     "target": "shift_status"
+    },
+    {
+     "source": "new_property_name",
+     "target": "shift_property_name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_675ddf9b1aa7",
+   "name": "OYO Alternate Properties",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "count",
+     "target": "alternates_count"
+    },
+    {
+     "source": "top_alternate_name",
+     "target": "alternate_property_name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_75aa5bf12968",
+   "name": "OYO PM Report Denied — Overbooked",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_a32188dc8ce3",
+   "name": "OYO PM Report Honored — ARR Pitch",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_a6a381d64930",
+   "name": "OYO PM Report Not Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_bc3224a2199b",
+   "name": "OYO Property Pricing",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "rate_vs_arr",
+     "target": "rate_vs_arr"
+    },
+    {
+     "source": "arr_7day",
+     "target": "arr_7day"
+    },
+    {
+     "source": "booking_rate",
+     "target": "booking_rate"
+    },
+    {
+     "source": "complimentary_amount",
+     "target": "complimentary_amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_cd2465c9301a",
+   "name": "OYO Stock Report Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_d0b64dc475dc",
+   "name": "OYO Add Complimentary Amount",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "added",
+     "target": "comp_added"
+    },
+    {
+     "source": "amount",
+     "target": "comp_amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d17fd09d1233",
+   "name": "OYO Customer Verification",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "verified",
+     "target": "customer_verified"
+    },
+    {
+     "source": "matched_on",
+     "target": "verified_via"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d1b90241a041",
+   "name": "OYO Property Occupancy",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "has_availability",
+     "target": "has_availability"
+    },
+    {
+     "source": "occupancy_pct",
+     "target": "occupancy_pct"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d780c119e759",
+   "name": "OYO PM Report Denied — Maintenance",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_eadf312159ad",
+   "name": "OYO PM Report Honored — Penalty Advisory",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_ee9e3346635d",
+   "name": "OYO IVR Transfer",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_f699fb517e27",
+   "name": "OYO Call Disposition",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": []
+}

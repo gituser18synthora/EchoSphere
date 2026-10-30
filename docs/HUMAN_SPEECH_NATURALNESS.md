@@ -1,0 +1,531 @@
+# Human speech naturalness
+
+EchoSphere resolves one sparse configuration in this order: platform defaults,
+tenant overrides, then bot overrides. The tenant and Voice Studio forms display
+the effective value and its source. Clearing an override restores inheritance;
+it does not copy the current effective value into that layer.
+
+## Language fallback
+
+Naturalness pools are selected by the locale's base language only. The enabled
+platform locales `en-IN`, `hi-IN`, `gu-IN`, `ml-IN`, `mr-IN`, `pa-IN`, `ta-IN`,
+`te-IN`, and `ur-IN` have independent native pools. A locale never borrows a
+pool merely because it shares a script with another language. Unknown or
+unsupported languages suppress fillers, acknowledgements, corrections and
+backchannels; the semantic response still synthesizes normally.
+
+TTS engine selection is separate and follows exact locale mapping, base-language
+mapping, then the default engine. Voice identity uses that same resolver.
+
+## Safety and delivery
+
+The conversation runtime sets structured criticality from the route, validated
+caller signal, planned policy action and tool status before any preface can be
+spoken. Regex detection on each final TTS segment remains a second safety net.
+Critical delivery suppresses fillers and self-correction, removes rate jitter,
+never increases the configured rate, and uses a bounded clear pause/style plan
+without changing semantic text.
+
+Provider/model capability metadata gates native delivery parameters. ElevenLabs
+can vary rate between independent WebSocket contexts; Sarvam WebSocket settings
+are not changed mid-generation because a config resend force-flushes its socket.
+REST sentences are independent and may use rate where the adapter supports it.
+Unsupported emphasis, pitch, energy, question or emotional controls degrade to
+interruptible sentence/phrase segmentation and planned silence. There is no
+large blocking sleep and no complete-response audio buffer.
+
+Streaming self-correction is intentionally disabled. The current token path
+would need unsafe look-ahead or risk replaying text already sent to TTS. Rare
+self-correction remains available only for an explicitly enabled, non-critical
+direct/full-text response.
+
+## Breathing and filler words are independent
+
+Two families cover the gap before a reply, and each has its own master switch
+under the layer master `enabled`:
+
+| Family | Master key | Members | Tunables |
+|---|---|---|---|
+| **Breathing** (nonverbal) | `breathing` | `latency_fillers` (pre-reply breath), `sentence_breaths` (in-reply inhale) | `latency_filler_delay_ms`, `latency_filler_kind`, `filler_audio_selection`, `breath_gain_db`, `sentence_breath_probability` |
+| **Filler words** (spoken) | `filler_words` | `acknowledgements` (dispatch-time "जी…"), `latency_filler_ladder` (voiced "Hmm…" + spoken "एक सेकंड…"), `adaptive_latency_cues`, `thinking_fillers` (question beat), tool-lookup prefaces | `acknowledgement_probability`, `latency_cue_probability`, `latency_filler_hmm_ms`, `latency_filler_spoken_ms`, `latency_filler_cue_selection`, `thinking_filler_probability`, `tool_ack_probability` |
+
+Both families play through the same `LatencyFillerProcessor`
+(`voice_runtime/latency_filler.py`), but neither switch implies the other:
+
+- `breathing` off (or `latency_fillers` off) → `breath_enabled=False` on the
+  processor. The first deadline may still play a ready acknowledgement; the
+  voiced cues keep their own schedule (`latency_filler_skipped` reason
+  `breathing_off` marks the rung that would have breathed).
+- `filler_words` off → no acknowledgement is planned (`plan_early_ack` reason
+  `disabled`), no cue library and no ladder rungs are wired, tool prefaces
+  are suppressed (`filler_words_disabled`). The breath plays exactly as
+  configured.
+- The processor exists while any of the three — pre-reply breath,
+  acknowledgement, ladder — is on (`SpeechNaturalnessPlanner.latency_cover_enabled`);
+  with both families off there is no processor at all.
+- `latency_filler_delay_ms` is the deadline of the FIRST gap sound, whichever
+  family provides it (the acknowledgement replaces the breath when ready).
+- Only an actual breath sound updates the clip library's `note_played`
+  clock, so a spoken cue never suppresses the in-reply sentence inhale.
+
+Planner properties: `breathing_enabled`, `latency_fillers_enabled` (breath
+only), `sentence_breaths_enabled`, `filler_words_enabled`,
+`acknowledgements_enabled`, `latency_filler_ladder_enabled`,
+`adaptive_latency_cues_enabled`, `latency_cover_enabled`. Backchannels
+(`backchannels`) and the delivery switches are separate and unaffected.
+
+## Latency acknowledgements
+
+The main response starts processing at turn dispatch. A short acknowledgement
+is planned separately and becomes eligible only at `latency_filler_delay_ms`
+(default 1500 ms from speech end). It uses the existing voiced-cue cache and
+latency-filler processor, never the answer's TTS queue. If response audio wins
+the race, the acknowledgement is skipped. A missing cached clip is rendered
+in the background; the first filler stage uses its configured breath instead
+of waiting. A ready acknowledgement replaces that breath and suppresses the
+following `hmm` stage. It streams without an audio look-ahead cushion and
+stops generating immediately at reply audio, without adding a taper chunk.
+
+The token follows what the caller just did, derived deterministically from
+their words with no model call:
+
+| Caller just… | Context | Tokens (hi) |
+|---|---|---|
+| answered the bot's question (inside a workflow, an agreement, a reply of ≤ 4 words) | `answer` | "जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…" |
+| asked a question | `question` | "Hmm…", "जी…", "अच्छा…" — never "ठीक है", which would sound like an answer |
+| asked something the knowledge base answers | `lookup` | "एक सेकंड…", "देख रहा/रही हूँ…" |
+| explained or stated something the bot has not acted on yet | `information` | "जी…", "अच्छा…", "Hmm…" — never "ठीक है", which would sound like acceptance |
+| reported a problem ("नहीं मिला", "कट गया", "galat", "problem", a complaint/hardship/wrong-person signal) | `concern` | "जी…", "Hmm…" only — nothing bright, agreeing or surprised |
+| is in a serious state (complaint, refusal, hardship, wrong person, agent request) or dictated amounts/identifiers | `neutral` | "जी…", "Hmm…" only, at half probability — "ठीक है" after a refusal reads as acceptance |
+
+No filler word leads two consecutive turns: the processor reports every
+acknowledgement and voiced cue it actually played (`note_early_ack_played`,
+`note_latency_cue_played`), and the planner demotes those words for the next
+turn's acknowledgement and cue ranking (`plan_latency_cue` reason
+`recently_spoken` when every fitting cue was heard on the previous turn;
+`plan_early_ack` reason `recently_spoken` when the pool has nothing else).
+History follows what was HEARD, not what was planned: a speculative pick
+(`plan_early_ack(commit=False)`) sits in `_pending_early_ack` until the
+processor confirms it for that turn; a newer plan, a cancellation
+(`discard_early_ack`) or teardown (`clear_call_history`) drops it, so a fast
+reply or a barge-in never "uses up" a word or the no-consecutive-turns
+allowance.
+
+Control: `acknowledgements` on/off; `acknowledgement_probability` (default 0.5,
+×1.5 on the first reply after the greeting, the slowest turn of a call); a
+hard rule that no two consecutive turns get one (no call opens every reply with
+"जी"); skipped acknowledgements do not consume that allowance; pool rotation
+with no-repeat; exactly one token, never stacked; nothing
+for greetings, hang-up/transfer/safety turns, dictated identifier chunks (the
+workflow consumes digits deterministically), unsupported languages, or when
+the speculative decision already succeeded (the reply is one routing step
+away and a beat would only hold it back). "हाँ…" is deliberately not a token:
+after a statement it reads as agreement, not listening. `thinking_fillers`
+gates the `question` beat. Languages without dedicated pools reuse their short
+acknowledgement/thinking/backchannel pools.
+
+The acknowledgement's audio is bookkept as transient, like a backchannel: the
+turn's latency measurement keeps waiting for the reply's first audio, and a
+caller who keeps talking over it is finishing a thought (rewind and merge),
+not interrupting a reply nobody has heard yet.
+
+Tool lookups keep their own timely preface ("ek minute, main check karta
+hoon…"), spoken right before the lookup runs; when a latency acknowledgement
+already opened the turn, variants that begin with an acknowledgement word are
+skipped so nothing stacks.
+
+## Response start and backchannel evidence
+
+EchoSphere adds no artificial response-start delay: turn detection already
+leaves 0.75–1.4 s between the caller's last word and dispatch, which is the
+natural human gap, and everything after it is real processing. Simple replies
+use normal streaming immediately; eligible generic tool lookups may speak a
+short, unambiguous acknowledgement while the lookup runs. Conversational
+rhythm comes from real processing, sentence aggregation and planned TTS gaps.
+
+A backchannel requires positive evidence that the caller still owns the floor.
+When the audio gate is present, at least 250 ms of current live speech is
+required. Otherwise, the open VAD/provider turn (`UserStartedSpeaking` without a
+matching stop) is the strongest available live-speech signal. Serious trusted
+caller states (complaint, hardship, refusal, wrong person, agent request,
+distress or frustration) suppress casual backchannels without an extra model
+call. Backchannels never close a caller turn or enter semantic history.
+
+## Sentence breaths and pacing inside a reply
+
+In pause mode (Pause > 0), `sentence_breaths` allows one soft breath before a
+long (≥ 10 words) or critical sentence inside a reply — the beat a person takes
+before a longer explanation or a verification read-back — at
+`sentence_breath_probability` (default 0.35), never before the first sentence
+(the pre-reply gap has its own filler) and never more than once per reply. It
+is a dedicated gender-matched INHALE clip (~0.3 s, energy rising into the
+sentence, brighter and quieter than the pre-reply breath — the exhale-shaped
+pre-reply clip, trimmed, read as a cut noise between sentences), inserted after
+the planned pause with only a 60 ms beat before the sentence, as TTS audio of
+the reply. Operators may supply their own as `inhale_male.wav` /
+`inhale_female.wav` in `filler_audio_dir`. Short acknowledgement sentences ("जी।",
+"ठीक है।") ride a touch quicker (×1.02–1.05) than questions (×0.95–0.98) and
+critical read-backs (×0.96); per-sentence rate applies only where the engine
+supports it (ElevenLabs contexts, REST sentences). Digit runs in IDs are
+already spaced for digit-by-digit reading by the TTS text preparation.
+
+## Latency fillers
+
+The one silence the layers above cannot cover is the gap between the caller's
+last word and the first byte of reply audio: turn detection, the decision
+layer, the LLM and the TTS provider add up to 1.5–4 s on telephony, and the
+first reply of a call is the slowest (cold decision/LLM/knowledge paths). A
+human agent is never that silent. `latency_fillers` (on by default, under the
+`breathing` family master and the layer master) plays a short breath from pre-rendered audio when a dispatched
+reply has not started speaking `latency_filler_delay_ms` (default 1500,
+500–5000) after the caller stopped speaking, measured from the physical end of
+speech the latency probe recorded (dispatch time when unknown).
+
+`breath_gain_db` adjusts only nonverbal breathing clips, including sentence
+breaths. It accepts -24 to 0 dB and defaults to 0 (original clip level).
+For example, a bot override of -6 dB halves the waveform amplitude while
+preserving speech, acknowledgements and voiced thinking cues. Studio exposes
+this as **Breathing volume (dB)** under **Advanced tuning**; clip previews
+use the bot's saved setting. This changes loudness, not the clip's voice or
+tone: synthesized breaths remain gender-matched rather than voice-specific.
+
+Rules, in priority order (`voice_runtime/latency_filler.py`):
+
+- **Response priority and owned cleanup.** Filler streams as owned 20 ms
+  chunks with no look-ahead. The first `TTSAudioRawFrame` containing a
+  complete PCM sample retires its owner at processor ingress. The producer
+  stops, matching queued filler is discarded, and no extra cutoff chunk is
+  appended. Ownership survives producer completion and transport chunking;
+  filler never enters the response's partial PCM buffer or streaming
+  resampler. Fast replies before the configured deadline still skip filler.
+  Browser packets carry a unique call/turn token; `filler_clear` stops only
+  its sources, with at most a 2 ms fade for a currently sounding source and
+  no added scheduling lead before the response. Device-rendered samples
+  and already-sent telephony packets remain outside server cleanup.
+- **Invisible to turn bookkeeping.** Chunks subclass `OutputAudioRawFrame`,
+  which pipecat's output transport does not treat as bot speech, so no
+  `BotStartedSpeakingFrame` fires: latency spans, the barge-in/merge
+  discriminator, the word-confirmed barge-in gate and the audio gate's echo
+  guard all see a quiet bot, and a caller who talks over a breath opens a turn
+  exactly as over silence. Nothing is spoken, so history, turn records and
+  the client transcript never contain it.
+- **One schedule per dispatched turn.** The brain arms the processor at
+  dispatch and every cancellation path (barge-in, late-final merge, hang-up,
+  teardown) disarms it; caller speech, interruptions and reply audio passing
+  through cut it too. A latency acknowledgement uses this same schedule and
+  emits plain output PCM, so it neither disarms the filler as fake reply audio
+  nor needs a `BotStoppedSpeakingFrame` to re-arm it. A rung whose deadline
+  falls while the previous reply's tail is
+  still audible is **deferred** (`latency_filler_deferred`) to the bot's next
+  silence plus the same gap, not skipped.
+- **Telephony packetization.** Owned filler bypasses the FreeSWITCH/Vaani
+  200 ms speech buffer and first-packet ramp, leaving as individual 20 ms
+  native packets. It cannot be prepended to response PCM. Its tagged
+  completion marker does not flush unrelated speech; legacy untagged flushes
+  retain their behavior. Third-party serializers receive filler resampled
+  separately to native 8 kHz, without contaminating response resampler
+  history. No stream-wide `killAudio`/`clear` is sent for filler cleanup:
+  these APIs cannot selectively revoke one owner's remote audio and could
+  remove valid speech. Packets already accepted by the socket, remote jitter
+  buffers and device playback therefore remain an unavoidable boundary.
+- **Escalation ladder on long waits** (`latency_filler_ladder`, on by default,
+  under the `filler_words` family master — it needs no breath;
+  `voice_runtime/voiced_cues.py`). When the reply is
+  still not speaking, a short "Hmm…" in the bot's OWN voice follows at
+  `latency_filler_hmm_ms` (default 3500, 2000–8000) and a spoken "एक सेकंड…"
+  at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
+  from the caller's end of speech with at least 1 s of quiet between rungs.
+  `TTSStartedFrame` does not suppress a rung while playable audio is still
+  pending. The TTS router withholds the in-reply sentence inhale for 6 s after
+  a pre-reply BREATH started (`sentence_breath_suppressed`, `recent_latency_filler`);
+  a spoken acknowledgement or cue does not count as a breath.
+  Cue texts are fixed per language (`ladder_cue`), gender-neutral, rendered
+  ONCE per (provider, model, voice, language) through the provider's REST
+  `synthesize`, trimmed of lead/tail silence, faded, normalized under the reply's level (≈−25 dBFS RMS, peaks ≤ −10 dBFS) and
+  cached in memory and as WAV under `filler_audio_dir/cache/`; rendering
+  starts in the background when a voice is first armed, and a cue that is not
+  ready yet is skipped for that turn (`no_clip`) — the ladder never waits on
+  a render, never bills a per-turn TTS call, and a failed render is remembered
+  for five minutes. Cues are plain output audio like the breath (no
+  bot-speaking flips, fully interruptible, a `TTSAudioRawFrame` mid-cue
+  cancels it); because a voiced cue is loud enough to echo, the processor opens
+  the caller audio gate's backchannel shield for its duration. The spoken rung
+  is withheld (`spoken_withheld`) when the caller's words carry critical
+  content (amounts, identifiers, OTPs, dates), a serious caller state
+  (complaint, refusal, hardship…) or an identifier capture is open — the
+  reply itself must be the next thing such a caller hears. The mock TTS
+  provider never renders cues.
+- **Gender-matched.** The clip follows the catalog gender of the voice the TTS
+  router will actually use for the current conversation language. Operators
+  may drop 16-bit PCM WAV recordings into `filler_audio_dir`
+  (default `storage/filler_audio`) named with a gender token —
+  `filler_male_1.wav`, `breath_female.wav`, `filler_neutral.wav`; all files of
+  a gender rotate. A gender without files gets the runtime's synthesized
+  breath (three deterministic variants, ~0.7–0.95 s, −30 dBFS, darker for male
+  voices, front-loaded so a reply landing 200–300 ms in still cuts an audible
+  breath); `python scripts/export_filler_audio.py` writes those as WAVs for
+  audition. A file that fails to decode falls back to the synthesized breath.
+  Recordings in `filler_audio_dir/optional/` appear in the catalog with
+  `requiresSelection: true` and IDs such as
+  `file:optional:breath_male_soft_recorded.wav`. They play only when a bot
+  selects them, so adding a recording there leaves all default rotations
+  unchanged. See `storage/filler_audio/README.md` for source and processing
+  details of the bundled soft recorded breath.
+- **Choosing the sounds (Natural Conversation tab).** The library holds four
+  sound kinds — `breath` (soft, trailing off), `inhale` (short, rising; also
+  the in-reply sentence breath), `exhale` (quick onset, long soft tail) and
+  `inhale_exhale` (a full quiet cycle) — each per gender, from operator
+  recordings named with the kind and gender token (`exhale_female_2.wav`,
+  `inhale_exhale_male.wav`) or synthesized. `latency_filler_kind` picks which
+  kind covers the pre-reply gap (default `breath`; the ladder's first rung
+  keeps its `breath` name in events, with `sound`/`clip` saying what played).
+  `filler_audio_selection` — `{kind: {gender: {primary, alternates}}}` —
+  narrows a kind/gender to chosen clips: the primary plays first in a call and
+  the alternates rotate with it, never the same clip twice in a row while
+  more than one is selected; empty means the gender's default clips rotate
+  (excluding recordings marked as requiring selection).
+  Runtime eligibility always follows the active voice's catalog gender: a
+  selection naming another gender's or kind's clips is ignored (the voice's
+  own clips rotate) and logged once. `latency_filler_cue_selection` —
+  `{lang: {primary, alternates}}` — says which of the "hmm" rung's voiced cue
+  texts a bot MAY use (`ladder_cue_options`: Hindi Hmm… / हूँ… / अच्छा… / जी… /
+  ठीक है… / उँ-हूँ… / ओह…, English Hmm… / Mm-hmm… / Okay… / Right… / I see… /
+  Oh…; primary = the neutral default, alternates = the rest of the allowed
+  set; with no selection the whole pool is allowed). The Studio's Natural
+  Conversation tab lists every clip and cue with a Play control that streams
+  the exact bytes the runtime plays (`GET /bots/{id}/natural-conversation/
+  audio`, `…/audio/clip?id=`, `…/audio/cue?language=&kind=&id=` — cues are
+  rendered on first preview into the same cache the calls read), a
+  male/female/neutral filter (default: the bot's own voice gender) and
+  primary/alternate selectors; all three keys are ordinary `humanSpeech`
+  overrides (platform → tenant → bot, strict validation on save).
+- **Context-aware voiced cues (`SpeechNaturalnessPlanner.plan_latency_cue`).**
+  Which cue a long wait actually gets — and whether it gets a word at all —
+  is decided per turn when the brain arms the filler, from the caller's own
+  words (regex router + signal classifier, no model call), never from a
+  fixed sequence. Step one, *is a word needed*: no voiced cue when the turn
+  already got a dispatch-time acknowledgement (one voice, not two — the
+  re-arm after "जी…" carries `allow_voiced=False`), when the caller dictated
+  critical content (amounts, identifiers, OTPs), when the reply is expected
+  quickly (speculative decision already done), when the language has no
+  pool, and on a share of turns by `latency_cue_probability` (default 0.7,
+  halved in a serious caller state, boosted on the first reply) — most long
+  waits stay a breath, which is the right filler when only latency needs
+  covering. Step two, *which word*: the bot's allowed cues are ranked by the
+  ROLE each conveys (`_CUE_ROLES`: thinking Hmm…/हूँ…, information अच्छा…,
+  confirm ठीक है…, polite जी…, positive_ack उँ-हूँ…, concern ओह…) against the
+  turn context the brain derived (`_latency_cue_context`): knowledge/tool
+  path → `lookup`; a question → `thinking`; trouble in the words (complaint,
+  hardship, "नहीं मिला", "कट गया", "problem") → `concern`; an answer to the
+  workflow's question → `confirm`; an agreement → `affirm`; a stated fact or
+  commitment → `information`; courtesy words → `polite`; a longer statement →
+  `information`; else `neutral`. Roles a context does not list are never
+  voiced there (no "ठीक है…" after a question or after a free statement the
+  bot has not accepted — `information` ranks information / polite / thinking
+  only — and no "ओह…" after a plain
+  statement); in a serious caller state only thinking / polite / concern
+  survive, so nothing sounds like agreement with a complaint; "ओह…" is a
+  reaction, not a filler — at most once per call and on a minority of
+  concern turns. The previously voiced cue (`last_cue_played`) never leads
+  again while an alternative exists. The processor receives the ranking as
+  a preference order and plays the first cue already rendered
+  (`voiced_withheld` in `latency_filler_skipped` when the plan said no word;
+  `latency_cue_planned` records context/verbal/reason/role/first per turn).
+  The same rule set governs the dispatch-time acknowledgement
+  (`plan_early_ack`: answer/question/lookup/neutral pools, no consecutive
+  turns, probability), so the two never stack.
+
+Telemetry on the conversation event stream, every event carrying `rung`
+(`breath` | `hmm` | `wait`): `latency_filler_played` (`turn`, `gender`,
+`waited_ms`, `clip_ms`), `latency_filler_cut` (`reason` `tts_audio` |
+`caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
+cancellation reason, `played_ms`), `latency_filler_completed`,
+`latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
+(`no_clip` | `spoken_withheld` | `voiced_withheld` | `after_early_ack` |
+`breathing_off`). The per-turn `naturalness_trace` log carries
+`latency_filler_enabled`, `breathing_enabled`, `filler_words_enabled` and
+`latency_fillers_played` (all rungs); the processor's `rungs_played` counts
+per kind.
+
+## Background ambience
+
+A quiet room sound under the whole call — under the bot's speech and through
+the pauses between turns. Three Natural Conversation keys (platform → tenant →
+bot, sparse bot override through `PUT /bots/{id}/voice-settings`
+`humanSpeech`); nothing about them is provider-specific:
+
+| Key | Type | Default | Absent / invalid at runtime |
+|---|---|---|---|
+| `background_ambience` | bool | `false` | off |
+| `background_ambience_preset` | preset id | `office` | `office` |
+| `background_ambience_volume` | int 0–100 | `50` | default; out of range is clamped |
+
+The API rejects an unknown preset id or a volume that is not a whole number in
+0–100 (422); runtime resolution is lenient (the table's last column), so an
+older or hand-edited row never breaks a call. UI: **Call environment →
+Background ambience** (toggle), **Background sound** (select) and **Background
+volume** (slider, 0 shows "Muted"). The two controls are disabled until the
+toggle is on (they enable immediately, before saving) and while the Human
+speech layer (`enabled`) is off. Only the stable id and the integer are
+stored — never a file path or a gain.
+
+### Presets
+
+One registry, `shared/audio/ambience_presets.py` (`AMBIENCE_PRESETS`: id,
+label, description, asset stem, level trims), read by settings validation,
+the runtime loader and — kept in sync by a unit test — the UI list
+(`AMBIENCE_PRESET_OPTIONS` in `HumanSpeechSettings.tsx`). Each preset is a
+different room, not the same audio at another level:
+
+| id | Label | Character | Level vs `office` |
+|---|---|---|---|
+| `office` | Office | steady air, a few distant talkers, occasional typing | 0 dB (reference) |
+| `call_center` | Call Center | ~22 talkers almost continuously, darker/narrower band (treated room, short RT60), little typing | same loudness |
+| `light_office` | Light Office | soft air, 3 far talkers with long pauses, sparse typing, rare events | −3 dB (intentional) |
+| `busy_office` | Busy Office | 12 far + 2 nearer talkers, 6 desks typing, footsteps, chair rolls, paper; the most level movement | same loudness |
+| `room_tone` | Room Tone | air + ventilation only — no voices, no events; steady | −2 dB (intentional) |
+| `echo_ringing` | Echo Ringing | supplied recording (⚠ licence unverified; STT caveat below): reverberant room, warbling (~10 Hz) ring tone over murmur; loops its steady 2.5–15.5 s middle with a 1 s crossfade (the file fades in/out at its ends) | same loudness |
+
+"Same loudness" is measured (K-weighted over the 300–3400 Hz phone band) and
+stored as `loudness_trim_db`; a sparse or perfectly steady bed at office
+loudness reads as hiss, so Light Office and Room Tone carry a deliberate
+`character_offset_db`.
+
+### Production-enabled presets and safety
+
+Each registry entry carries `production_enabled` (all six are enabled). The
+settings responses (`GET/PUT /bots/{id}/voice-settings` and `/tenant/settings`)
+include the whole catalog as `ambiencePresets` (`id`, `label`, `description`,
+`productionEnabled`); the editor builds the Background sound list from it —
+there is no preset list in the React code. Withdrawing a preset later is a
+one-line registry change: the editor stops offering it, a bot that saved it
+earlier still shows it (disabled, "… (not available)") and keeps saving its
+other edits, and the API refuses it only as a NEW selection (422
+"'background_ambience_preset': '<id>' is not available for selection"). At
+call time a saved preset plays if its audio is installed; otherwise the call
+gets `office` and a `background_ambience_fallback` event (`requested`, `used`,
+`reason=asset_missing`).
+
+**`echo_ringing` caveats** (kept offered by product decision, 2026-09-29):
+
+- *Licence unverified.* The recording was supplied, not generated here. Its
+  WAVs carry no title/author/copyright/licence metadata (only the FFmpeg
+  encoder tag `Lavf63.1.101`); an earlier `.mp3` of it arrived with a Windows
+  download marker (`Zone.Identifier`) and no recorded source URL. Confirm the
+  source and that its licence allows commercial redistribution before relying
+  on it in production.
+- *STT under extreme echo.* In the evaluation below, its room echo alone
+  produced an STT word ("Hello") at volume 100 with only 10 dB echo loss; no
+  generated preset produced any STT output even at 5 dB. At realistic echo loss
+  (15–25 dB) it behaved exactly like the generated presets (nothing reached
+  STT). Prefer volumes ≤ 50 for it on echo-prone telephony.
+
+**Echo evaluation (2026-09-29).** Real calls on the private worker: FreeSWITCH
+audio fork (8 kHz), Hindi demo bot (Sarvam STT hi-IN), production gate / VAD /
+STT / turn settings (echo reference mode 0 = off, the default), a caller who
+never speaks, and the far end echoing what it plays back into the caller leg
+(180 ms lag). Volumes 25 / 50 / 100 × echo −15 / −20 / −25 dB for all six
+presets plus ambience off, in two modes (114 calls), plus a stress set at
+−10 / −5 dB (14 calls):
+
+- *Room-only echo* (only the room between turns echoes): the gate's noise
+  floor tracked the echoed room (≈ −55 dBFS at volume 100 / −15 dB) but the
+  gate never opened — 0 VAD starts, 0 STT results, 0 caller turns in all 57
+  calls, every preset. Stress: at volume 100 the gate opens at −5 dB (and for
+  some presets at −10 dB), yet VAD never started and STT returned nothing for
+  the five generated presets; `echo_ringing` at volume 100 / −10 dB produced an
+  STT result ("Hello"; no VAD start, so no caller turn). At volume 50 the gate
+  stays shut even at −5 dB.
+- *Full echo* (bot voice + room): dominated by the bot's own voice coming
+  back — with ambience OFF too (8.7 STT results and 5 accepted caller turns
+  per call, e.g. its greeting, "ji", "achha" taken as `signal=affirm`). Every
+  STT result fell within 3 s of bot speech; none in room-only windows; the
+  presets did not raise the counts (7.0–7.8 STT results, 3.1–4.6 accepted
+  turns per call). That self-echo is a telephony echo issue independent of
+  ambience (echo reference is off by default).
+
+### Volume
+
+`ambience_volume_db(v)`, in dB relative to normal bot speech
+(`SPEECH_REFERENCE_DBFS` = −18 dBFS RMS), piecewise linear in dB:
+
+- `0` → muted: no mixer is built at all (identical to the setting off);
+- `1..50` → −45 + (v − 1) × 9/49 dB (0.18 dB per step);
+- `50..100` → −36 + (v − 50) × 12/50 dB (0.24 dB per step).
+
+So 1 = −45 dB, 25 ≈ −40.6 dB, **50 = −36 dB (default; the original fixed
+level, −54 dBFS RMS)**, 75 = −30 dB, 100 = −24 dB (−42 dBFS RMS). The preset's
+trim is added on top. Resolved once per call in `build_ambience`, never per
+chunk.
+
+### Where it happens
+
+`voice_runtime/ambience.py`, wired in `pipeline.py`, applied in
+`voice_runtime/filler_transport.py`:
+
+- **Bot audio** (reply TTS, latency fillers) is mixed with the next slice of
+  the loop inside `FillerWebsocketOutputTransport._write_frame`: after the
+  echo reference has been fed the clean frame, before the serializer encodes
+  it. The frame the media sender pushes downstream is the clean original.
+  If speech near full scale plus the room would exceed int16, that chunk's
+  room is scaled down to fit (`guarded_chunks`) instead of clipping.
+- **Between turns** the media sender emits ambience-only 20 ms frames
+  (`AmbienceAudioRawFrame`, a tagged filler frame) whenever the playout
+  horizon drains to the lead (browser 60 ms, telephony 20 ms). Queued bot
+  audio always wins; nothing is inserted while the bot is speaking. These
+  frames ride the filler wire path: their own packets on FreeSWITCH/Vaani
+  (outside a reply's packet buffer and first-packet ramp), a clearable
+  `filler_audio` stream on the browser client.
+- **Handoffs.** Before bot audio that follows room audio the transport sends a
+  `filler_clear` for the room owner, so the browser drops its queued room
+  audio and the reply starts at once. Telephony serializers ignore it; there
+  at most one queued chunk + lead (≈ 20–40 ms) plays before the reply. When
+  a reply ends, a packetizing serializer's last partial packet is flushed
+  ahead of the room audio.
+- **Barge-in**: the reply is cut exactly as before (queue reset, `killAudio`
+  / `clear` / `interruption`); the room continues under a new owner.
+  Provisional pause: queued reply audio is held, the room keeps playing.
+- **Call end**: the room stops with the last queued audio (EndFrame), on
+  cancel, or when the socket closes; end-of-call silence stays silent.
+- **Never** mixed into caller/STT input, never fed to the echo reference,
+  never recorded (recordings keep the clean bot channel).
+
+### Assets and cache
+
+`voice_runtime/assets/ambience/<preset>_ambience_<rate>.wav`, mono PCM16,
+procedurally generated (no recorded or intelligible speech: talkers are
+formant-synthesized vowel glides) and reproducible with
+`scripts/generate_ambience_asset.py [--preset ID]`. `office` keeps its
+8/16/24 kHz files (the accepted baseline, byte-identical); the other generated
+presets ship one 16 kHz file each and are resampled once to other rates (8 kHz
+telephony, 22.05/24 kHz browser). The exception is `echo_ringing`, a supplied
+recording (`echo_ringing_sound_{8000,16000,24000}.wav`, not generated, licence
+unverified — see "Production-enabled presets and safety"): its
+registry entry sets `loop_start_s`/`loop_end_s` so only its steady middle
+loops, and `loop_crossfade_ms` = 1000. The loader decodes a (preset, rate)
+source once per process, cuts it to the loop region and closes the loop with an
+equal-power crossfade (150 ms by default), so any replacement recording loops
+without a click; a new volume only rescales that cached source. Beds are kept in a small LRU (12 entries). A call's
+preset and volume are resolved when the pipeline is built, not per chunk.
+
+Listening samples through the real mixer (solo room, and each preset under a
+bot reply at chosen volumes, 24 kHz browser and 8 kHz µ-law phone):
+`env/bin/python scripts/render_ambience_samples.py --out DIR --speech bot.wav
+--volumes 25,50,100`, then open `DIR/index.html`.
+
+STT note: caller input is never mixed, so the room can reach STT only as line
+echo. The caller gate's floor is −50 dBFS and it tracks the line's noise
+floor (+9 dB), so a steady echoed room largely gates itself (the room is
+−54 dBFS on the wire at the default, −42 dBFS at 100, before any echo loss).
+The residual risk is a line with very little echo loss at volumes near the
+top: louder murmur or typing can open the gate, and some STT engines (Sarvam
+en-IN in our probes) turn murmur into a word ("Okay", "Hello"). If phantom
+one-word caller turns appear on such a line, lower the volume first.
+
+Telemetry: `background_ambience` on the conversation event stream when the
+room stops (`preset`, `asset`, `volume`, `level_db_rel_speech`, `level_dbfs`,
+`mixed_chunks`, `idle_chunks`, `handoffs`, `remnant_flushes`,
+`interruptions`, `saturated_samples`, `guarded_chunks`, `late_chunks`,
+`late_ms`, `mix_us_p50/p95/p99/max`, `stop_reason`);
+`background_ambience_unavailable` if the asset cannot be loaded (the call
+then runs without it).

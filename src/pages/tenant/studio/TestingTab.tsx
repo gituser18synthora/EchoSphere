@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import type { TraceStep, VoiceBot } from "@/types/domain";
+import type { Prompt, SimulateTrace, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listPrompts, listScenarios, runSuite as runSuiteApi, testBotChat } from "@/services/api";
+import { createScenario, getChannel, listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
 import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
-import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
+import { Button, Callout, CardSkeleton, ErrorState, Field, Modal, StatusChip, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
+import { JsonView } from "@/components/JsonView";
+import PhoneCallView from "./PhoneCallView";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+import { formatChatTime, nowWithMicroseconds } from "@/services/chatTime";
 
 /* Text testing runs each turn through the REAL runtime stack on the backend
    (TurnRouter routing + the WorkflowEngine executing the bot's saved
@@ -28,6 +31,10 @@ const PROVIDER_NAMES: Record<string, string> = {
   sarvam: "Sarvam", elevenlabs: "ElevenLabs", openai: "OpenAI",
   azure: "Azure", google: "Google", mock: "Mock (dev)",
 };
+const TELEPHONY_NAMES: Record<string, string> = {
+  freeswitch: "FreeSWITCH", twilio: "Twilio", telnyx: "Telnyx",
+  plivo: "Plivo", exotel: "Exotel", vaani: "Vaani",
+};
 export function providerName(code?: string): string {
   if (!code) return "";
   return PROVIDER_NAMES[code.toLowerCase()] ?? code;
@@ -37,7 +44,7 @@ export function providerName(code?: string): string {
 export function activeVoice(
   config: VoiceSessionConfig | null,
   language?: string,
-): { provider: string; voice: string } | null {
+): { provider: string; voice: string; gender?: string } | null {
   if (!config) return null;
   const forLanguage = language ? config.voices?.[language] : undefined;
   return forLanguage ?? config.defaultVoice ?? null;
@@ -46,26 +53,48 @@ export function activeVoice(
 export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
   const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
+  /* Dial-in number for the phone view — straight from the bot's voice
+     channel config. Missing channel / no channel-read permission simply
+     means no number is shown (never hardcoded). */
+  const voiceChannelQ = useAsync(
+    () => getChannel(bot.id, "voice").catch(() => null),
+    [bot.id],
+  );
   const navigate = useNavigate();
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
   const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
+  const greetingVersion = greetingPrompt
+    ? (greetingPrompt.publishedVersion ?? greetingPrompt.activeVersion)
+    : undefined;
+  const greetingVariant =
+    greetingPrompt?.versions.find((v) => v.version === greetingVersion)?.variants[0];
   const greetingText =
-    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0]?.content
+    greetingVariant?.content
     ?? `Test session for ${bot.name} — type a caller message; it runs through the real routing and workflow engine.`;
   const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  const [chatEnded, setChatEnded] = useState(false);
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null);
   const [runningSuite, setRunningSuite] = useState(false);
+  const [greetingAt, setGreetingAt] = useState(nowWithMicroseconds);
   const listRef = useRef<HTMLDivElement>(null);
+
+  /* Both views render over the same state and stay mounted (the inactive
+     one is just hidden), so switching never resets the running session.
+     The phone view is the default; the console is the drill-down. */
+  const [view, setView] = useState<"console" | "phone">("phone");
 
   /* ---------- Live voice session ---------- */
   const voiceRef = useRef<VoiceClient | null>(null);
+  const awaitingVoiceGreetingRef = useRef(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
   const [sessionConfig, setSessionConfig] = useState<VoiceSessionConfig | null>(null);
   const [liveLanguage, setLiveLanguage] = useState<string>("");
+  const [micMuted, setMicMuted] = useState(false);
 
   /* Tear the session down when leaving the tab */
   useEffect(() => () => { voiceRef.current?.stop(); voiceRef.current = null; }, []);
@@ -73,8 +102,10 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scrollToEnd = () =>
     setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
 
-  const appendVoiceStep = (speaker: "user" | "bot", text: string) => {
-    setSteps((s) => [...s, { turn: s.length + 2, speaker, text }]);
+  const appendVoiceStep = (speaker: "user" | "bot", text: string, at?: string) => {
+    setSteps((s) => [...s, {
+      turn: s.length + 2, speaker, text, at: at ?? nowWithMicroseconds(),
+    }]);
     scrollToEnd();
   };
 
@@ -86,6 +117,13 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     setVoiceStatus("listening");
     setSessionConfig(null);
     setLiveLanguage("");
+    setMicMuted(false);
+  };
+
+  const toggleMute = () => {
+    const next = !micMuted;
+    setMicMuted(next);
+    voiceRef.current?.setMuted(next);
   };
 
   const startVoice = async () => {
@@ -96,8 +134,32 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
         setSessionConfig(config);
         setLiveLanguage(config.language ?? "");
       },
-      onTranscript: (text) => appendVoiceStep("user", text),
-      onBotText: (text) => appendVoiceStep("bot", text),
+      onTranscript: (text, at) => appendVoiceStep("user", text, at),
+      onBotText: (text, at) => {
+        // The greeting is already rendered as turn 1. Replace its local mount
+        // time with the runtime's stored turn time instead of duplicating it.
+        if (awaitingVoiceGreetingRef.current) {
+          awaitingVoiceGreetingRef.current = false;
+          setGreetingAt(at ?? nowWithMicroseconds());
+          return;
+        }
+        appendVoiceStep("bot", text, at);
+      },
+      onTurnRewound: (userText, botText) => {
+        // The runtime merged a straggler final (or clarified fragment) into
+        // one turn and popped these entries from its own transcript; mirror
+        // that here or the merged turn repeats the fragment's words.
+        setSteps((s) => {
+          const next = [...s];
+          const dropTrailing = (speaker: "user" | "bot", text?: string) => {
+            const last = next[next.length - 1];
+            if (text && last?.speaker === speaker && last.text === text) next.pop();
+          };
+          dropTrailing("bot", botText);
+          dropTrailing("user", userText);
+          return next;
+        });
+      },
       onLanguage: (locale) => setLiveLanguage(locale),
       onEvent: (name, detail) => {
         if (name === "bot_speaking_started") setVoiceStatus("bot_speaking");
@@ -122,12 +184,15 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       onError: (message) => toast(message, "error"),
     });
     try {
+      awaitingVoiceGreetingRef.current = true;
       await client.start(bot.id);
       voiceRef.current = client;
       setVoiceActive(true);
       setVoiceStatus("listening");
+      setMicMuted(false);
       toast("Voice session live — speak into your microphone");
     } catch (e) {
+      awaitingVoiceGreetingRef.current = false;
       client.stop();
       toast(e instanceof Error ? e.message : "Could not start the voice session", "error");
     } finally {
@@ -137,20 +202,43 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
 
   /* One conversation per tab mount — the backend keeps workflow state per id. */
   const chatSessionRef = useRef<string | undefined>(undefined);
+  const chatLanguageRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!steps.length && greetingVariant?.language) {
+      chatLanguageRef.current = greetingVariant.language;
+    }
+  }, [greetingVariant?.language, steps.length]);
 
   const send = async () => {
     const text = input.trim();
-    if (!text || thinking) return;
-    const userStep: TraceStep = { turn: steps.length + 2, speaker: "user", text };
+    if (!text || thinking || chatEnded) return;
+    const userStep: TraceStep = {
+      turn: steps.length + 2, speaker: "user", text, at: nowWithMicroseconds(),
+    };
     setSteps((s) => [...s, userStep]);
     setInput("");
     setThinking(true);
     scrollToEnd();
     const started = performance.now();
     try {
-      const result = await testBotChat(bot.id, text, chatSessionRef.current);
+      const history = [greetingStep, ...steps].map((step) => ({
+        role: step.speaker === "bot" ? "assistant" as const : "user" as const,
+        content: step.text,
+      }));
+      const result = await testBotChat(
+        bot.id,
+        text,
+        chatSessionRef.current,
+        history,
+        chatLanguageRef.current,
+      );
       chatSessionRef.current = result.sessionId;
-      const latency = Math.round(performance.now() - started);
+      chatLanguageRef.current = result.language;
+      if (result.route === "handoff" || result.workflow?.status === "handoff") {
+        setChatEnded(true);
+      }
+      const latency = result.latencyMs ?? Math.round(performance.now() - started);
       setSteps((s) => {
         const reply: TraceStep = {
           turn: s.length + 2,
@@ -164,6 +252,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           workflowSlots: result.workflow?.slots,
           workflowDone: result.workflow?.done,
           latencyMs: latency,
+          at: result.at ?? nowWithMicroseconds(),
         };
         setSelectedTurn(reply.turn);
         return [...s, reply];
@@ -173,6 +262,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       setSteps((s) => [...s, {
         turn: s.length + 2, speaker: "bot",
         text: "The test turn failed — check that the platform API is running and try again.",
+        at: nowWithMicroseconds(),
       }]);
     } finally {
       setThinking(false);
@@ -184,14 +274,37 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     turn: 1,
     speaker: "bot",
     text: greetingText,
-    promptVersion: greetingPrompt ? `greeting v${greetingPrompt.activeVersion}` : undefined,
+    promptVersion: greetingPrompt && greetingVersion ? `greeting v${greetingVersion}` : undefined,
     latencyMs: 400,
     costUsd: 0.004,
+    at: greetingAt,
   };
   const allSteps = [greetingStep, ...steps];
 
   const selected = allSteps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...allSteps].reverse().find((s) => s.speaker === "bot");
   const failing = (scenariosQ.data ?? []).filter((s) => s.lastRun && !s.lastRun.pass);
+
+  const [newScenarioOpen, setNewScenarioOpen] = useState(false);
+  const [newScenario, setNewScenario] = useState({ name: "", suite: "General", steps: "1" });
+  const [creatingScenario, setCreatingScenario] = useState(false);
+  const newScenarioSteps = Number(newScenario.steps);
+  const newScenarioValid = newScenario.name.trim().length > 0 && Number.isInteger(newScenarioSteps) && newScenarioSteps >= 1 && newScenarioSteps <= 100;
+
+  const submitScenario = async () => {
+    if (!newScenarioValid) return;
+    setCreatingScenario(true);
+    try {
+      await createScenario(bot.id, { name: newScenario.name.trim(), suite: newScenario.suite.trim() || "General", steps: newScenarioSteps });
+      toast(`Scenario "${newScenario.name.trim()}" added — run the suite to record a result`);
+      setNewScenarioOpen(false);
+      setNewScenario({ name: "", suite: "General", steps: "1" });
+      scenariosQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create scenario", "error");
+    } finally {
+      setCreatingScenario(false);
+    }
+  };
 
   const runSuite = async () => {
     setRunningSuite(true);
@@ -206,8 +319,46 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     }
   };
 
+  const voiceChannel = voiceChannelQ.data;
+  const configuredNumber =
+    typeof voiceChannel?.config?.phoneNumber === "string" && voiceChannel.config.phoneNumber.trim()
+      ? voiceChannel.config.phoneNumber.trim()
+      : null;
+  const telephonyProvider =
+    typeof voiceChannel?.config?.telephonyProvider === "string"
+      ? TELEPHONY_NAMES[voiceChannel.config.telephonyProvider.toLowerCase()]
+        ?? voiceChannel.config.telephonyProvider
+      : undefined;
+
   return (
     <div className="col gap-16">
+      <div className="row">
+        <div className="segmented" role="group" aria-label="Testing view">
+          <button aria-pressed={view === "phone"} onClick={() => setView("phone")}>Phone view</button>
+          <button aria-pressed={view === "console"} onClick={() => setView("console")}>Test console</button>
+        </div>
+      </div>
+
+      {/* Phone view — a caller-style screen over the same live session.
+          Kept mounted (hidden) so switching views never drops state. */}
+      <div style={view === "phone" ? undefined : { display: "none" }}>
+        <PhoneCallView
+          bot={bot}
+          phoneNumber={configuredNumber}
+          numberLoading={voiceChannelQ.loading}
+          providerLabel={telephonyProvider}
+          callActive={voiceActive}
+          connecting={voiceConnecting}
+          botSpeaking={voiceStatus === "bot_speaking"}
+          languageLabel={languageName(liveLanguage) || undefined}
+          muted={micMuted}
+          onToggleMute={toggleMute}
+          onStartCall={() => void startVoice()}
+          onEndCall={stopVoice}
+        />
+      </div>
+
+      <div className="col gap-16" style={view === "console" ? undefined : { display: "none" }}>
       <div className="grid" style={{ gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "stretch" }}>
         {/* Simulator */}
         <div className="card col" style={{ height: 480 }}>
@@ -223,7 +374,14 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                   {voiceStatus === "bot_speaking" ? "Bot speaking" : "Listening"}
                 </span>
               )}
-              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps([]); setSelectedTurn(null); }}>Reset</Button>
+              <Button size="sm" variant="ghost" icon="refresh" onClick={() => {
+                setSteps([]);
+                setSelectedTurn(null);
+                setGreetingAt(nowWithMicroseconds());
+                chatSessionRef.current = undefined;
+                chatLanguageRef.current = greetingVariant?.language;
+                setChatEnded(false);
+              }}>Reset</Button>
               {voiceActive ? (
                 <Button size="sm" variant="danger-ghost" icon="x" onClick={stopVoice}>Stop voice session</Button>
               ) : (
@@ -241,7 +399,10 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               {(() => {
                 const voice = activeVoice(sessionConfig, liveLanguage);
                 return voice ? (
-                  <span className="tag">{providerName(voice.provider)} · {voice.voice}</span>
+                  <span className="tag">
+                    {providerName(voice.provider)} · {voice.voice}
+                    {voice.gender && voice.gender !== "neutral" ? ` · ${voice.gender}` : ""}
+                  </span>
                 ) : null;
               })()}
               {Object.keys(sessionConfig.warnings ?? {}).map((locale) => (
@@ -260,7 +421,17 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                 onClick={() => s.speaker === "bot" && setSelectedTurn(s.turn)}
                 aria-label={s.speaker === "bot" ? `Inspect turn ${s.turn}` : undefined}
               >
-                {s.text}
+                <span className="transcript-text">{s.text}</span>
+                {s.at && (
+                  <time
+                    className="transcript-bubble-time"
+                    dateTime={s.at}
+                    data-testid="message-timestamp"
+                    title={s.at}
+                  >
+                    {formatChatTime(s.at)}
+                  </time>
+                )}
               </button>
             ))}
             {thinking && (
@@ -270,13 +441,16 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           <div className="row gap-8" style={{ padding: "12px 16px", borderTop: "1px solid var(--hairline)" }}>
             <input
               className="input"
-              placeholder='Try: "I need to see a doctor Thursday" or "do you take Aetna?"'
+              placeholder={chatEnded
+                ? "Call transferred — select Reset to start a new test call."
+                : 'Try: "I need to see a doctor Thursday" or "do you take Aetna?"'}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
+              disabled={chatEnded}
               aria-label="Simulator input"
             />
-            <Button variant="primary" icon="send" onClick={send} disabled={thinking || !input.trim()}>Send</Button>
+            <Button variant="primary" icon="send" onClick={send} disabled={thinking || chatEnded || !input.trim()}>Send</Button>
           </div>
         </div>
 
@@ -361,7 +535,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                 <TraceRow icon="clock" label="Latency">
                   <span className="t-num t-strong">{selected.latencyMs != null ? `${selected.latencyMs}ms` : "—"}</span>
                 </TraceRow>
-                {flags.tenantCostVisibility && (
+                {showCosts && (
                   <TraceRow icon="dollar" label="Turn cost">
                     <span className="t-num t-strong">{selected.costUsd != null ? `$${selected.costUsd.toFixed(4)}` : "—"}</span>
                   </TraceRow>
@@ -371,6 +545,40 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           </div>
         </div>
       </div>
+
+      {/* Full-pipeline runtime simulator */}
+      <RuntimeSimulator bot={bot} prompts={promptsQ.data ?? []} />
+
+      <Modal
+        open={newScenarioOpen}
+        onClose={() => setNewScenarioOpen(false)}
+        title="New regression scenario"
+        sub="A named test case for this bot. It counts as 'never run' until you run the suite; the release checklist needs every scenario to pass."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setNewScenarioOpen(false)}>Cancel</Button>
+            <Button variant="primary" icon="plus" busy={creatingScenario} disabled={!newScenarioValid} onClick={submitScenario}>Add scenario</Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          <Field label="Scenario name" required>
+            <input className="input" value={newScenario.name} maxLength={200} autoFocus
+              onChange={(e) => setNewScenario((v) => ({ ...v, name: e.target.value }))}
+              placeholder="e.g. Greeting → FAQ answer in Hindi" />
+          </Field>
+          <div className="grid grid-2 gap-12">
+            <Field label="Suite" hint="Groups scenarios in the table">
+              <input className="input" value={newScenario.suite} maxLength={100}
+                onChange={(e) => setNewScenario((v) => ({ ...v, suite: e.target.value }))} />
+            </Field>
+            <Field label="Steps" hint="1–100 conversation turns" error={newScenario.name.trim() && !newScenarioValid ? "Enter a whole number from 1 to 100" : undefined}>
+              <input className="input" type="number" min={1} max={100} value={newScenario.steps}
+                onChange={(e) => setNewScenario((v) => ({ ...v, steps: e.target.value }))} />
+            </Field>
+          </div>
+        </div>
+      </Modal>
 
       {/* Scenarios & regression suite */}
       <div className="card">
@@ -382,7 +590,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
             </span>
           </div>
           <div className="row gap-6">
-            <Button size="sm" icon="plus" onClick={() => toast("Scenario recorder started — interact with the simulator, then save as a scenario", "info")}>New scenario</Button>
+            <Button size="sm" icon="plus" onClick={() => setNewScenarioOpen(true)}>New scenario</Button>
             <Button size="sm" variant="primary" icon="play" busy={runningSuite} onClick={runSuite}>Run all</Button>
           </div>
         </div>
@@ -421,6 +629,412 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           </div>
         )}
       </div>
+      </div>{/* /console view */}
+    </div>
+  );
+}
+
+/* ============================================================
+   Runtime simulator — one turn through the FULL pipeline
+   (runtime context → prompt render → routing/intent → policy →
+   mocked tools → workflow or LLM) with the complete trace.
+   ============================================================ */
+
+const simPreStyle: CSSProperties = {
+  margin: 0, padding: 12, background: "var(--surface-2)", borderRadius: 10,
+  fontSize: 12, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word",
+  maxHeight: 320, overflow: "auto",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+};
+
+const chipValue = (v: unknown): string =>
+  v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
+
+interface RuntimeMessage {
+  role: "user" | "assistant";
+  content: string;
+  at: string;
+}
+
+function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }) {
+  const { toast } = useApp();
+  const [messages, setMessages] = useState<RuntimeMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [trace, setTrace] = useState<SimulateTrace | null>(null);
+  const sessionRef = useRef<string | undefined>(undefined);
+
+  const [promptId, setPromptId] = useState("");
+  const [promptVersion, setPromptVersion] = useState("");
+  const [contextSource, setContextSource] = useState<"saved" | "manual" | "api_mock" | "none">("saved");
+  const [contextJson, setContextJson] = useState('{\n  "customer_name": "Rahul Sharma"\n}');
+  const [language, setLanguage] = useState("");
+  const [isFinal, setIsFinal] = useState(true);
+  const [interrupted, setInterrupted] = useState(false);
+  const [mockToolsJson, setMockToolsJson] = useState("{}");
+
+  const selectedPrompt = prompts.find((p) => p.id === promptId);
+
+  const parseJsonObject = (text: string, label: string): Record<string, unknown> | null => {
+    if (!text.trim()) return {};
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+      return parsed as Record<string, unknown>;
+    } catch {
+      toast(`${label} must be a JSON object`, "error");
+      return null;
+    }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    let contextPayload: Record<string, unknown> | undefined;
+    if (contextSource === "manual" || contextSource === "api_mock") {
+      const parsed = parseJsonObject(contextJson, "Context payload");
+      if (parsed === null) return;
+      contextPayload = parsed;
+    }
+    const mockToolResults = parseJsonObject(mockToolsJson, "Mock tool results");
+    if (mockToolResults === null) return;
+    const sentAt = nowWithMicroseconds();
+    setBusy(true);
+    try {
+      const result = await simulateTurn(bot.id, {
+        message: text,
+        messages,
+        ...(promptId ? { promptId } : {}),
+        ...(promptId && promptVersion ? { promptVersion: Number(promptVersion) } : {}),
+        contextSource,
+        ...(contextPayload !== undefined ? { contextPayload } : {}),
+        ...(language ? { language } : {}),
+        isFinal,
+        interrupted,
+        mockToolResults,
+        ...(sessionRef.current ? { sessionId: sessionRef.current } : {}),
+      });
+      setTrace(result);
+      if (result.sessionId) sessionRef.current = result.sessionId;
+      if (!result.heldForFinal) {
+        setMessages((m) => [
+          ...m,
+          { role: "user" as const, content: text, at: sentAt },
+          ...(result.response ? [{
+            role: "assistant" as const,
+            content: result.response,
+            at: nowWithMicroseconds(),
+          }] : []),
+        ]);
+        setInput("");
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Simulation failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = () => {
+    setMessages([]);
+    setTrace(null);
+    setInput("");
+    sessionRef.current = undefined;
+  };
+
+  return (
+    <details className="card">
+      <summary className="card-header" style={{ cursor: "pointer", listStyle: "none" }}>
+        <div className="col gap-2">
+          <span className="card-title">Runtime simulator</span>
+          <span className="t-micro">
+            One turn through the full pipeline — runtime context, prompt render, intent, policy, mocked tools and workflow, with the complete trace.
+          </span>
+        </div>
+        <Icon name="chevron-down" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }} />
+      </summary>
+      <div className="col gap-12" style={{ padding: 16, borderTop: "1px solid var(--hairline)" }}>
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <Field label="Prompt" hint="Which system prompt the simulated call runs on.">
+            <select
+              className="select" value={promptId} aria-label="Simulator prompt"
+              onChange={(e) => { setPromptId(e.target.value); setPromptVersion(""); }}
+            >
+              <option value="">Published (live)</option>
+              {prompts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Prompt version" hint={selectedPrompt ? "Any saved version — approval state is ignored here." : "Pick a prompt to choose a version."}>
+            <select
+              className="select" value={promptVersion} disabled={!selectedPrompt} aria-label="Simulator prompt version"
+              onChange={(e) => setPromptVersion(e.target.value)}
+            >
+              <option value="">Default (published/active)</option>
+              {(selectedPrompt?.versions ?? []).map((v) => (
+                <option key={v.version} value={v.version}>
+                  v{v.version}{selectedPrompt && v.version === selectedPrompt.activeVersion ? " (active)" : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Context source" hint="Where the caller's runtime context comes from for this turn.">
+            <select
+              className="select" value={contextSource} aria-label="Simulator context source"
+              onChange={(e) => setContextSource(e.target.value as typeof contextSource)}
+            >
+              <option value="saved">Saved config</option>
+              <option value="manual">Manual JSON</option>
+              <option value="api_mock">Mock API response</option>
+              <option value="none">None</option>
+            </select>
+          </Field>
+          <Field label="Language">
+            <select className="select" value={language} aria-label="Simulator language" onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">Bot default</option>
+              <option value="en-US">English (en-US)</option>
+              <option value="hi-IN">Hindi (hi-IN)</option>
+            </select>
+          </Field>
+        </div>
+
+        {(contextSource === "manual" || contextSource === "api_mock") && (
+          <Field label={contextSource === "manual" ? "Context payload (JSON)" : "Mock User Details API response (JSON)"}>
+            <textarea
+              className="textarea mono" rows={4} value={contextJson}
+              style={{ fontSize: 12 }}
+              onChange={(e) => setContextJson(e.target.value)}
+            />
+          </Field>
+        )}
+
+        <div className="row gap-16 wrap">
+          <span className="row gap-8">
+            <Toggle checked={isFinal} onChange={setIsFinal} label="Final transcript" />
+            <span className="t-sub" style={{ fontSize: 12.5 }}>Final transcript</span>
+          </span>
+          <span className="row gap-8">
+            <Toggle checked={interrupted} onChange={setInterrupted} label="Caller interrupted the bot" />
+            <span className="t-sub" style={{ fontSize: 12.5 }}>Caller interrupted the bot</span>
+          </span>
+        </div>
+
+        <details>
+          <summary className="t-micro" style={{ cursor: "pointer", fontWeight: 650 }}>
+            Mock tool results — {"{tool_name: payload}"} replaces live HTTP for tools and workflows
+          </summary>
+          <textarea
+            className="textarea mono mt-8" rows={4} value={mockToolsJson}
+            aria-label="Mock tool results JSON"
+            placeholder={'{\n  "payment_status": { "status": "paid", "amount": 4500 }\n}'}
+            style={{ fontSize: 12, width: "100%" }}
+            onChange={(e) => setMockToolsJson(e.target.value)}
+          />
+        </details>
+
+        {messages.length > 0 && (
+          <div className="col gap-8" style={{ maxHeight: 220, overflowY: "auto" }}>
+            {messages.map((m, i) => (
+              <div key={i} className={`transcript-bubble ${m.role === "user" ? "user" : "bot"}`}>
+                <span className="transcript-text">{m.content}</span>
+                <time className="transcript-bubble-time" dateTime={m.at} title={m.at}>
+                  {formatChatTime(m.at)}
+                </time>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="row gap-8">
+          <input
+            className="input"
+            placeholder="Caller message — runs one full runtime turn"
+            value={input}
+            aria-label="Runtime simulator input"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void send()}
+          />
+          <Button variant="primary" icon="play" busy={busy} disabled={!input.trim()} onClick={() => void send()}>
+            Simulate
+          </Button>
+          <Button variant="ghost" icon="refresh" disabled={busy || (messages.length === 0 && !trace)} onClick={reset}>
+            Reset
+          </Button>
+        </div>
+
+        {trace && <SimulateTraceView trace={trace} />}
+      </div>
+    </details>
+  );
+}
+
+function SimulateTraceView({ trace }: { trace: SimulateTrace }) {
+  const intent = trace.intent;
+  const entities = Object.entries(intent?.entities ?? {}).filter(([, v]) => v !== null && v !== undefined);
+  const confidencePct = intent ? Math.round(intent.confidence <= 1 ? intent.confidence * 100 : intent.confidence) : 0;
+
+  if (trace.heldForFinal) {
+    return (
+      <Callout tone="info" title="Held — waiting for the final transcript">
+        {trace.note ?? "Partial transcripts never become turns; send with “Final transcript” on to run the pipeline."}
+      </Callout>
+    );
+  }
+
+  return (
+    <div className="col gap-10" data-testid="simulate-trace">
+      <div className="card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10 }}>
+        <span className="t-label">Response</span>
+        <p className="t-body" style={{ whiteSpace: "pre-wrap", margin: "8px 0 0" }}>{trace.response || "—"}</p>
+      </div>
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <TraceRow icon="git" label="Route">
+          <div className="col gap-4" style={{ fontSize: 12.5 }}>
+            <span className="row gap-6 wrap">
+              <code>{trace.route ?? "—"}</code>
+              {trace.action && <span className="chip chip-neutral">{trace.action}</span>}
+            </span>
+            {trace.routerDecision && (
+              <span className="t-micro">
+                router: {trace.routerDecision.route} · {trace.routerDecision.reason} · {Math.round(trace.routerDecision.confidence * 100)}%
+              </span>
+            )}
+          </div>
+        </TraceRow>
+
+        <TraceRow icon="target" label="Intent">
+          {intent ? (
+            <div className="col gap-4" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <code>{intent.intent ?? "none"}</code>
+                <span className={`t-num t-strong ${confidencePct < 70 ? "t-bad" : "t-good"}`}>{confidencePct}%</span>
+                {intent.source && <span className="chip chip-neutral">{intent.source}</span>}
+                {intent.below_threshold && <span className="chip chip-warning">below threshold</span>}
+              </span>
+              {trace.signal && <span className="t-micro">signal: {trace.signal}</span>}
+              {entities.length > 0 && (
+                <span className="row gap-4 wrap">
+                  {entities.map(([k, v]) => (
+                    <span key={k} className="chip chip-info">{k}={chipValue(v)}</span>
+                  ))}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="t-micro">
+              deterministic turn — no classification ran{trace.signal ? ` · signal: ${trace.signal}` : ""}
+            </span>
+          )}
+        </TraceRow>
+
+        {trace.policy && (
+          <TraceRow icon="shield" label="Call policy">
+            <div className="col gap-4" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <span className="chip chip-brand">phase: {trace.policy.phase}</span>
+                {trace.policy.handoff && <span className="chip chip-warning">handoff</span>}
+                {trace.policy.closeAfterReply && <span className="chip chip-neutral">close after reply</span>}
+                {trace.policy.forceLlm && <span className="chip chip-neutral">force LLM</span>}
+              </span>
+              {trace.policy.blockers.length > 0 && (
+                <span className="t-micro">blockers: {trace.policy.blockers.join(", ")}</span>
+              )}
+              {(trace.dispositionAfterTurn ?? trace.policy.disposition) && (
+                <span className="t-micro">disposition: {trace.dispositionAfterTurn ?? trace.policy.disposition}</span>
+              )}
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.workflow && (
+          <TraceRow icon="workflow" label="Workflow">
+            <div className="col gap-4" style={{ fontSize: 12 }}>
+              <span className="row gap-6">
+                <code>{trace.workflow.name}</code>
+                <span className={`chip ${trace.workflow.done ? "chip-neutral" : "chip-good"}`}>
+                  {trace.workflow.done ? "finished" : trace.workflow.status}
+                </span>
+                {trace.workflow.offScript && <span className="chip chip-warning">off-script</span>}
+              </span>
+              {trace.workflow.nodeTrace.length > 0 && (
+                <span className="t-micro">nodes: {trace.workflow.nodeTrace.join(" → ")}</span>
+              )}
+              {Object.keys(trace.workflow.slots).length > 0 && (
+                <span className="t-micro">
+                  collected: {Object.entries(trace.workflow.slots).map(([k, v]) => `${k}=${chipValue(v)}`).join(", ")}
+                </span>
+              )}
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.voiceIdentity && (
+          <TraceRow icon="mic" label="Voice identity">
+            <span className="row gap-6 wrap" style={{ fontSize: 12.5 }}>
+              <span className="t-strong">{trace.voiceIdentity.name || "Unnamed speaker"}</span>
+              <span className="chip chip-neutral">{trace.voiceIdentity.gender}</span>
+              <span className="t-micro">catalog metadata</span>
+            </span>
+          </TraceRow>
+        )}
+
+        {trace.runtimeContext && (
+          <TraceRow icon="database" label="Runtime context">
+            <div className="col gap-4" style={{ fontSize: 12 }}>
+              {trace.runtimeContext.values.length === 0
+                ? <span className="t-micro">no values on this call</span>
+                : (
+                  <span className="row gap-4 wrap">
+                    {trace.runtimeContext.values.map((v) => (
+                      <span key={v.key} className="chip chip-neutral">{v.key}={chipValue(v.value)}</span>
+                    ))}
+                  </span>
+                )}
+              {trace.runtimeContext.missingRequired.length > 0 && (
+                <span className="t-micro" style={{ color: "var(--status-warning)" }}>
+                  missing required: {trace.runtimeContext.missingRequired.join(", ")}
+                </span>
+              )}
+              <span className="t-micro">domain policy: {trace.runtimeContext.domainPolicy}</span>
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.tool && (
+          <TraceRow icon="zap" label="Tool call">
+            <div className="col gap-6" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <code>{chipValue(trace.tool.request.tool ?? "")}</code>
+                <StatusChip status={trace.tool.ok ? "good" : "failed"} label={trace.tool.ok ? "OK" : "Failed"} />
+                {trace.tool.status != null && <span className="tag t-num">HTTP {trace.tool.status}</span>}
+                {trace.tool.mocked && <span className="chip chip-neutral">mocked</span>}
+                {trace.tool.latencyMs != null && <span className="t-micro t-num">{trace.tool.latencyMs}ms</span>}
+              </span>
+              {trace.tool.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{trace.tool.error}</span>}
+              <JsonView value={{ request: trace.tool.request, response: trace.tool.response }} />
+            </div>
+          </TraceRow>
+        )}
+      </div>
+
+      {trace.renderedPrompt && (
+        <details>
+          <summary className="t-micro" style={{ cursor: "pointer", fontWeight: 650 }}>
+            Rendered prompt — exactly what the LLM received ({trace.renderedPrompt.length.toLocaleString()} chars)
+          </summary>
+          <pre className="mt-8" style={simPreStyle}>{trace.renderedPrompt}</pre>
+        </details>
+      )}
+
+      <span className="t-micro t-num row gap-8 wrap">
+        {trace.language && <span>{trace.language}</span>}
+        <span>{trace.latencyMs}ms</span>
+        {trace.promptVersion != null
+          ? <span>prompt v{trace.promptVersion}{trace.promptMode ? ` (${trace.promptMode})` : ""}{trace.promptState ? ` · ${trace.promptState}` : ""}</span>
+          : <span>prompt: built-in default</span>}
+        {trace.provider && <span>{providerName(trace.provider)}</span>}
+        {trace.paymentVerification && <span>payment: {trace.paymentVerification}</span>}
+      </span>
     </div>
   );
 }

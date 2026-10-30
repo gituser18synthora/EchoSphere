@@ -195,7 +195,7 @@ class TestProviderModelValidation:
         assert "sttProvider" in _field_errors(response)
 
     def test_provider_without_models_rejects_any_model(self, client, super_admin):
-        # deepgram has no catalog models; the governance matrix keeps it
+        # assemblyai has no catalog models; the governance matrix keeps it
         # inactive, so activate it just for this scenario and restore after.
         from sqlalchemy import select as sa_select
 
@@ -205,16 +205,16 @@ class TestProviderModelValidation:
         session = get_sessionmaker()()
         try:
             provider = session.execute(sa_select(ProviderDef).where(
-                ProviderDef.kind == "stt", ProviderDef.code == "deepgram",
+                ProviderDef.kind == "stt", ProviderDef.code == "assemblyai",
             )).scalar_one_or_none()
             if provider is None:
-                pytest.skip("deepgram STT provider not seeded")
+                pytest.skip("assemblyai STT provider not seeded")
             previous_status = provider.status
             provider.status = "active"
             session.commit()
             try:
                 response = self._create(
-                    client, super_admin, sttProvider="deepgram", sttModel="nova-2"
+                    client, super_admin, sttProvider="assemblyai", sttModel="best"
                 )
                 assert response.status_code == 422
                 assert "no configured models" in _field_errors(response)["sttModel"]
@@ -223,6 +223,21 @@ class TestProviderModelValidation:
                 session.commit()
         finally:
             session.close()
+
+    def test_deepgram_flux_is_a_selectable_stt_pair(self, client, super_admin):
+        # Deepgram Flux is an active, governed STT option (models seeded by
+        # migration e9a1c3b5d7f9); a wrong model still fails closed.
+        ok_response = self._create(
+            client, super_admin,
+            sttProvider="deepgram", sttModel="flux-general-multi",
+        )
+        created = _data(ok_response)
+        _track("ai_config_profiles", created["id"])
+        assert created["sttModel"] == "flux-general-multi"
+        bad = self._create(
+            client, super_admin, sttProvider="deepgram", sttModel="saaras:v3",
+        )
+        assert bad.status_code == 422
 
     def test_embedding_pair_validated(self, client, super_admin):
         ok_response = self._create(
@@ -276,6 +291,104 @@ class TestProviderModelValidation:
         assert "openai" in codes
         models = _data(client.get(f"{API}/providers/embedding/openai/models", headers=super_admin))
         assert "text-embedding-3-small" in [m["code"] for m in models]
+
+
+class TestProfileDefaultVoice:
+    """TTS provider -> model -> default voice: the voice must be an active
+    platform voice of the provider that supports the model."""
+
+    def _create(self, client, headers, **overrides):
+        payload = {"code": f"aipv_{uuid.uuid4().hex[:8]}", "name": "Voice profile", **overrides}
+        return client.post(f"{API}/master/ai-profiles", headers=headers, json=payload)
+
+    def test_voice_of_the_model_is_saved_and_loaded(self, client, super_admin):
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v4-flash",
+                                     defaultVoice="vp-sv4-shubh_hi_customer"))
+        _track("ai_config_profiles", created["id"])
+        listing = _data(client.get(f"{API}/master/ai-profiles?search={created['code']}",
+                                   headers=super_admin))
+        loaded = next(r for r in listing if r["id"] == created["id"])
+        assert (loaded["ttsProvider"], loaded["ttsModel"], loaded["defaultVoice"]) == (
+            "sarvam", "bulbul:v4-flash", "vp-sv4-shubh_hi_customer")
+
+    def test_voice_of_another_model_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, ttsProvider="sarvam",
+                                ttsModel="bulbul:v4-flash", defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "does not support sarvam/bulbul:v4-flash" in _field_errors(response)["defaultVoice"]
+
+    def test_voice_of_another_provider_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, ttsProvider="elevenlabs",
+                                ttsModel="eleven_flash_v2_5", defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "not an active elevenlabs platform voice" in _field_errors(response)["defaultVoice"]
+
+    def test_voice_without_provider_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "TTS provider" in _field_errors(response)["defaultVoice"]
+
+    def test_model_change_revalidates_the_stored_voice(self, client, super_admin):
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v3", defaultVoice="vp-sv-shubh"))
+        _track("ai_config_profiles", created["id"])
+        bad = client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                           json={"ttsModel": "bulbul:v4-flash"})
+        assert bad.status_code == 422 and "defaultVoice" in _field_errors(bad)
+        good = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                  json={"ttsModel": "bulbul:v4-flash",
+                                        "defaultVoice": "vp-sv4-shubh_hi_customer"}))
+        assert good["defaultVoice"] == "vp-sv4-shubh_hi_customer"
+        cleared = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                     json={"defaultVoice": ""}))
+        assert not cleared["defaultVoice"]
+
+    def test_unrelated_edit_keeps_a_legacy_voice(self, client, super_admin):
+        # A profile stored before the voice rule (wrong model for its voice)
+        # still saves while an unrelated field changes.
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v3", defaultVoice="vp-sv-shubh"))
+        _track("ai_config_profiles", created["id"])
+        from sqlalchemy import text as sa_text
+
+        from shared.db.mysql import get_engine
+
+        with get_engine().begin() as conn:
+            conn.execute(sa_text("UPDATE ai_config_profiles SET tts_model = 'bulbul:v4-flash' "
+                                 "WHERE id = :id"), {"id": created["id"]})
+        renamed = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                     json={"name": "Renamed", "ttsProvider": "sarvam",
+                                           "ttsModel": "bulbul:v4-flash",
+                                           "defaultVoice": "vp-sv-shubh"}))
+        assert renamed["name"] == "Renamed" and renamed["defaultVoice"] == "vp-sv-shubh"
+
+
+class TestVoiceModelFilter:
+    def test_model_filter_lists_only_that_models_voices(self, client, super_admin):
+        v4 = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v4-flash"
+                              f"&pageSize=200", headers=super_admin))
+        assert v4 and all("bulbul:v4-flash" in (v["modelCodes"] or ["bulbul:v4-flash"]) for v in v4)
+        assert "vp-sv4-shubh_hi_customer" in {v["id"] for v in v4}
+        assert "vp-sv-shubh" not in {v["id"] for v in v4}
+        v3 = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v3&pageSize=200",
+                              headers=super_admin))
+        assert "vp-sv-shubh" in {v["id"] for v in v3}
+        assert not any(v["id"].startswith("vp-sv4-") for v in v3)
+
+    def test_voice_without_models_matches_every_model(self, client, super_admin):
+        created = _data(client.post(f"{API}/master/voices", headers=super_admin, json={
+            "name": f"Any model {_SUFFIX}", "provider": "sarvam", "gender": "female",
+        }))
+        _track("voice_profiles", created["id"])
+        listing = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v4-flash"
+                                   f"&search=Any%20model%20{_SUFFIX}", headers=super_admin))
+        assert [v["id"] for v in listing] == [created["id"]]
+
+    def test_search_matches_the_provider_voice_id(self, client, super_admin):
+        listing = _data(client.get(f"{API}/master/voices?search=shubh_hi_customer",
+                                   headers=super_admin))
+        assert "vp-sv4-shubh_hi_customer" in {v["id"] for v in listing}
 
 
 # ── Voices: filters + sort order ─────────────────────────────────────────────
@@ -928,10 +1041,12 @@ class TestProviderPricingValidation:
                 for r in rows
             )
 
-        # Official rates verified 2026-07-27 (see base_seed.PROVIDER_PRICING).
-        assert has("sarvam", "stt", "saarika:v2.5", "per_hour", 30.0, "INR")
-        assert has("sarvam", "stt", "saaras:v3", "per_hour", 30.0, "INR")
-        assert has("sarvam", "tts", "bulbul:v3", "per_1k_characters", 3.0, "INR")
+        # Sarvam rows are our negotiated rates (2026-10-06); the rest are the
+        # official rates verified 2026-07-27 (see base_seed.PROVIDER_PRICING).
+        assert has("sarvam", "stt", "saarika:v2.5", "per_hour", 9.0, "INR")
+        assert has("sarvam", "stt", "saaras:v3", "per_hour", 9.0, "INR")
+        assert has("sarvam", "stt", "saaras:v4", "per_hour", 9.0, "INR")
+        assert has("sarvam", "tts", "bulbul:v3", "per_1k_characters", 1.5, "INR")
         assert has("openai", "stt", "whisper-1", "per_minute", 0.006, "USD")
         assert has("deepgram", "stt", "nova-3", "per_minute", 0.0058, "USD")
         assert has("deepgram", "stt", "nova-2", "per_hour", 0.35, "USD")

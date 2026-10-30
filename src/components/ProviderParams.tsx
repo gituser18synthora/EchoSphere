@@ -9,33 +9,92 @@
 import { useEffect, useState } from "react";
 import type { ParamSpec, ProviderSettingValue, ProviderSettings } from "@/types/domain";
 import { Field, Toggle } from "@/components/ui";
+import { PLATFORM_OWNED_STT_KEYS } from "@/components/SttAutoDetectControl";
+
+/* Keys the platform's language policy owns (auto_detect_language) are
+   tri-state on disk: never pre-filled from the schema default — an unset
+   value must keep following the derived multilingual default — and never
+   rendered by the generic fields (a dedicated control does). Matched by key
+   as well as by `widget` so catalogs seeded before the widget flag existed
+   behave the same. */
+function platformOwned(key: string, spec: ParamSpec): boolean {
+  return PLATFORM_OWNED_STT_KEYS.has(key) || spec.widget === "auto_detect_language";
+}
 
 export function schemaDefaults(schema: Record<string, ParamSpec> | undefined): ProviderSettings {
   const out: ProviderSettings = {};
   for (const [key, spec] of Object.entries(schema ?? {})) {
     if (spec.fixed) continue;
+    if (platformOwned(key, spec)) continue;
     if (spec.default !== undefined) out[key] = spec.default;
   }
   return out;
 }
 
-/** Keep values still present in the new schema, fill the rest with defaults. */
+/** Coerce a carried-over value into what the NEW model's spec allows.
+    Returns undefined when the value cannot be represented at all, so the
+    schema default is used instead. */
+function coerceToSpec(spec: ParamSpec, value: ProviderSettingValue): ProviderSettingValue | undefined {
+  if (spec.type === "number" || spec.type === "integer") {
+    if (typeof value !== "number") return undefined;
+    const min = spec.min ?? Number.NEGATIVE_INFINITY;
+    const max = spec.max ?? Number.POSITIVE_INFINITY;
+    const clamped = Math.min(max, Math.max(min, value));
+    return spec.type === "integer" ? Math.round(clamped) : clamped;
+  }
+  if (spec.type === "enum") {
+    return (spec.values ?? []).includes(value as string | number) ? value : undefined;
+  }
+  if (spec.type === "boolean") return typeof value === "boolean" ? value : undefined;
+  return value;
+}
+
+/** Keep values still present in the new schema, fill the rest with defaults.
+
+    Values that survive a model switch are clamped into the new model's
+    documented range — switching Sarvam bulbul:v2 (pace up to 3.0) to
+    bulbul:v3 (max 2.0) must normalize the carried value rather than stage one
+    the backend would reject. Parameters the new model does not define are
+    dropped entirely, so a previous model's settings are never sent on. */
 export function reconcileSettings(schema: Record<string, ParamSpec> | undefined, prev: ProviderSettings): ProviderSettings {
   if (!schema) return {};
   const out = schemaDefaults(schema);
   for (const [key, value] of Object.entries(prev)) {
     const spec = schema[key];
-    if (spec && !spec.fixed) out[key] = value;
+    if (!spec || spec.fixed) continue;
+    if (platformOwned(key, spec)) {
+      // An explicit user choice survives a model switch untouched.
+      if (typeof value === "boolean") out[key] = value;
+      continue;
+    }
+    const coerced = coerceToSpec(spec, value);
+    if (coerced !== undefined) out[key] = coerced;
   }
   return out;
 }
 
-export function ParamFields({ schema, values, onChange }: {
+/** True when the value differs from the schema default (i.e. reset is useful). */
+function isModified(spec: ParamSpec, value: ProviderSettingValue | undefined): boolean {
+  if (spec.fixed) return false;
+  if (value === undefined) return false;
+  const fallback = spec.default;
+  if (Array.isArray(value) || Array.isArray(fallback)) {
+    return JSON.stringify(value) !== JSON.stringify(fallback ?? []);
+  }
+  return value !== fallback;
+}
+
+export function ParamFields({ schema, values, onChange, showReset = false }: {
   schema: Record<string, ParamSpec> | undefined;
   values: ProviderSettings;
   onChange: (next: ProviderSettings) => void;
+  /** Render per-parameter "reset to default" affordances. */
+  showReset?: boolean;
 }) {
-  const entries = Object.entries(schema ?? {});
+  /* Entries with a `widget` are rendered by specialized components (e.g. the
+     pronunciation dictionary selector) — never as raw text inputs here. Their
+     values still live in the same settings object and schema validation. */
+  const entries = Object.entries(schema ?? {}).filter(([k, s]) => !s.widget && !platformOwned(k, s));
   if (entries.length === 0) return null;
   const basic = entries.filter(([, s]) => !s.advanced);
   const advanced = entries.filter(([, s]) => s.advanced);
@@ -45,18 +104,22 @@ export function ParamFields({ schema, values, onChange }: {
     else next[key] = v;
     onChange(next);
   };
+  const render = ([key, spec]: [string, ParamSpec]) => (
+    <ParamField
+      key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)}
+      onReset={showReset && isModified(spec, values[key])
+        ? () => set(key, spec.default)
+        : undefined}
+    />
+  );
   return (
     <div className="col gap-12">
-      {basic.map(([key, spec]) => (
-        <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
-      ))}
+      {basic.map(render)}
       {advanced.length > 0 && (
         <details>
           <summary className="t-label" style={{ cursor: "pointer" }}>Advanced ({advanced.length})</summary>
           <div className="col gap-12" style={{ marginTop: 10 }}>
-            {advanced.map(([key, spec]) => (
-              <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
-            ))}
+            {advanced.map(render)}
           </div>
         </details>
       )}
@@ -64,10 +127,33 @@ export function ParamFields({ schema, values, onChange }: {
   );
 }
 
-export function ParamField({ spec, value, onChange }: {
+export function ParamField({ spec, value, onChange, onReset }: {
   spec: ParamSpec; value: ProviderSettingValue | undefined;
   onChange: (v: ProviderSettingValue | undefined) => void;
+  /** Provided only when the value differs from the default — renders a reset. */
+  onReset?: () => void;
 }) {
+  const control = renderParamControl(spec, value, onChange);
+  if (!onReset) return control;
+  return (
+    <div className="param-resettable">
+      {control}
+      <button
+        type="button" className="param-reset" onClick={onReset}
+        aria-label={`Reset ${spec.label} to default`}
+        title={`Reset to default (${String(spec.default ?? "—")})`}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+function renderParamControl(
+  spec: ParamSpec,
+  value: ProviderSettingValue | undefined,
+  onChange: (v: ProviderSettingValue | undefined) => void,
+) {
   if (spec.fixed) {
     const text = spec.type === "boolean"
       ? (spec.default ? "Always on" : "Always off")
@@ -94,23 +180,35 @@ export function ParamField({ spec, value, onChange }: {
           />
         </div>
       );
-    case "enum":
+    case "enum": {
+      /* Numeric enums (e.g. Eleven v3 stability 0.0/0.5/1.0) must stay
+         numbers on the wire — the backend validates by identity against the
+         schema values. Optional labels give values readable names. */
+      const numeric = (spec.values ?? []).every((v) => typeof v === "number");
+      const display = (v: string | number) => spec.labels?.[String(v)]
+        ? `${spec.labels[String(v)]} (${v})`
+        : String(v);
       return (
         <Field label={spec.label} plain hint={spec.help}>
           <select
             className="select" aria-label={spec.label}
             value={String(value ?? spec.default ?? "")}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onChange(numeric ? Number(e.target.value) : e.target.value)}
           >
-            {(spec.values ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+            {(spec.values ?? []).map((v) => (
+              <option key={String(v)} value={String(v)}>{display(v)}</option>
+            ))}
           </select>
         </Field>
       );
+    }
     case "number":
     case "integer":
       return <NumberParam spec={spec} value={value} onChange={onChange} />;
     case "int_list":
       return <IntListParam spec={spec} value={value} onChange={onChange} />;
+    case "string_list":
+      return <StringListParam spec={spec} value={value} onChange={onChange} />;
     case "string":
     default:
       return (
@@ -215,6 +313,82 @@ function IntListParam({ spec, value, onChange }: {
         onBlur={() => setFocused(false)}
         onChange={(e) => handle(e.target.value)}
       />
+    </Field>
+  );
+}
+
+/** Split a string-list editor's text into entries. Multi-line editors take
+    one entry per line (phrases keep their spaces); commas split too, so a
+    pasted "a, b, c" still works and a single entry can never smuggle a
+    comma-joined list to the provider. */
+export function splitStringListText(raw: string): string[] {
+  return raw.split(/[\n,]/).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+function StringListParam({ spec, value, onChange }: {
+  spec: ParamSpec; value: ProviderSettingValue | undefined;
+  onChange: (v: ProviderSettingValue | undefined) => void;
+}) {
+  const list = Array.isArray(value) ? value : Array.isArray(spec.default) ? spec.default : [];
+  const multiline = Boolean(spec.multiline);
+  const joined = list.join(multiline ? "\n" : ", ");
+  const [text, setText] = useState(joined);
+  const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { if (!focused) { setText(joined); setError(null); } }, [joined, focused]);
+
+  const allowed = (spec.values ?? []).map(String);
+  const handle = (raw: string) => {
+    setText(raw);
+    const parts = splitStringListText(raw);
+    if (spec.max_items !== undefined && parts.length > spec.max_items) {
+      setError(`At most ${spec.max_items} entries allowed (${parts.length} entered)`);
+      return;
+    }
+    if (spec.max_length !== undefined) {
+      const long = parts.find((p) => p.length > spec.max_length!);
+      if (long !== undefined) {
+        setError(`"${long.slice(0, 24)}…" is longer than ${spec.max_length} characters`);
+        return;
+      }
+    }
+    if (allowed.length > 0) {
+      const bad = parts.find((p) => !allowed.includes(p));
+      if (bad !== undefined) {
+        setError(`"${bad}" is not one of: ${allowed.join(", ")}`);
+        return;
+      }
+    }
+    setError(null);
+    onChange(parts.length === 0 ? undefined : parts);
+  };
+
+  const count = splitStringListText(text).length;
+  const counter = spec.max_items !== undefined ? `${count} / ${spec.max_items}` : `${count}`;
+  const hint = error
+    ? undefined
+    : [spec.help ?? (multiline ? "One entry per line" : "Comma-separated values"), `(${counter} entries)`].join(" ");
+
+  return (
+    <Field label={spec.label} hint={hint} error={error ?? undefined}>
+      {multiline ? (
+        <textarea
+          className="textarea" value={text} rows={4} aria-label={spec.label}
+          aria-invalid={error ? true : undefined}
+          placeholder={"One term or phrase per line\ne.g. Zepto\nNew Delhi"}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onChange={(e) => handle(e.target.value)}
+        />
+      ) : (
+        <input
+          className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
+          placeholder={allowed.length > 0 ? `e.g. ${allowed.slice(0, 2).join(", ")}` : "e.g. a, b"}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onChange={(e) => handle(e.target.value)}
+        />
+      )}
     </Field>
   );
 }

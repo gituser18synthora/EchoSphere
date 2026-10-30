@@ -13,8 +13,9 @@ import json
 import logging
 import os
 import time
-from array import array
 from pathlib import Path
+
+import numpy as np
 
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
@@ -25,25 +26,239 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     StartFrame,
     StopFrame,
 )
 from pipecat.serializers.base_serializer import FrameSerializer
 
+from shared.config import get_settings
+from shared.audio.pcm import resample_pcm
 from shared.errors import ApiError
+from voice_runtime.frames import (
+    AUDIO_FLUSH_MESSAGE_TYPE,
+    FillerAudioRawFrame,
+    FillerClearFrame,
+)
 _VAANI_MIN_CHUNK_BYTES = 3200
 _VAANI_MAX_CHUNK_BYTES = 100_000
 _VAANI_FRAME_BYTES = 320
 _FREESWITCH_MIN_CHUNK_BYTES = 3200
 _FREESWITCH_MAX_CHUNK_BYTES = 32_000
 _FREESWITCH_FRAME_BYTES = 320
+_FREESWITCH_FORK_SAMPLE_RATE = 8000
+# Pre-gate capture length for the fork transport (ECHOSPHERE_FS_AUDIO_DEBUG_DIR).
+_FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT = 120
+
+
+def _debug_capture_seconds() -> int:
+    raw = os.getenv("ECHOSPHERE_FS_AUDIO_DEBUG_SECONDS", "")
+    try:
+        value = int(raw) if raw else _FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT
+    except ValueError:
+        value = _FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT
+    return max(1, min(value, 3600))
 # 100 KB of PCM is ~133.4 KB base64 — anything larger is a protocol violation.
 _VAANI_MAX_B64_CHARS = 140_000
+
+# First-packet ramp (see _RampedAudioMixin). The steady-state 3200-byte packet
+# is 200 ms of 8 kHz PCM; the output transport feeds this serializer one
+# 40 ms chunk per 40 ms pacing tick, so waiting for 3200 bytes delayed the
+# FIRST packet of every reply by ~160 ms. Emitting smaller packets while the
+# reply starts costs no playout margin — five 40 ms ticks carry 200 ms of
+# audio in 160 ms of wall clock, so the dialer's lead is the same ~40 ms
+# either way. It simply arrives sooner.
+_RAMP_THRESHOLDS = (640, 1280, 2560)
+# Outbound audio quiet for longer than this is a new utterance: the ramp
+# resets so the next reply's first packet is fast again.
+_RAMP_RESET_IDLE_S = 0.5
+# Outbound PCM of every serializer below: 8 kHz, 16-bit mono.
+_OUTBOUND_BYTES_PER_SECOND = 8000 * 2
 
 logger = logging.getLogger(__name__)
 
 
-class FreeSwitchAudioStreamSerializer(FrameSerializer):
+class _RampedAudioMixin:
+    """Outbound PCM buffering with a fast first packet per utterance.
+
+    The steady-state packet size is unchanged; only the first few packets of
+    an utterance are allowed out early, which is what the caller perceives as
+    the bot's response time.
+    """
+
+    def _init_ramp(self) -> None:
+        self._ramp_step = 0
+        self._last_audio_at = 0.0
+        # Remnants retired by _note_audio (diagnostics).
+        self.stale_audio_dropped = 0
+        # Monotonic time of the last INBOUND caller-media message. The session
+        # host reads this to tell an abandoned socket from a live call when
+        # the transport-level session timer fires (pipecat's session_timeout
+        # is absolute call age, not inactivity).
+        self.last_media_at = 0.0
+        # Monotonic time at which the far end will have played everything
+        # sent so far (see playout_remaining_s).
+        self._playout_until = 0.0
+
+    def _note_inbound_media(self) -> None:
+        self.last_media_at = time.monotonic()
+
+    def _note_sent_audio(self, nbytes: int) -> None:
+        """Advance the far-end playout clock by one outbound packet.
+
+        The provider queues what it receives and plays it in real time from
+        the moment it arrives (FreeSWITCH: mod_audio_fork's playout buffer,
+        drained one 20 ms tick at a time), so a packet ends playing
+        ``duration`` after the later of its arrival and the end of the
+        audio queued before it.
+        """
+        now = time.monotonic()
+        self._playout_until = (
+            max(self._playout_until, now) + nbytes / _OUTBOUND_BYTES_PER_SECOND
+        )
+
+    def _note_playout_cleared(self) -> None:
+        """A kill/clear message emptied the provider's playout queue."""
+        self._playout_until = 0.0
+
+    def playout_remaining_s(self) -> float:
+        """Seconds of already-sent audio the far end has still to play.
+
+        The output transport waits this out before closing the media socket
+        on a bot-ended call: the socket close is followed by the hangup, and
+        whatever the provider still had queued — the end of the goodbye —
+        was never heard.
+        """
+        return max(0.0, self._playout_until - time.monotonic())
+
+    def _note_audio(self) -> None:
+        """Record inbound-from-TTS audio, restarting the ramp after a gap.
+
+        A gap also retires any sub-packet remnant still buffered: audio that
+        ended more than ``_RAMP_RESET_IDLE_S`` ago belongs to a finished sound
+        (a breath, a cue, a reply whose flush was missed) and playing it now,
+        glued to the front of the new utterance, is heard as that sound
+        repeating. Utterances that flush properly never leave a remnant.
+        """
+        now = time.monotonic()
+        if self._last_audio_at and now - self._last_audio_at > _RAMP_RESET_IDLE_S:
+            self._ramp_step = 0
+            pending = getattr(self, "_pending_audio", None)
+            if pending:
+                self.stale_audio_dropped += 1
+                logger.debug(
+                    "telephony: dropped %d stale outbound bytes buffered %.1fs ago",
+                    len(pending), now - self._last_audio_at,
+                )
+                pending.clear()
+        self._last_audio_at = now
+
+    def _is_audio_flush(self, message: dict | None) -> bool:
+        # Tagged filler already left as individual packets. Its completion
+        # marker must not flush unrelated speech waiting in _pending_audio.
+        return (
+            bool(message)
+            and message.get("type") == AUDIO_FLUSH_MESSAGE_TYPE
+            and not message.get("filler_owner")
+        )
+
+    def _reset_ramp(self) -> None:
+        self._ramp_step = 0
+
+    def _min_chunk_bytes(self, steady_bytes: int) -> int:
+        if self._ramp_step >= len(_RAMP_THRESHOLDS):
+            return steady_bytes
+        return min(_RAMP_THRESHOLDS[self._ramp_step], steady_bytes)
+
+    def _advance_ramp(self) -> None:
+        if self._ramp_step < len(_RAMP_THRESHOLDS):
+            self._ramp_step += 1
+
+    def _filler_packet_audio(self, frame: FillerAudioRawFrame) -> bytes:
+        """Return this owner's native packet without touching reply buffering.
+
+        The output transport supplies at most 20 ms of PCM at a time. Sending
+        it immediately keeps filler out of the 200 ms speech-packet buffer
+        and leaves the reply's first-packet ramp unchanged. Nothing is retained
+        here for a later clear to flush ahead of a reply.
+
+        These provider protocols only expose stream-wide playback clears. We
+        cannot revoke an already-sent packet without also risking unrelated
+        audio in their remote queue, so filler cancellation never sends one.
+        """
+        if frame.owner is None or frame.owner.cancelled or not frame.audio:
+            return b""
+        audio = frame.audio
+        if frame.sample_rate != 8000:
+            audio = resample_pcm(audio, frame.sample_rate, 8000)
+        remainder = len(audio) % _VAANI_FRAME_BYTES
+        if remainder:
+            audio += b"\x00" * (_VAANI_FRAME_BYTES - remainder)
+        return audio
+
+
+class _FreeSwitchControlMixin:
+    """Telephony control (`transfer`) handling shared by both FreeSWITCH
+    serializers.
+
+    The brain publishes handoff decisions as ``telephony_control`` transport
+    messages (the same contract the Vaani serializer speaks). Dropping them —
+    the pre-fix behavior — meant the bot ANNOUNCED the transfer and then kept
+    the call: ``voicebot.lua`` waits for the ``mod_audio_fork::transfer``
+    event that only our ``{"type": "transfer"}`` message can produce.
+    """
+
+    # Whether the module behind this serializer understands the transfer
+    # message. mod_audio_fork converts it into the CUSTOM event the dialplan
+    # script acts on; mod_audio_stream has no equivalent.
+    _TRANSFER_ON_WIRE = True
+
+    def _init_control(self) -> None:
+        self._transfer_sent = False
+        # Installed by the session host (app.py): observes control events at
+        # the moment they reach the wire (transfer bookkeeping + monitoring).
+        self.on_telephony_control = None
+
+    async def _serialize_control(self, message: dict) -> str | None:
+        if (
+            message.get("type") != "telephony_control"
+            or message.get("event") != "transfer"
+        ):
+            return None
+        if self._transfer_sent:
+            # A retried handoff decision must not re-trigger the dialplan.
+            return None
+        self._transfer_sent = True
+        await self._notify_control(message)
+        if not self._TRANSFER_ON_WIRE:
+            logger.error(
+                "freeswitch transfer requested but mod_audio_stream has no "
+                "transfer message — use the audio_fork transport "
+                "(voicebot.lua) for human handoff"
+            )
+            return None
+        data = {"reason": message.get("reason") or "transfer"}
+        if message.get("transfer_queue"):
+            data["transfer_queue"] = str(message["transfer_queue"])
+        if message.get("agent_id"):
+            data["agent_id"] = str(message["agent_id"])
+        wire_message = json.dumps({"type": "transfer", "data": data})
+        logger.info("freeswitch outbound transfer: %s", wire_message)
+        return wire_message
+
+    async def _notify_control(self, message: dict) -> None:
+        callback = getattr(self, "on_telephony_control", None)
+        if callback is None:
+            return
+        try:
+            await callback(message)
+        except Exception:  # noqa: BLE001 — bookkeeping must never break media
+            logger.exception("telephony control hook failed")
+
+
+class FreeSwitchAudioStreamSerializer(
+    _FreeSwitchControlMixin, _RampedAudioMixin, FrameSerializer
+):
     """Media wire format used by ``mod_audio_stream`` on FreeSWITCH.
 
     Audio arrives as stereo binary L16 PCM. The installed QA
@@ -54,9 +269,18 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
     output is not played.
     """
 
-    def __init__(self, **kwargs) -> None:
+    _TRANSFER_ON_WIRE = False  # mod_audio_stream has no transfer message
+
+    def __init__(self, *, send_kill_audio: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._init_control()
         self._pending_audio = bytearray()
+        # Barge-in: clearing local pending bytes is not enough — up to ~2 s of
+        # already-shipped audio sits in the module's playback buffer and would
+        # talk over the caller. killAudio tells mod_audio_stream to drop it;
+        # disable only for older module builds that reject the message.
+        self._send_kill_audio = bool(send_kill_audio)
+        self._init_ramp()
         self._inbound_bytes = 0
         self._inbound_interval_bytes = 0
         self._inbound_interval_peak = 0
@@ -87,24 +311,54 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         pass
 
     async def serialize(self, frame: Frame) -> str | None:
+        if isinstance(frame, FillerClearFrame):
+            # Tagged filler is never retained in _pending_audio. A broad
+            # killAudio would discard valid audio owned by somebody else.
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
+            if self._send_kill_audio:
+                self._note_playout_cleared()
+                return json.dumps({"type": "killAudio"})
+            return None
+        # Both message variants must be accepted (the urgent one is a
+        # SystemFrame, not a subclass) or transfer controls vanish.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
+            if self._is_audio_flush(frame.message):
+                # A plain-audio clip (latency filler) just ended: send its
+                # last partial packet now instead of ahead of the next reply.
+                return self._pop_audio_chunk(force=True)
+            return await self._serialize_control(frame.message or {})
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _FREESWITCH_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(
+            _FREESWITCH_MIN_CHUNK_BYTES
+        ):
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _FREESWITCH_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available
@@ -113,6 +367,11 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         remainder = len(audio) % _FREESWITCH_FRAME_BYTES
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
+        self._advance_ramp()
+        return self._audio_message(audio)
+
+    def _audio_message(self, audio: bytes) -> str:
+        self._note_sent_audio(len(audio))
         return json.dumps({
             "type": "streamAudio",
             "data": {
@@ -124,6 +383,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
+            self._note_inbound_media()
             wire_audio = bytes(data)
             # One stereo frame is two signed 16-bit samples (first=caller/read,
             # second=bot/write on the installed QA module). Drop an
@@ -132,8 +392,10 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
             usable = len(wire_audio) - (len(wire_audio) % 4)
             if usable == 0:
                 return None
-            stereo_samples = array("h")
-            stereo_samples.frombytes(wire_audio[:usable])
+            # Vectorized: the previous pure-Python per-sample scans ran three
+            # generator passes per 20 ms frame on the event loop (~25k
+            # iterations/second/call).
+            stereo_samples = np.frombuffer(wire_audio[:usable], dtype="<i2")
             first_channel = stereo_samples[0::2]
             second_channel = stereo_samples[1::2]
             if self._debug_audio_remaining:
@@ -153,22 +415,29 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
                     self._debug_first_file = None
                     self._debug_second_file = None
                     logger.warning("FreeSWITCH audio debug capture completed")
+            # int32 before abs(): |-32768| overflows int16.
+            first_peak = (
+                int(np.abs(first_channel.astype(np.int32)).max())
+                if first_channel.size else 0
+            )
+            second_peak = (
+                int(np.abs(second_channel.astype(np.int32)).max())
+                if second_channel.size else 0
+            )
             self._first_channel_interval_peak = max(
-                self._first_channel_interval_peak,
-                max((abs(sample) for sample in first_channel), default=0),
+                self._first_channel_interval_peak, first_peak
             )
             self._second_channel_interval_peak = max(
-                self._second_channel_interval_peak,
-                max((abs(sample) for sample in second_channel), default=0),
+                self._second_channel_interval_peak, second_peak
             )
-            caller_samples = first_channel
-            audio = caller_samples.tobytes()
+            audio = first_channel.tobytes()
             self._inbound_bytes += len(audio)
             self._inbound_interval_bytes += len(audio)
-            samples = array("h")
-            samples.frombytes(audio[:len(audio) - (len(audio) % 2)])
-            peak = max((abs(sample) for sample in samples), default=0)
-            self._inbound_interval_peak = max(self._inbound_interval_peak, peak)
+            # The selected caller channel IS the first channel — its peak was
+            # already computed; the third per-sample pass recomputed it.
+            self._inbound_interval_peak = max(
+                self._inbound_interval_peak, first_peak
+            )
             now = time.monotonic()
             if self._last_inbound_log == 0.0 or now - self._last_inbound_log >= 5.0:
                 logger.info(
@@ -200,48 +469,152 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         return None
 
 
-class FreeSwitchAudioForkSerializer(FrameSerializer):
+class FreeSwitchAudioForkSerializer(
+    _FreeSwitchControlMixin, _RampedAudioMixin, FrameSerializer
+):
     """Bidirectional media wire format used by ``mod_audio_fork``.
 
-    The fork is started in ``mono 16k`` mode, so inbound binary frames are
-    already caller-only signed 16-bit L16 PCM and must not be deinterleaved.
+    The fork is started in ``mono 8k`` mode, so inbound binary frames are
+    caller-only signed 16-bit L16 PCM and must not be deinterleaved or
+    resampled. The runtime and streaming STT connection use the same native
+    8 kHz telephony rate.
     Bot audio is returned through the module's documented ``playAudio`` JSON
     envelope. ``killAudio`` clears both EchoSphere's pending audio and the
-    module's current playback when Pipecat raises an interruption.
+    module's current playback when Pipecat raises an interruption. A
+    ``telephony_control`` transfer becomes the module's ``transfer`` message,
+    which FreeSWITCH surfaces as the ``mod_audio_fork::transfer`` CUSTOM
+    event ``voicebot.lua`` acts on.
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._init_control()
         self._pending_audio = bytearray()
+        self._init_ramp()
         self._inbound_bytes = 0
         self._inbound_interval_bytes = 0
         self._inbound_interval_peak = 0
         self._last_inbound_log = 0.0
         self._warned_text_input = False
+        # Ingress evidence (2026-09-17 audit): the runtime never measured how
+        # the module actually delivers caller audio — message size, cadence,
+        # stalls — and had no PRE-gate capture on this transport, so a
+        # "caller not heard" report could not be separated into line, gate
+        # and VAD causes. Counters below feed the periodic log line and the
+        # ``telephony_inbound_media`` end-of-call event.
+        self._inbound_messages = 0
+        self._inbound_interval_messages = 0
+        self._inbound_msg_bytes_min = 0
+        self._inbound_msg_bytes_max = 0
+        self._inbound_gap_max_ms = 0.0
+        self._inbound_gaps_over_100ms = 0
+        self._inbound_gaps_over_500ms = 0
+        self._inbound_first_at = 0.0
+        self._debug_file = None
+        self._debug_bytes_remaining = 0
+        debug_dir = os.getenv("ECHOSPHERE_FS_AUDIO_DEBUG_DIR")
+        if debug_dir:
+            directory = Path(debug_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"echosphere-fork-{int(time.time())}-{id(self)}.s16le"
+            seconds = _debug_capture_seconds()
+            self._debug_file = path.open("wb")
+            self._debug_bytes_remaining = _FREESWITCH_FORK_SAMPLE_RATE * 2 * seconds
+            logger.warning(
+                "FreeSWITCH fork PRE-GATE audio capture enabled: %s (%d s, mono 8 kHz s16le)",
+                path, seconds,
+            )
+
+    def inbound_media_stats(self) -> dict:
+        """Ingress counters for the call's event stream (numbers only)."""
+        elapsed = (time.monotonic() - self._inbound_first_at) if self._inbound_first_at else 0.0
+        return {
+            "messages": self._inbound_messages,
+            "total_bytes": self._inbound_bytes,
+            "audio_seconds": round(self._inbound_bytes / (_FREESWITCH_FORK_SAMPLE_RATE * 2), 1),
+            "wall_seconds": round(elapsed, 1),
+            "msg_bytes_min": self._inbound_msg_bytes_min,
+            "msg_bytes_max": self._inbound_msg_bytes_max,
+            "gap_max_ms": round(self._inbound_gap_max_ms, 1),
+            "gaps_over_100ms": self._inbound_gaps_over_100ms,
+            "gaps_over_500ms": self._inbound_gaps_over_500ms,
+        }
+
+    def _observe_inbound_message(self, wire_audio: bytes, now: float) -> None:
+        if self.last_media_at:
+            gap_ms = (now - self.last_media_at) * 1000.0
+            if gap_ms > self._inbound_gap_max_ms:
+                self._inbound_gap_max_ms = gap_ms
+            if gap_ms > 100.0:
+                self._inbound_gaps_over_100ms += 1
+            if gap_ms > 500.0:
+                self._inbound_gaps_over_500ms += 1
+        else:
+            self._inbound_first_at = now
+        self._inbound_messages += 1
+        self._inbound_interval_messages += 1
+        size = len(wire_audio)
+        if not self._inbound_msg_bytes_min or size < self._inbound_msg_bytes_min:
+            self._inbound_msg_bytes_min = size
+        if size > self._inbound_msg_bytes_max:
+            self._inbound_msg_bytes_max = size
+        if self._debug_file is not None and self._debug_bytes_remaining > 0:
+            chunk = wire_audio[: self._debug_bytes_remaining]
+            try:
+                self._debug_file.write(chunk)
+            except OSError:
+                logger.warning("fork audio capture write failed; capture stopped")
+                self._debug_bytes_remaining = 0
+            else:
+                self._debug_bytes_remaining -= len(chunk)
+            if self._debug_bytes_remaining <= 0:
+                self._debug_file.close()
+                self._debug_file = None
 
     async def setup(self, frame: StartFrame):
         pass
 
     async def serialize(self, frame: Frame) -> str | None:
+        if isinstance(frame, FillerClearFrame):
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
+            self._note_playout_cleared()
             return json.dumps({"type": "killAudio"})
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
+            if self._is_audio_flush(frame.message):
+                return self._pop_audio_chunk(force=True)
+            return await self._serialize_control(frame.message or {})
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _FREESWITCH_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(
+            _FREESWITCH_MIN_CHUNK_BYTES
+        ):
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _FREESWITCH_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available
@@ -250,6 +623,11 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         remainder = len(audio) % _FREESWITCH_FRAME_BYTES
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
+        self._advance_ramp()
+        return self._audio_message(audio)
+
+    def _audio_message(self, audio: bytes) -> str:
+        self._note_sent_audio(len(audio))
         return json.dumps({
             "type": "playAudio",
             "data": {
@@ -261,17 +639,23 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
-            audio = bytes(data)
+            now = time.monotonic()
+            wire_audio = bytes(data)
             # L16 samples are two bytes. Ignore an incomplete trailing byte
             # rather than passing malformed PCM into VAD/STT.
-            audio = audio[:len(audio) - (len(audio) % 2)]
-            if not audio:
+            wire_audio = wire_audio[:len(wire_audio) - (len(wire_audio) % 2)]
+            if not wire_audio:
+                self._note_inbound_media()
                 return None
-            samples = array("h")
-            samples.frombytes(audio)
-            peak = max((abs(sample) for sample in samples), default=0)
-            self._inbound_bytes += len(audio)
-            self._inbound_interval_bytes += len(audio)
+            self._observe_inbound_message(wire_audio, now)
+            self._note_inbound_media()
+            samples = np.frombuffer(wire_audio, dtype="<i2")
+            peak = (
+                int(np.abs(samples.astype(np.int32)).max())
+                if samples.size else 0
+            )
+            self._inbound_bytes += len(wire_audio)
+            self._inbound_interval_bytes += len(wire_audio)
             self._inbound_interval_peak = max(
                 self._inbound_interval_peak, peak
             )
@@ -282,17 +666,26 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
             ):
                 logger.info(
                     "freeswitch fork audio inbound: total_bytes=%d "
-                    "interval_bytes=%d peak=%d (%.3f full-scale)",
+                    "interval_bytes=%d interval_msgs=%d msg_bytes=%d..%d "
+                    "peak=%d (%.3f full-scale) max_gap_ms=%.0f gaps>100ms=%d",
                     self._inbound_bytes,
                     self._inbound_interval_bytes,
+                    self._inbound_interval_messages,
+                    self._inbound_msg_bytes_min,
+                    self._inbound_msg_bytes_max,
                     self._inbound_interval_peak,
                     self._inbound_interval_peak / 32768.0,
+                    self._inbound_gap_max_ms,
+                    self._inbound_gaps_over_100ms,
                 )
                 self._inbound_interval_bytes = 0
+                self._inbound_interval_messages = 0
                 self._inbound_interval_peak = 0
                 self._last_inbound_log = now
             return InputAudioRawFrame(
-                audio=audio, sample_rate=16000, num_channels=1
+                audio=wire_audio,
+                sample_rate=_FREESWITCH_FORK_SAMPLE_RATE,
+                num_channels=1,
             )
         if isinstance(data, str) and data and not self._warned_text_input:
             self._warned_text_input = True
@@ -303,7 +696,7 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         return None
 
 
-class VaaniFrameSerializer(FrameSerializer):
+class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
     """Vaani Telephony JSON media-stream protocol.
 
     Vaani sends/receives base64 encoded 8 kHz, 16-bit, mono PCM in JSON
@@ -323,6 +716,7 @@ class VaaniFrameSerializer(FrameSerializer):
         self._track = track or "inbound"
         self._out_chunk = 0
         self._pending_audio = bytearray()
+        self._init_ramp()
         self._last_in_chunk = 0
         self._stopped = False
         self._warned_sid_mismatch = False
@@ -333,20 +727,37 @@ class VaaniFrameSerializer(FrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if self._stopped:
             return None  # after `stop`, nothing else may go on the wire
+        if isinstance(frame, FillerClearFrame):
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
+            self._note_playout_cleared()
             return json.dumps({
                 "event": "clear",
                 "streamSid": self._stream_sid,
                 "clear": {"reason": "interrupt"},
             })
-        if isinstance(frame, OutputTransportMessageFrame):
+        # The urgent variant is a SystemFrame and does not subclass the plain
+        # message frame — both must be accepted or control events vanish.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
             message = frame.message or {}
+            if self._is_audio_flush(message):
+                # A plain-audio clip (latency filler) just ended: send its
+                # last partial packet now instead of ahead of the next reply.
+                return self._pop_audio_chunk(force=True)
             if message.get("type") == "telephony_control":
                 event = message.get("event")
                 if event == "transfer":
@@ -361,7 +772,12 @@ class VaaniFrameSerializer(FrameSerializer):
                         payload["transfer"]["transfer_queue"] = message["transfer_queue"]
                     if message.get("agent_id"):
                         payload["transfer"]["agent_id"] = message["agent_id"]
-                    return json.dumps(payload)
+                    wire_message = json.dumps(payload)
+                    logger.info(
+                        "vaani websocket outbound transfer: %s",
+                        wire_message,
+                    )
+                    return wire_message
                 if event == "stop":
                     self._stopped = True
                     return self._stop_message(message.get("reason") or "stop")
@@ -375,6 +791,7 @@ class VaaniFrameSerializer(FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)):
+            self._note_inbound_media()
             return InputAudioRawFrame(audio=bytes(data), sample_rate=8000, num_channels=1)
         try:
             message = json.loads(data)
@@ -417,6 +834,7 @@ class VaaniFrameSerializer(FrameSerializer):
                 return None
             if not audio:
                 return None
+            self._note_inbound_media()
             return InputAudioRawFrame(audio=audio, sample_rate=8000, num_channels=1)
         if event == "stop":
             # EndWorkerFrame (not EndFrame): a bare EndFrame injected from the
@@ -433,11 +851,15 @@ class VaaniFrameSerializer(FrameSerializer):
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _VAANI_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(_VAANI_MIN_CHUNK_BYTES):
             return None
         limit = min(available, _VAANI_MAX_CHUNK_BYTES)
         size = limit - (limit % _VAANI_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _VAANI_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available
@@ -446,6 +868,11 @@ class VaaniFrameSerializer(FrameSerializer):
         remainder = len(chunk) % _VAANI_FRAME_BYTES
         if remainder:
             chunk += b"\x00" * (_VAANI_FRAME_BYTES - remainder)
+        self._advance_ramp()
+        return self._audio_message(chunk)
+
+    def _audio_message(self, chunk: bytes) -> str:
+        self._note_sent_audio(len(chunk))
         self._out_chunk += 1
         return json.dumps({
             "event": "media",
@@ -464,6 +891,40 @@ class VaaniFrameSerializer(FrameSerializer):
             "streamSid": self._stream_sid,
             "stop": {"reason": reason},
         })
+
+
+class FillerSafeSerializer(FrameSerializer):
+    """Keep third-party encoder/resampler history free of disposable filler."""
+
+    def __init__(self, delegate):
+        super().__init__()
+        self.delegate = delegate
+
+    async def setup(self, frame):
+        await self.delegate.setup(frame)
+
+    async def serialize(self, frame):
+        if isinstance(frame, FillerClearFrame):
+            return None  # remote clear APIs target the whole stream
+        if isinstance(frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)):
+            if (frame.message or {}).get("filler_owner"):
+                return None
+        if isinstance(frame, FillerAudioRawFrame):
+            if frame.owner is None or frame.owner.cancelled:
+                return None
+            # These provider media contracts use native 8 kHz. At equal
+            # rates Pipecat bypasses the delegate's streaming resampler.
+            audio = frame.audio
+            if frame.sample_rate != 8000:
+                audio = resample_pcm(audio, frame.sample_rate, 8000)
+            frame = FillerAudioRawFrame(
+                audio=audio, sample_rate=8000, num_channels=frame.num_channels,
+                owner=frame.owner,
+            )
+        return await self.delegate.serialize(frame)
+
+    async def deserialize(self, data):
+        return await self.delegate.deserialize(data)
 
 
 def build_media_serializer(
@@ -486,7 +947,9 @@ def build_media_serializer(
             )
         # QA uses mod_audio_stream: stereo L16 inbound (caller channel is
         # selected above), JSON/base64 playback out.
-        return FreeSwitchAudioStreamSerializer()
+        return FreeSwitchAudioStreamSerializer(
+            send_kill_audio=get_settings().freeswitch_send_kill_audio,
+        )
     if provider == "twilio":
         from pipecat.serializers.twilio import TwilioFrameSerializer
 
@@ -494,10 +957,10 @@ def build_media_serializer(
         stream_sid = start.get("streamSid") or (start_message or {}).get("streamSid")
         if not stream_sid:
             raise ApiError("Twilio stream start message missing streamSid", 400)
-        return TwilioFrameSerializer(
+        return FillerSafeSerializer(TwilioFrameSerializer(
             stream_sid=stream_sid,
             call_sid=start.get("callSid"),
-        )
+        ))
     if provider == "telnyx":
         from pipecat.serializers.telnyx import TelnyxFrameSerializer
 
@@ -505,11 +968,11 @@ def build_media_serializer(
         stream_id = start.get("stream_id") or (start_message or {}).get("stream_id")
         if not stream_id:
             raise ApiError("Telnyx stream start message missing stream_id", 400)
-        return TelnyxFrameSerializer(
+        return FillerSafeSerializer(TelnyxFrameSerializer(
             stream_id=stream_id,
             call_control_id=start.get("call_control_id"),
             outbound_encoding=start.get("media_format", {}).get("encoding", "PCMU"),
-        )
+        ))
     if provider == "plivo":
         from pipecat.serializers.plivo import PlivoFrameSerializer
 
@@ -517,7 +980,7 @@ def build_media_serializer(
         stream_id = start.get("streamId") or (start_message or {}).get("streamId")
         if not stream_id:
             raise ApiError("Plivo stream start message missing streamId", 400)
-        return PlivoFrameSerializer(stream_id=stream_id, call_id=start.get("callId"))
+        return FillerSafeSerializer(PlivoFrameSerializer(stream_id=stream_id, call_id=start.get("callId")))
     if provider == "exotel":
         from pipecat.serializers.exotel import ExotelFrameSerializer
 
@@ -525,7 +988,7 @@ def build_media_serializer(
         stream_sid = start.get("stream_sid") or (start_message or {}).get("stream_sid")
         if not stream_sid:
             raise ApiError("Exotel stream start message missing stream_sid", 400)
-        return ExotelFrameSerializer(stream_sid=stream_sid)
+        return FillerSafeSerializer(ExotelFrameSerializer(stream_sid=stream_sid))
     if provider == "vaani":
         start = (start_message or {}).get("start", {})
         stream_sid = start.get("streamSid") or (start_message or {}).get("streamSid")

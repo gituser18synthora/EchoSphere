@@ -10,7 +10,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VoiceTab from "@/pages/tenant/studio/VoiceTab";
-import type { VoiceBot } from "@/types/domain";
+import type { VoiceBot, VoiceCapability } from "@/types/domain";
 import * as api from "@/services/api";
 
 vi.mock("@/services/api", () => ({
@@ -20,13 +20,18 @@ vi.mock("@/services/api", () => ({
   listProviderModels: vi.fn(),
   listProviderVoices: vi.fn(),
   getModelLanguages: vi.fn(),
+  getRuntimeContext: vi.fn(),
   saveVoiceSettings: vi.fn(),
   validateVoiceConfig: vi.fn(),
   testProviderConnection: vi.fn(),
   generateTtsPreview: vi.fn(),
+  listPrompts: vi.fn(),
+  setGoalPolicyEndCall: vi.fn(),
 }));
+/* Permissions are switchable per test (default: everything granted). */
+const perms = vi.hoisted(() => ({ has: (_code: string): boolean => true }));
 vi.mock("@/state/AppContext", () => ({
-  useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),
+  useApp: () => ({ toast: vi.fn(), hasPermission: (code: string) => perms.has(code) }),
 }));
 
 const BOT = { id: "bot_1", languages: ["en-IN", "hi-IN"] } as unknown as VoiceBot;
@@ -66,13 +71,46 @@ function installDefaultMocks(settings: Record<string, unknown> = SETTINGS) {
     { id: "l1", code: "en-IN", name: "English (India)", enabled: true },
     { id: "l2", code: "hi-IN", name: "Hindi", enabled: true },
   ] as never);
+  vi.mocked(api.listPrompts).mockResolvedValue([]);
+  vi.mocked(api.getRuntimeContext).mockResolvedValue({
+    id: null, botId: "bot_1", name: "User details", sourceMode: "manual",
+    apiConnectionId: null, responsePath: null, fields: [], allowAdditional: true,
+    testPayload: null, missingValuePolicy: null, domainPolicy: "generic",
+    status: "active", configured: false,
+  } as never);
   vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
     Promise.resolve(
       provider === "sarvam" ? [
-        { code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true },
-        { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false },
+        {
+          code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true, capability: "tts", streaming: true,
+          paramsSchema: {
+            pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
+            min_buffer_size: { type: "integer", min: 10, max: 500, default: 40, label: "Min buffer size" },
+          },
+        },
+        { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false, capability: "tts", streaming: true, paramsSchema: {} },
       ] : provider === "elevenlabs" ? [
-        { code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true },
+        {
+          code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true,
+          capability: "tts", streaming: true,
+          description: "Ultra-low-latency model for realtime conversation.",
+          paramsSchema: {
+            stability: { type: "number", min: 0, max: 1, step: 0.05, default: 0, label: "Stability" },
+            speed: { type: "number", min: 0.7, max: 1.2, step: 0.05, default: 1, label: "Speed" },
+          },
+        },
+        {
+          code: "eleven_v3", displayName: "Eleven v3 (expressive)", isDefault: false,
+          capability: "tts", streaming: false,
+          description: "Most expressive ElevenLabs model (alpha).",
+          paramsSchema: {
+            stability: {
+              type: "enum", values: [0, 0.5, 1], default: 0.5, label: "Stability",
+              labels: { "0": "Creative", "0.5": "Natural", "1": "Robust" },
+            },
+            similarity_boost: { type: "number", min: 0, max: 1, step: 0.05, default: 1, label: "Similarity boost" },
+          },
+        },
       ] : [],
     )) as never);
   vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
@@ -81,7 +119,7 @@ function installDefaultMocks(settings: Record<string, unknown> = SETTINGS) {
         voice("vp-shubh", "Shubh", ["en-IN", "hi-IN"], ["bulbul:v3", "bulbul:v2"]),
         voice("vp-anushka", "Anushka", ["hi-IN"], ["bulbul:v3"]),
       ] : provider === "elevenlabs" ? [
-        voice("vp-rachel", "Rachel", ["en-IN"], ["eleven_flash_v2_5"], "elevenlabs"),
+        voice("vp-rachel", "Rachel", ["en-IN"], ["eleven_flash_v2_5", "eleven_v3"], "elevenlabs"),
       ] : [],
     )) as never);
   vi.mocked(api.getModelLanguages).mockResolvedValue(
@@ -224,10 +262,17 @@ describe("VoiceTab — Per-language voices", () => {
   });
 
   it("save sends the language voice map unchanged and reloads the settings", async () => {
+    installDefaultMocks({
+      ...SETTINGS,
+      humanSpeech: { enabled: true, backchannel_probability: 0.25 },
+      humanSpeechInherited: { enabled: true },
+      humanSpeechInheritedSources: { enabled: "tenant" },
+    });
     const user = userEvent.setup();
     render(<VoiceTab bot={BOT} />);
     await screen.findByText("Hindi");
     await within(langRow("Hindi")).findByText("Anushka");
+    expect(screen.queryByTestId("human-speech-bot")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save voice settings" }));
     await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
@@ -238,7 +283,21 @@ describe("VoiceTab — Per-language voices", () => {
         "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
       },
     });
-    await waitFor(() => expect(api.getVoiceSettings).toHaveBeenCalledTimes(2)); // draft reload
+    // Voice edits must never write back a stale Natural Conversation value.
+    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).not.toHaveProperty("humanSpeech");
+    await waitFor(() => expect(api.getVoiceSettings).toHaveBeenCalledTimes(2));
+  });
+
+  it("validates voice settings without submitting Natural Conversation overrides", async () => {
+    installDefaultMocks({ ...SETTINGS, humanSpeech: { backchannel_probability: 0.25 } });
+    vi.mocked(api.validateVoiceConfig).mockResolvedValue({ valid: true, errors: [], warnings: [] });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    await within(langRow("Hindi")).findByText("Anushka");
+
+    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await waitFor(() => expect(api.validateVoiceConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.validateVoiceConfig).mock.calls[0][1]).not.toHaveProperty("humanSpeech");
   });
 
   it("keeps a readable name for platform-disabled languages and flags them", async () => {
@@ -281,5 +340,898 @@ describe("VoiceTab — Per-language voices", () => {
     installDefaultMocks({ ...SETTINGS, languageVoiceMap: {} });
     render(<VoiceTab bot={{ ...BOT, languages: [] } as unknown as VoiceBot} />);
     await screen.findByText(/no languages yet/);
+  });
+});
+
+describe("VoiceTab — ElevenLabs model selection", () => {
+  const ELEVEN_SETTINGS = {
+    ...SETTINGS,
+    ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+    ttsSettings: { stability: 0, speed: 1.1 },
+    languageVoiceMap: { default: "en-IN" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installDefaultMocks(ELEVEN_SETTINGS);
+  });
+
+  const ttsModelSelect = () => screen.getByLabelText("TTS model") as HTMLSelectElement;
+
+  it("offers both ElevenLabs models in the default engine dropdown", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    // The option list fills from an async catalog fetch after the value is set.
+    await within(ttsModelSelect()).findByRole("option", { name: "Eleven Flash v2.5 (default)" });
+    const labels = within(ttsModelSelect()).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toContain("Eleven Flash v2.5 (default)");
+    expect(labels).toContain("Eleven v3 (expressive)");
+  });
+
+  it("selecting eleven_v3 swaps to its schema: discrete stability, no speed field", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    // Delivery tuning owns speed — the provider duplicate never renders on
+    // the bot page, even for models that support it (flash).
+    expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Stability")).toBeInTheDocument();
+
+    // Model lists load asynchronously; React 19 schedules the fetch result
+    // later than React 18 did, so wait for the option before selecting.
+    await within(ttsModelSelect()).findByRole("option", { name: /Eleven v3 \(expressive\)/ });
+    await user.selectOptions(ttsModelSelect(), ["eleven_v3"]);
+    expect(ttsModelSelect()).toHaveValue("eleven_v3");
+    // Unsupported params disappear; still-valid values are preserved.
+    await waitFor(() => expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument());
+    const stability = await screen.findByLabelText("Stability") as HTMLSelectElement;
+    expect(stability.tagName).toBe("SELECT"); // enum, not a slider
+    const labels = within(stability).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toEqual(["Creative (0)", "Natural (0.5)", "Robust (1)"]);
+    // The saved flash stability value (0) is still valid on the v3 grid.
+    expect(stability).toHaveValue("0");
+    // The model description/capability hint is surfaced.
+    expect(screen.getByText(/Most expressive ElevenLabs model/)).toBeInTheDocument();
+    expect(screen.getByText(/No realtime streaming/)).toBeInTheDocument();
+  });
+
+  it("the model choice survives an edit round-trip (reset restores it)", async () => {
+    installDefaultMocks({ ...ELEVEN_SETTINGS, ttsModel: "eleven_v3", ttsSettings: { stability: 0.5 } });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_v3"));
+  });
+
+  it("fallback and per-language dropdowns list every model, disabling non-streaming ones with the reason", async () => {
+    const user = userEvent.setup();
+    installDefaultMocks({
+      ...SETTINGS,
+      fallbackProvider: "elevenlabs", fallbackModel: "eleven_flash_v2_5", fallbackVoice: "vp-rachel",
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    /* The whole provider catalog is visible — a model that cannot serve a
+       realtime slot is disabled with an explanation, never silently hidden
+       (the old behavior read as "only 2.5 is supported"). */
+    const fallbackModel = await screen.findByLabelText("Fallback model");
+    await waitFor(() => expect(fallbackModel).toHaveValue("eleven_flash_v2_5"));
+    const fallbackV3 = within(fallbackModel).getByRole("option", {
+      name: /Eleven v3 \(expressive\) — no realtime streaming/,
+    }) as HTMLOptionElement;
+    expect(fallbackV3.disabled).toBe(true);
+    expect((within(fallbackModel).getByRole("option", {
+      name: "Eleven Flash v2.5 (default)",
+    }) as HTMLOptionElement).disabled).toBe(false);
+
+    const hi = langRow("Hindi");
+    await user.selectOptions(within(hi).getByLabelText("Voice provider for hi-IN"), ["elevenlabs"]);
+    await waitFor(() => expect(within(hi).getByLabelText("Voice model for hi-IN")).toHaveValue("eleven_flash_v2_5"));
+    const rowV3 = within(within(hi).getByLabelText("Voice model for hi-IN")).getByRole("option", {
+      name: /Eleven v3 \(expressive\) — no realtime streaming/,
+    }) as HTMLOptionElement;
+    expect(rowV3.disabled).toBe(true);
+  });
+
+  it("a saved non-streaming per-language model is flagged with the streaming reason", async () => {
+    installDefaultMocks({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "en-IN",
+        "en-IN": { provider: "elevenlabs", model: "eleven_v3", voice: "vp-rachel" },
+      },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    const en = langRow("English (India)");
+    await waitFor(() => expect(within(en).getByText("Unavailable")).toBeInTheDocument());
+    expect(within(en).getByText(/does not support realtime streaming/)).toBeInTheDocument();
+  });
+});
+
+describe("VoiceTab — Sarvam loudness", () => {
+  /* Every bulbul model offers loudness with its own range: bulbul:v2 0.3–3.0
+     (documented), bulbul:v3 and bulbul:v4-flash 0.1–2.5 (the API rejects
+     anything outside it). The slider and its bounds come from each model's
+     catalog schema: next to Pitch on v2, next to Pace on v3 / v4-flash; a
+     model whose schema has none (ElevenLabs) never shows one. Schemas mirror
+     the catalog seed. */
+  const LOUDNESS_V3 = { type: "number", min: 0.1, max: 2.5, step: 0.1, default: 1, label: "Loudness" };
+  const V2_SCHEMA = {
+    pace: { type: "number", min: 0.3, max: 3, step: 0.05, default: 1, label: "Pace" },
+    pitch: { type: "number", min: -0.75, max: 0.75, step: 0.05, default: 0, label: "Pitch" },
+    loudness: { type: "number", min: 0.3, max: 3, step: 0.1, default: 1, label: "Loudness" },
+  };
+  const V3_SCHEMA = {
+    pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
+    loudness: LOUDNESS_V3,
+    temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
+  };
+  const V2_SETTINGS = {
+    ...SETTINGS, ttsModel: "bulbul:v2", ttsVoice: "vp-anushka2",
+    ttsSettings: { pitch: 0, loudness: 1.1 }, languageVoiceMap: { default: "en-IN" },
+  };
+
+  function installSarvamModels(settings: Record<string, unknown>) {
+    installDefaultMocks(settings);
+    const defaults = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      provider === "sarvam" ? Promise.resolve([
+        { code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
+        { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash", isDefault: false, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
+        { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false, capability: "tts", streaming: true, paramsSchema: V2_SCHEMA },
+      ]) : defaults(cap, provider)) as never);
+    const defaultVoices = vi.mocked(api.listProviderVoices).getMockImplementation()!;
+    vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
+      provider === "sarvam" ? Promise.resolve([
+        voice("vp-shubh", "Shubh", ["en-IN", "hi-IN"], ["bulbul:v3"]),
+        voice("vp-anushka2", "Anushka", ["en-IN", "hi-IN"], ["bulbul:v2"]),
+        voice("vp-sv4-shubh_hi_customer", "Shubh · Hindi · Customer", ["en-IN", "hi-IN"], ["bulbul:v4-flash"]),
+      ]) : defaultVoices(provider)) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const ttsModelSelect = () => screen.getByLabelText("TTS model") as HTMLSelectElement;
+  const loudness = () => screen.getByLabelText("Loudness") as HTMLInputElement;
+
+  it("shows a Loudness slider for bulbul:v2 next to Pitch, with the saved value", async () => {
+    installSarvamModels(V2_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v2"));
+    const slider = await screen.findByLabelText("Loudness") as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect(slider.min).toBe("0.3");
+    expect(slider.max).toBe("3");
+    expect(slider).toHaveValue("1.1");
+    expect(screen.getByLabelText("Pitch")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["bulbul:v3", "vp-shubh"],
+    ["bulbul:v4-flash", "vp-sv4-shubh_hi_customer"],
+  ])("shows a %s bot's saved loudness on its own 0.1–2.5 slider", async (model, voiceId) => {
+    installSarvamModels({
+      ...SETTINGS, ttsModel: model, ttsVoice: voiceId,
+      ttsSettings: { loudness: 0.6, temperature: 0.4 }, languageVoiceMap: { default: "en-IN" },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue(model));
+    const slider = await screen.findByLabelText("Loudness") as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect([slider.min, slider.max]).toEqual(["0.1", "2.5"]);
+    expect(slider).toHaveValue("0.6");
+    expect(screen.getByLabelText("Temperature")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
+  });
+
+  it("keeps an in-range loudness across v2 → v3 → v4-flash and drops Pitch", async () => {
+    const user = userEvent.setup();
+    installSarvamModels(V2_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v2"));
+    await screen.findByLabelText("Loudness");
+
+    await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v3/ });
+    await user.selectOptions(ttsModelSelect(), ["bulbul:v3"]);
+    expect(await screen.findByLabelText("Temperature")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
+    expect([loudness().min, loudness().max]).toEqual(["0.1", "2.5"]);
+    expect(loudness()).toHaveValue("1.1");
+
+    await user.selectOptions(ttsModelSelect(), ["bulbul:v4-flash"]);
+    expect(ttsModelSelect()).toHaveValue("bulbul:v4-flash");
+    expect([loudness().min, loudness().max]).toEqual(["0.1", "2.5"]);
+    expect(loudness()).toHaveValue("1.1");
+  });
+
+  it("clamps a bulbul:v2 loudness above 2.5 into the v3 range", async () => {
+    const user = userEvent.setup();
+    installSarvamModels({ ...V2_SETTINGS, ttsSettings: { pitch: 0, loudness: 2.8 } });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v2"));
+    expect(await screen.findByLabelText("Loudness")).toHaveValue("2.8");
+
+    await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v3/ });
+    await user.selectOptions(ttsModelSelect(), ["bulbul:v3"]);
+    await waitFor(() => expect(loudness().max).toBe("2.5"));
+    expect(loudness()).toHaveValue("2.5");
+  });
+
+  it("never offers Loudness for a model whose schema has none", async () => {
+    installSarvamModels({
+      ...SETTINGS, ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+      ttsSettings: { stability: 0 }, languageVoiceMap: { default: "en-IN" },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    expect(await screen.findByLabelText("Stability")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Loudness")).not.toBeInTheDocument();
+  });
+});
+
+describe("VoiceTab — Delivery tuning", () => {
+  class FakeAudio {
+    onended: (() => void) | null = null;
+    paused = true;
+    constructor(public src: string) {}
+    play() { this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("Audio", FakeAudio);
+    installDefaultMocks();
+  });
+
+  it("hides duplicate provider speed params but keeps other provider settings", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    // Sarvam bulbul:v3 schema ships a `pace` param — it must not render on
+    // the bot page; the technical min_buffer_size setting still does.
+    expect((await screen.findAllByLabelText("Min buffer size")).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Pace")).not.toBeInTheDocument();
+    // The one canonical speed control lives in Delivery tuning.
+    expect(screen.getByLabelText("Speaking speed")).toBeInTheDocument();
+    expect(screen.getByText(/single speed control/)).toBeInTheDocument();
+    expect(screen.getByText(/Silence inserted between assistant sentences/)).toBeInTheDocument();
+    expect(screen.getByText(/wording and acknowledgement/)).toBeInTheDocument();
+    expect(screen.getByText(/native voice support varies by provider/)).toBeInTheDocument();
+  });
+
+  it("saves delivery values and strips legacy speed from ttsSettings", async () => {
+    const user = userEvent.setup();
+    installDefaultMocks({
+      ...SETTINGS,
+      speed: 1.2, pauseMs: 500, empathy: 80, energy: 20,
+      ttsSettings: { pace: 0.7, min_buffer_size: 60 },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).toMatchObject({ speed: 1.2, pauseMs: 500, empathy: 80, energy: 20 });
+    // The legacy pace duplicate is gone; unrelated settings survive.
+    expect(payload.ttsSettings).toEqual({ min_buffer_size: 60 });
+  });
+
+  it("delivery sliders update the save payload", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    const pause = screen.getByLabelText("Pause between sentences") as HTMLInputElement;
+    // range inputs accept programmatic value change via fireEvent-style typing
+    await user.click(pause);
+    pause.stepUp(); // 350 → 400
+    pause.dispatchEvent(new Event("change", { bubbles: true }));
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.pauseMs).toBe(400);
+  });
+
+  it("preview sends the delivery tuning alongside the engine selection", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.generateTtsPreview).mockResolvedValue({
+      audioBase64: "AAAA", mimeType: "audio/wav", sampleRate: 16000,
+      ttfaMs: 12, totalMs: 40, provider: "sarvam", voice: "vp-shubh",
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    // The modal explains exactly what the preview can and cannot apply.
+    expect(within(dialog).getByText(/Generate uses the same delivery mapping as live calls/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/cannot rewrite this fixed sample text/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.generateTtsPreview).mock.calls[0][0]).toMatchObject({
+      provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+      speed: 1, pauseMs: 350, energy: 50,
+    });
+  });
+
+  it("preview offers only the languages the selected model can speak", async () => {
+    const user = userEvent.setup();
+    // The real case: the bot also speaks Malayalam, which the selected model
+    // cannot. Previewing it only ever produced a provider rejection.
+    const MULTILINGUAL = {
+      id: "bot_1", languages: ["en-IN", "hi-IN", "ml-IN"],
+    } as unknown as VoiceBot;
+    vi.mocked(api.getModelLanguages).mockImplementation(((capability: string) =>
+      Promise.resolve(
+        capability === "tts"
+          ? { languages: [
+                { code: "en-IN", name: "English (India)", nativeName: null },
+                { code: "hi-IN", name: "Hindi", nativeName: null },
+              ],
+              supportsAutoDetect: false, languageAgnostic: false }
+          : { languages: [], supportsAutoDetect: true, languageAgnostic: true },
+      )) as never);
+    render(<VoiceTab bot={MULTILINGUAL} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = within(dialog).getByLabelText("Preview language") as HTMLSelectElement;
+
+    await waitFor(() => {
+      const offered = Array.from(select.options).map((o) => o.value);
+      expect(offered).toEqual(expect.arrayContaining(["en-IN", "hi-IN"]));
+      expect(offered).not.toContain("ml-IN");
+    });
+    // The operator is told why a bot language is missing rather than guessing.
+    expect(within(dialog).getByTestId("unsupported-languages-hint")).toHaveTextContent("ml-IN");
+  });
+
+  it("a language change never swaps out a provider the user chose by hand", async () => {
+    const user = userEvent.setup();
+    // hi-IN maps to Sarvam. Picking ElevenLabs by hand and then switching to
+    // hi-IN used to flip the provider back to Sarvam mid-preview.
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const providerSelect = within(dialog).getByLabelText("Preview provider") as HTMLSelectElement;
+
+    await user.selectOptions(providerSelect, "elevenlabs");
+    await waitFor(() => expect(providerSelect.value).toBe("elevenlabs"));
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Preview language") as HTMLSelectElement, "hi-IN",
+    );
+
+    // The deliberate selection survives, and the override is reported not applied.
+    await waitFor(() =>
+      expect(within(dialog).getByTestId("pinned-engine-hint")).toHaveTextContent("sarvam/bulbul:v3"));
+    expect(providerSelect.value).toBe("elevenlabs");
+  });
+
+  it("still mirrors the live-call engine when the user has not touched the engine", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const providerSelect = within(dialog).getByLabelText("Preview provider") as HTMLSelectElement;
+    await waitFor(() => expect(providerSelect.value).toBe("elevenlabs"));
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Preview language") as HTMLSelectElement, "hi-IN",
+    );
+    // Untouched engine: the preview follows the override, like a real call.
+    await waitFor(() => expect(providerSelect.value).toBe("sarvam"));
+  });
+
+  it("keeps a language the model cannot speak when it has a per-language override", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getModelLanguages).mockImplementation(((capability: string) =>
+      Promise.resolve(
+        capability === "tts"
+          ? { languages: [{ code: "hi-IN", name: "Hindi", nativeName: null }],
+              supportsAutoDetect: false, languageAgnostic: false }
+          : { languages: [], supportsAutoDetect: true, languageAgnostic: true },
+      )) as never);
+    // en-IN maps to its own engine, so the preview resolves THAT engine and
+    // the language must stay selectable.
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "hi-IN",
+        "en-IN": { provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = within(dialog).getByLabelText("Preview language") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(select.options).map((o) => o.value)).toContain("en-IN");
+    });
+  });
+});
+
+describe("VoiceTab — LLM output length", () => {
+  const LLM_SETTINGS = {
+    ...SETTINGS,
+    llmProvider: "openai", llmModel: "gpt-4o-mini",
+    llmSettings: { temperature: 0.3, max_output_characters: 500 },
+  };
+  const LLM_SCHEMA = {
+    temperature: { type: "number", min: 0, max: 2, step: 0.1, default: 0.3, label: "Temperature" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installDefaultMocks(LLM_SETTINGS);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [],
+      llm: [
+        { code: "openai", name: "OpenAI", capability: "llm", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+      tts: [
+        { code: "sarvam", name: "Sarvam AI", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+    } as never);
+    const ttsModels = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: string, provider: string) =>
+      provider === "openai"
+        ? Promise.resolve([
+            { code: "gpt-4o-mini", displayName: "GPT-4o mini", isDefault: true, capability: "llm", streaming: true, paramsSchema: LLM_SCHEMA },
+            { code: "gpt-4.1-mini", displayName: "GPT-4.1 mini", isDefault: false, capability: "llm", streaming: true, paramsSchema: LLM_SCHEMA },
+          ])
+        : (ttsModels as (c: string, p: string) => Promise<unknown>)(cap, provider)) as never);
+  });
+
+  const llmModelSelect = () => screen.getByLabelText("LLM model") as HTMLSelectElement;
+  const maxChars = () => screen.getByLabelText("Max output characters") as HTMLInputElement;
+
+  it("switching the LLM model keeps the platform output-length setting", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+    expect(maxChars()).toHaveValue(500);
+
+    // max_output_characters is platform-owned (not in the provider schema);
+    // the model-change reconcile must not silently reset it to the default.
+    await within(llmModelSelect()).findByRole("option", { name: /GPT-4.1 mini/ });
+    await user.selectOptions(llmModelSelect(), ["gpt-4.1-mini"]);
+    expect(llmModelSelect()).toHaveValue("gpt-4.1-mini");
+    expect(maxChars()).toHaveValue(500);
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmModel).toBe("gpt-4.1-mini");
+    expect(payload.llmSettings).toMatchObject({ max_output_characters: 500, temperature: 0.3 });
+  });
+
+  it("switching the LLM model keeps the decision and reply request options", async () => {
+    /* Not in any provider schema and not shown in the form — before the fix
+       a model switch silently dropped them on the next save (demo,
+       2026-10-26: three bots lost their reply tier and effort). */
+    const runtime = {
+      orchestration_service_tier: "default",
+      orchestration_response_text: false,
+      reply_service_tier: "fast",
+      reply_reasoning_effort: "lowest",
+      time_context_enabled: true,
+    };
+    vi.mocked(api.getVoiceSettings).mockResolvedValue(
+      { ...LLM_SETTINGS, llmSettings: { ...LLM_SETTINGS.llmSettings, ...runtime } } as never);
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+
+    await within(llmModelSelect()).findByRole("option", { name: /GPT-4.1 mini/ });
+    await user.selectOptions(llmModelSelect(), ["gpt-4.1-mini"]);
+    expect(llmModelSelect()).toHaveValue("gpt-4.1-mini");
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmModel).toBe("gpt-4.1-mini");
+    expect(payload.llmSettings).toMatchObject({ ...runtime, max_output_characters: 500 });
+  });
+
+  it("defaults Goal Engine to enabled and saves the disabled override without losing LLM settings", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+
+    await user.click(screen.getByText("Advanced orchestration"));
+    const toggle = screen.getByRole("switch", { name: "Goal Engine" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Goal Engine is disabled")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmSettings).toMatchObject({
+      temperature: 0.3,
+      max_output_characters: 500,
+      goal_engine_enabled: false,
+    });
+  });
+
+  it("shows a persisted disabled Goal Engine state", async () => {
+    installDefaultMocks({
+      ...LLM_SETTINGS,
+      llmSettings: {
+        temperature: 0.3,
+        max_output_characters: 500,
+        goal_engine_enabled: false,
+      },
+    });
+    render(<VoiceTab bot={BOT} />);
+
+    await userEvent.click(await screen.findByText("Advanced orchestration"));
+    expect(screen.getByRole("switch", { name: "Goal Engine" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Goal Engine is disabled")).toBeInTheDocument();
+  });
+});
+
+describe("VoiceTab — Natural Conversation cross-link", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    installDefaultMocks();
+  });
+
+  it("offers the Natural Conversation shortcut through the Studio navigator", async () => {
+    const open = vi.fn();
+    render(<VoiceTab bot={BOT} onOpenNaturalConversation={open} />);
+    await screen.findByText("Hindi");
+    await userEvent.click(screen.getByRole("button", { name: "Open Natural Conversation" }));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders no shortcut when the tab is used outside the Studio", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    expect(screen.queryByRole("button", { name: "Open Natural Conversation" })).not.toBeInTheDocument();
+  });
+});
+
+/* Auto-detect language inside the STT card: prominent (not under Advanced),
+   reflects the persisted tri-state, and the save payload carries exactly what
+   the user chose — nothing when left automatic. */
+describe("VoiceTab — STT auto-detect language", () => {
+  const STT_SETTINGS = {
+    ...SETTINGS,
+    sttProvider: "sarvam", sttModel: "saaras:v3", sttLanguage: "",
+    sttSettings: { mode: "transcribe" },
+    sttAutoDetectLanguage: { value: null, effective: true, source: "derived", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+  };
+  const SAARAS_SCHEMA = {
+    mode: { type: "enum", values: ["transcribe", "translate"], default: "transcribe", label: "Mode" },
+    // Legacy catalog row: still carries `default: false` and no widget flag.
+    auto_detect_language: { type: "boolean", default: false, label: "Auto-detect language", advanced: true },
+  };
+
+  function installSttMocks(settings: Record<string, unknown>) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [{ code: "sarvam", name: "Sarvam AI", capability: "stt", description: "", requiresApiKey: true, hasCredentials: true }],
+      llm: [], tts: [],
+    } as never);
+    const tts = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      cap === "stt" && provider === "sarvam"
+        ? Promise.resolve([{ code: "saaras:v3", displayName: "Saaras v3", isDefault: true, capability: "stt", streaming: true, paramsSchema: SAARAS_SCHEMA }])
+        : tts(cap, provider)) as never);
+  }
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("shows the derived multilingual default ON, outside Advanced, and saves no key when untouched", async () => {
+    installSttMocks(STT_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await screen.findByRole("switch", { name: "Auto-detect language" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("stt-auto-detect-source")).toHaveTextContent("Automatic default: on (2 languages configured)");
+    // The generic Advanced group no longer lists it.
+    expect(screen.queryByText(/^Advanced \(/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe" });
+  });
+
+  it("turning it off persists an explicit false; a stored explicit value is shown as set manually", async () => {
+    installSttMocks(STT_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    await userEvent.click(await screen.findByRole("switch", { name: "Auto-detect language" }));
+    expect(screen.getByTestId("stt-auto-detect-source")).toHaveTextContent("Set manually to off.");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe", auto_detect_language: false });
+  });
+
+  it("reloads a persisted explicit OFF as OFF and lets the user return to automatic", async () => {
+    installSttMocks({
+      ...STT_SETTINGS,
+      sttSettings: { mode: "transcribe", auto_detect_language: false },
+      sttAutoDetectLanguage: { value: false, effective: false, source: "explicit", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+    });
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await screen.findByRole("switch", { name: "Auto-detect language" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(screen.getByRole("button", { name: /Use automatic/ }));
+    expect(screen.getByRole("switch", { name: "Auto-detect language" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe" });
+  });
+});
+
+/* Sarvam saaras:v4 key terms: the field exists only in v4's catalog schema,
+   so the Voice tab shows it for v4 (multi-line, one term per line, limits
+   enforced inline) and hides it for v3; switching models reconciles the
+   settings so v3 never carries `keyterms`. v3 stays the default model. */
+describe("VoiceTab — Sarvam saaras:v4 key terms", () => {
+  const V3_SCHEMA = {
+    mode: { type: "enum", values: ["transcribe", "translate"], default: "transcribe", label: "Mode" },
+  };
+  const V4_SCHEMA = {
+    ...V3_SCHEMA,
+    keyterms: {
+      type: "string_list", max_items: 50, max_length: 64, optional: true, multiline: true,
+      label: "Key terms (saaras:v4)", help: "Up to 50 terms.",
+    },
+  };
+  const SARVAM_STT_MODELS = [
+    { code: "saaras:v3", displayName: "Saaras v3", isDefault: true, capability: "stt", streaming: true, paramsSchema: V3_SCHEMA },
+    { code: "saaras:v4", displayName: "Saaras v4", isDefault: false, capability: "stt", streaming: true, paramsSchema: V4_SCHEMA },
+  ];
+
+  function installV4Mocks(settings: Record<string, unknown>) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [{ code: "sarvam", name: "Sarvam AI", capability: "stt", description: "", requiresApiKey: true, hasCredentials: true }],
+      llm: [], tts: [],
+    } as never);
+    const tts = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      cap === "stt" && provider === "sarvam" ? Promise.resolve(SARVAM_STT_MODELS) : tts(cap, provider)) as never);
+  }
+
+  const V3_SETTINGS = {
+    ...SETTINGS,
+    sttProvider: "sarvam", sttModel: "saaras:v3", sttLanguage: "", sttSettings: { mode: "transcribe" },
+    sttAutoDetectLanguage: { value: null, effective: true, source: "derived", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+  };
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("hides key terms on saaras:v3 and lists v3 as the default model", async () => {
+    installV4Mocks(V3_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const select = await screen.findByRole("combobox", { name: "STT model" }) as HTMLSelectElement;
+    // The model list loads asynchronously after the select renders.
+    expect(await within(select).findByRole("option", { name: "Saaras v3 (default)" })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "Saaras v4" })).toBeInTheDocument();
+    expect(select.value).toBe("saaras:v3");
+    expect(screen.queryByLabelText("Key terms (saaras:v4)")).not.toBeInTheDocument();
+  });
+
+  it("shows key terms after selecting saaras:v4, saves one term per line, and never sends them for v3", async () => {
+    installV4Mocks(V3_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const select = await screen.findByRole("combobox", { name: "STT model" });
+    await within(select).findByRole("option", { name: "Saaras v4" });
+    await userEvent.selectOptions(select, "saaras:v4");
+    const editor = await screen.findByLabelText("Key terms (saaras:v4)");
+    expect(editor.tagName).toBe("TEXTAREA");
+    await userEvent.type(editor, "Zepto\nNew Delhi\n\n Zepto ");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttModel).toBe("saaras:v4");
+    expect(payload.sttSettings).toEqual({ mode: "transcribe", keyterms: ["Zepto", "New Delhi", "Zepto"] });
+
+    // Back to v3: the field disappears and the reconciled settings drop the key.
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "STT model" }), "saaras:v3");
+    expect(screen.queryByLabelText("Key terms (saaras:v4)")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(2));
+    const back = vi.mocked(api.saveVoiceSettings).mock.calls[1][1] as Record<string, unknown>;
+    expect(back.sttModel).toBe("saaras:v3");
+    expect(back.sttSettings).toEqual({ mode: "transcribe" });
+  });
+
+  it("enforces the 64-character and 50-entry limits inline", async () => {
+    installV4Mocks({ ...V3_SETTINGS, sttModel: "saaras:v4", sttSettings: { mode: "transcribe", keyterms: ["Zepto"] } });
+    render(<VoiceTab bot={BOT} />);
+    const editor = await screen.findByLabelText("Key terms (saaras:v4)");
+    expect(editor).toHaveValue("Zepto");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "x".repeat(65));
+    expect(await screen.findByText(/longer than 64 characters/)).toBeInTheDocument();
+    expect(editor).toHaveAttribute("aria-invalid", "true");
+    await userEvent.clear(editor);
+    await userEvent.paste(Array.from({ length: 51 }, (_, i) => `t${i}`).join("\n"));
+    expect(await screen.findByText(/At most 50 entries allowed/)).toBeInTheDocument();
+  });
+});
+
+describe("VoiceTab — End call after goodbye", () => {
+  const SURVEY_GOAL_POLICY = {
+    role: "closure feedback executive",
+    goals: [{ id: "feedback", description: "Collect closure feedback." }],
+  };
+  const LLM_SETTINGS = {
+    ...SETTINGS,
+    llmProvider: "openai", llmModel: "gpt-4o-mini",
+    llmSettings: { temperature: 0.3, max_output_characters: 500 },
+    goalPolicy: SURVEY_GOAL_POLICY,
+  };
+
+  function install(settings: Record<string, unknown> = LLM_SETTINGS) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [],
+      llm: [
+        { code: "openai", name: "OpenAI", capability: "llm", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+      tts: [
+        { code: "sarvam", name: "Sarvam AI", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+    } as never);
+    const ttsModels = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: string, provider: string) =>
+      provider === "openai"
+        ? Promise.resolve([
+            { code: "gpt-4o-mini", displayName: "GPT-4o mini", isDefault: true, capability: "llm", streaming: true, paramsSchema: {} },
+          ])
+        : (ttsModels as (c: string, p: string) => Promise<unknown>)(cap, provider)) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    perms.has = () => true;
+    install();
+    vi.mocked(api.setGoalPolicyEndCall).mockImplementation(((botId: string, enabled: boolean) =>
+      Promise.resolve({ botId, enabled })) as never);
+  });
+
+  const endCallSwitch = async () => {
+    await userEvent.click(await screen.findByText("Advanced orchestration"));
+    return screen.getByRole("switch", { name: "End call after goodbye" });
+  };
+
+  it("is OFF when goalPolicy has no endCall", async () => {
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("is OFF when the settings carry no goalPolicy at all", async () => {
+    const { goalPolicy: _omit, ...withoutPolicy } = LLM_SETTINGS;
+    install(withoutPolicy);
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("reads a saved ON switch from goalPolicy.endCall.enabled", async () => {
+    install({ ...LLM_SETTINGS, goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true } } });
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("saves through the dedicated PATCH only, never the voice-settings PUT", async () => {
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenCalledWith("bot_1", true));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenLastCalledWith("bot_1", false));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved state when the PATCH fails", async () => {
+    vi.mocked(api.setGoalPolicyEndCall).mockRejectedValue(new Error("nope"));
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("main Save and Validate never send goalPolicy, even after switching end call", async () => {
+    vi.mocked(api.validateVoiceConfig).mockResolvedValue({ valid: true, errors: [], warnings: [] });
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).not.toHaveProperty("goalPolicy");
+
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+    await waitFor(() => expect(api.validateVoiceConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.validateVoiceConfig).mock.calls[0][1]).not.toHaveProperty("goalPolicy");
+  });
+
+  it("is disabled with a hint when the SAVED Goal Engine is off", async () => {
+    install({
+      ...LLM_SETTINGS,
+      llmSettings: { ...LLM_SETTINGS.llmSettings, goal_engine_enabled: false },
+      goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true } },
+    });
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    expect(toggle).toBeDisabled();
+    expect(screen.getByTestId("end-call-engine-off")).toHaveTextContent("Goal Engine is off");
+    await userEvent.click(toggle);
+    expect(api.setGoalPolicyEndCall).not.toHaveBeenCalled();
+  });
+
+  it("an unsaved Goal Engine change does not gate the switch", async () => {
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await userEvent.click(screen.getByRole("switch", { name: "Goal Engine" }));
+    expect(toggle).not.toBeDisabled();
+    expect(screen.queryByTestId("end-call-engine-off")).not.toBeInTheDocument();
+  });
+
+  it("requires bots.manage: a voice editor without it sees the switch read-only", async () => {
+    perms.has = (code) => code === "manage_voices";
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    expect(toggle).toBeDisabled();
+    // General voice editing is still available to this role.
+    expect(screen.getByRole("switch", { name: "Goal Engine" })).not.toBeDisabled();
+  });
+
+  it("does not expose signals or minConfidence", async () => {
+    install({
+      ...LLM_SETTINGS,
+      goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true, signals: ["wrong_person"], minConfidence: 0.95 } },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await endCallSwitch();
+    expect(screen.queryByText(/minConfidence|min confidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/wrong_person/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^signals$/i)).not.toBeInTheDocument();
   });
 });

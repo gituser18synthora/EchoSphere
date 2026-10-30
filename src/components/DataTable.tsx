@@ -62,7 +62,16 @@ export function DataTable<T extends object>({
               >
                 <span className="row gap-4" style={{ display: "inline-flex", justifyContent: c.align === "right" ? "flex-end" : undefined }}>
                   {c.header}
-                  {sort?.key === c.key && <Icon name={sort.dir === 1 ? "chevron-up" : "chevron-down"} size={12} />}
+                  {/* Sortable headers always reserve the chevron's slot: an icon
+                      that appears on first click widens the column and makes the
+                      whole table shift under the cursor. */}
+                  {c.sortValue && (
+                    <Icon
+                      name={sort?.key === c.key && sort.dir === -1 ? "chevron-down" : "chevron-up"}
+                      size={12}
+                      style={{ flexShrink: 0, visibility: sort?.key === c.key ? "visible" : "hidden" }}
+                    />
+                  )}
                 </span>
               </th>
             ))}

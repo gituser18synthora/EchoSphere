@@ -1,41 +1,59 @@
 """Sarvam AI STT (Saaras) — lazy-imports the sarvamai SDK.
 
-Migrated from the legacy voice engines sarvam_adapter.py. Fixes the legacy Odia
-inconsistency: the BCP-47 code is "or-IN" everywhere (the legacy STT mapping
-used the invalid "od-IN" while TTS used "or-IN").
+Migrated from the legacy voice engines sarvam_adapter.py. This adapter keeps no
+locale table of its own: the platform→Sarvam spelling lives in
+``shared.providers.languages`` (the one provider-mapping module), so the STT
+and TTS sides cannot drift apart. Urdu is the one enabled platform language
+Sarvam transcribes but cannot speak, which is why the STT locale set is defined
+separately from the TTS one.
 """
 
 import asyncio
+import logging
 import time
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, STTProvider, STTResult
+from shared.providers.languages import (
+    SARVAM_STT_SUPPORTED_LOCALES,
+    sarvam_stt_language_code,
+    to_platform_language,
+)
+from shared.providers.stt.sarvam_keyterms import (
+    KEYTERMS_SETTING,
+    normalize_keyterms,
+    supports_keyterms,
+)
 from shared.audio.pcm import pcm_to_wav_bytes
 
-# Internal short codes → Sarvam BCP-47. Odia accepts both "od" and "or"
-# internally but always maps to "or-IN" on the wire.
-_LANG_TO_SARVAM = {
-    "en": "en-IN",
-    "hi": "hi-IN",
-    "bn": "bn-IN",
-    "kn": "kn-IN",
-    "ml": "ml-IN",
-    "mr": "mr-IN",
-    "od": "or-IN",
-    "or": "or-IN",
-    "pa": "pa-IN",
-    "ta": "ta-IN",
-    "te": "te-IN",
-    "gu": "gu-IN",
-}
+logger = logging.getLogger("providers.stt.sarvam")
+
+
+def _base_language(language: str) -> str:
+    """Normalize a platform locale or short code to the internal base code.
+
+    Callers hand this provider both spellings — the bot's configured locale
+    ("hi-IN") and the short code ("hi"). The shared mapper accepts both; this
+    helper only produces the short label a transcript is tagged with.
+    """
+    return (language or "").strip().split("-")[0].lower()
+
+
+def sarvam_language_code(language: str | None) -> str:
+    """The wire ``language_code`` for a platform language ("hi-IN"/"hi" →
+    "hi-IN"); blank, "auto" and languages the recognizer cannot pin request
+    auto-detect. Thin wrapper over the shared provider mapping."""
+    return sarvam_stt_language_code(language)
 
 
 def _sarvam_lang_to_internal(code: str | None, fallback: str) -> str:
     """Map a Sarvam language_code (e.g. "hi-IN") back to an internal short code."""
     if not code:
         return fallback
-    base = code.split("-")[0].lower()
-    return base if base in _LANG_TO_SARVAM else fallback
+    platform = to_platform_language("sarvam", code)
+    if platform not in SARVAM_STT_SUPPORTED_LOCALES:
+        return fallback
+    return _base_language(platform)
 
 
 class SarvamSTT(STTProvider):
@@ -63,9 +81,23 @@ class SarvamSTT(STTProvider):
         self._client = AsyncSarvamAI(
             api_subscription_key=key, timeout=config.timeout_seconds
         )
-        self._model = config.model or "saaras:v3"
+        self._model = config.model or "saaras:v4"
         self._language = config.language or "en"
         self._timeout = config.timeout_seconds
+        # Key-term biasing (``extra.keyterms``): forwarded on the REST call
+        # only for a model that supports it (saaras:v4) — never for v3.
+        configured = normalize_keyterms((config.extra or {}).get(KEYTERMS_SETTING))
+        if configured and not supports_keyterms(self._model):
+            logger.warning(
+                "sarvam-stt: %d keyterm(s) configured but model %r does not "
+                "support key-term biasing; not sent", len(configured), self._model,
+            )
+            configured = []
+        self._keyterms: list[str] = configured
+
+    @property
+    def keyterms(self) -> list[str]:
+        return list(self._keyterms)
 
     async def transcribe(
         self, audio: bytes, *, sample_rate: int = 16000, language: str | None = None
@@ -74,14 +106,24 @@ class SarvamSTT(STTProvider):
             return STTResult(text="")
         started = time.perf_counter()
         wav = pcm_to_wav_bytes(audio, sample_rate)
-        lang = (language or self._language or "en").lower()
+        requested = language or self._language or "en"
+        lang = _base_language(requested)
+        wire = sarvam_language_code(requested)
+        if wire == "unknown" and lang not in ("", "auto", "unknown"):
+            logger.warning(
+                "sarvam-stt: language '%s' cannot be pinned — transcribing with "
+                "auto-detect instead", requested,
+            )
+        request_kwargs: dict = {
+            "file": ("audio.wav", wav, "audio/wav"),
+            "model": self._model,
+            "language_code": wire,
+        }
+        if self._keyterms:
+            request_kwargs["keyterms"] = list(self._keyterms)
         try:
             response = await asyncio.wait_for(
-                self._client.speech_to_text.transcribe(
-                    file=("audio.wav", wav, "audio/wav"),
-                    model=self._model,
-                    language_code=_LANG_TO_SARVAM.get(lang, "unknown"),
-                ),
+                self._client.speech_to_text.transcribe(**request_kwargs),
                 timeout=self._timeout,
             )
         except TimeoutError as exc:
@@ -92,9 +134,14 @@ class SarvamSTT(STTProvider):
             raise _categorize(self.name, exc) from exc
 
         raw_detected = getattr(response, "language_code", None)
+        # Present only in auto-detect mode ("unknown"); None when pinned.
+        raw_probability = getattr(response, "language_probability", None)
         return STTResult(
             text=(getattr(response, "transcript", "") or "").strip(),
             language=_sarvam_lang_to_internal(raw_detected, lang),
+            language_probability=(
+                float(raw_probability) if raw_probability is not None else None
+            ),
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 

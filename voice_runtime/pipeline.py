@@ -1,6 +1,14 @@
 """Voice pipeline assembly.
 
-    transport.input() → VAD → user-turn control → STT → brain → TTS → transport.output()
+    transport.input() → noise gate → VAD → latency probe → STT
+        → user-turn control → brain → TTS → transport.output()
+
+Speech/noise separation runs in three layers, cheapest first: the caller audio
+gate (adaptive energy relative to this call's measured noise floor — see
+voice_runtime.audio_gate), Silero VAD (neural speech probability), and the
+final-transcript quality gate (voice_runtime.transcript_gate). The energy gate
+is deliberately AHEAD of the VAD: noise it suppresses can never start a user
+turn, interrupt the bot, or reach the STT.
 
 Interruption/barge-in is handled by the user-turn controller (VAD start
 strategy) which interrupts bot output; the brain additionally cancels its
@@ -15,70 +23,155 @@ configuration (ResolvedBotConfig):
   per-language voice mapping and fallback; EchoTTSService otherwise.
 """
 
+import asyncio
 import logging
+import math
+from dataclasses import replace
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.audio.utils import create_stream_resampler
+from pipecat.frames.frames import (
+    CancelFrame,
+    EndFrame,
+    Frame,
+    InputAudioRawFrame,
+    OutputAudioRawFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
 from pipecat.turns.user_turn_processor import UserTurnProcessor
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    ExternalUserTurnStrategies,
+    UserTurnStrategies,
+)
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError
 from shared.providers.factory import get_llm_provider, get_stt_provider, get_tts_provider
+from shared.turn_detection import (
+    NOISE_GATE_BOUNDS,
+    NOISE_GATE_DEFAULTS,
+    TURN_DETECTION_BOUNDS,
+    TURN_DETECTION_DEFAULTS,
+    resolve_bounded,
+)
+from shared.orchestration.naturalness import SpeechNaturalnessPlanner
+from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
+from shared.providers.stt.sarvam_keyterms import (
+    KEYTERMS_SETTING,
+    MAX_KEYTERMS,
+    normalize_keyterms,
+    supports_keyterms,
+)
+from shared.providers.stt_language_policy import (
+    resolve_auto_detect_language,
+    stt_language_mode,
+)
+from voice_runtime.audio_gate import CallerAudioGate
+from voice_runtime.barge_in import WordConfirmedBargeInStrategy
+from voice_runtime.caller_level import CallerLevelBaseline
+from voice_runtime.playback_duck import PlaybackDuck
+from voice_runtime.silence_policy import SilencePolicy
 from voice_runtime.brain import ConversationBrain
+from voice_runtime.latency_filler import LatencyFillerProcessor, get_filler_library
+from voice_runtime.voiced_cues import get_voiced_cue_library
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
-from voice_runtime.recording import SessionRecorder
+from voice_runtime.recording import (
+    AlignedStereoRecorder,
+    CallRecordingWriter,
+    SessionRecorder,
+)
+from voice_runtime.turn_metrics import TurnLatencyTracker, VADLatencyProbe
+from voice_runtime.vad_confidence import (
+    ConfidenceTrackingSileroVADAnalyzer,
+    VADConfidenceProbe,
+)
 
 logger = logging.getLogger(__name__)
+
+# Sarvam saaras streaming: seconds from speech end to the final transcript
+# that the turn-stop strategy may wait for (its stt wait is this minus the
+# VAD stop_secs). Measured locally 2026-09-24 over 216 turns: p50 0.26 s,
+# p90 0.45 s, worst 1.47 s. 0.8 s covers ~93 % of finals and bounds a lost
+# final to +0.1 s over the telephony pause window.
+SARVAM_TTFS_P99_S = 0.8
+# Sarvam's own default for ``min_speech_frames`` (streaming docs, 2026-10): the
+# consecutive speech frames that open a segment after the first turn.
+SARVAM_MIN_SPEECH_FRAMES_DEFAULT = 2
+# The legacy Sarvam adapter's missing-final recovery after a VAD stop: a
+# retried flush at 0.65 s and a second 0.65 s wait (voice_runtime.sarvam_stt
+# _MISSING_FINAL_RETRY_S), plus the final's own transit.
+SARVAM_MISSING_FINAL_WINDOW_S = 1.5
+
 
 # ── turn detection ──────────────────────────────────────────────────────────
 # End-of-turn = VAD silence (stop_secs, also triggers the STT flush so the
 # final transcript overlaps the policy wait) + user_speech_timeout (the window
 # in which the caller may resume after a pause). The brain only runs the LLM
 # once the turn closes, so the effective endpoint a caller experiences is
-# stop_secs + user_speech_timeout of silence (~1 s with the defaults).
+# stop_secs + user_speech_timeout of silence (~1.4 s in the browser).
 #
 # Telephony audio is quieter and band-limited (8 kHz PSTN), so its VAD
 # thresholds are more permissive — with the browser defaults, short low-energy
 # words ("हाँ", "yes") often never trip VAD start, the STT never gets flushed
 # and the first response waits on the provider's own slow endpointing.
 #
-# Per-bot overrides live in voice settings: stt_settings.turn_detection.
-TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
-    "browser": {
-        "confidence": 0.7,
-        "start_secs": 0.2,
-        "stop_secs": 0.2,
-        "min_volume": 0.6,
-        "user_speech_timeout": 0.8,
-    },
-    "telephony": {
-        "confidence": 0.6,
-        "start_secs": 0.2,
-        "stop_secs": 0.2,
-        "min_volume": 0.4,
-        "user_speech_timeout": 0.8,
-    },
-}
-
+# Tenant settings are merged into the immutable session snapshot before this
+# module is constructed. Legacy per-bot STT values are read only when an old
+# cached snapshot does not yet carry the tenant map.
 # Misconfiguration must never produce an unusable call (e.g. a 30 s endpoint
 # or a VAD that triggers on line noise).
-_TURN_BOUNDS: dict[str, tuple[float, float]] = {
-    "confidence": (0.3, 0.95),
-    "start_secs": (0.1, 1.0),
-    "stop_secs": (0.1, 2.0),
-    "min_volume": (0.0, 1.0),
-    "user_speech_timeout": (0.2, 3.0),
-}
+# Bounds are shared with backend validation (``shared.turn_detection``), so a
+# value accepted by the Tenant Admin API is guaranteed to be safe here.
+
+
+def _warn_invalid(section: str):
+    def report(key, value, default):
+        logger.warning(
+            "%s.%s=%r is not a number; using default %s", section, key, value, default
+        )
+
+    return report
+
+
+def resolve_silence_policy(turn: dict[str, float]) -> SilencePolicy:
+    """Platform silence policy with the tenant-configured ladder values.
+
+    ``turn`` is the resolved Turn Detection map for this call's transport:
+    first-prompt wait, retry interval and prompt count come from it (a
+    snapshot written before a field existed has no key and keeps that
+    field's schema default). Bounds are enforced by the schema already; the
+    clamp here only guards a corrupt cached value. The post-hold grace stays
+    a platform setting.
+    """
+    base = SilencePolicy.from_settings(get_settings())
+
+    def _turn_value(key: str) -> float:
+        low, high = TURN_DETECTION_BOUNDS[key]
+        default = TURN_DETECTION_DEFAULTS["browser"][key]
+        try:
+            value = float(turn.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        if not math.isfinite(value):
+            value = default
+        return min(high, max(low, value))
+
+    return replace(
+        base,
+        prompt_seconds=_turn_value("silence_prompt_seconds"),
+        retry_seconds=_turn_value("silence_retry_seconds"),
+        max_prompts=int(round(_turn_value("silence_max_prompts"))),
+    )
 
 
 def resolve_turn_detection(
@@ -86,59 +179,233 @@ def resolve_turn_detection(
 ) -> dict[str, float]:
     """Effective turn-detection parameters for one call.
 
-    Transport-aware defaults overridden by the bot's
-    ``stt_settings.turn_detection``, every value clamped to a sane range.
+    Fresh snapshots carry a fully-resolved tenant transport map. The legacy
+    per-bot STT location remains a fallback only for older cached snapshots
+    and direct unit/runtime callers created before tenant settings existed.
     """
-    defaults = TURN_DETECTION_DEFAULTS.get(
-        transport_kind, TURN_DETECTION_DEFAULTS["browser"]
+    session_values = (config.turn_detection or {}).get(transport_kind, {})
+    if isinstance(session_values, dict) and isinstance(
+        session_values.get("turn_detection"), dict
+    ):
+        return resolve_bounded(
+            session_values["turn_detection"],
+            TURN_DETECTION_DEFAULTS.get(transport_kind, TURN_DETECTION_DEFAULTS["browser"]),
+            TURN_DETECTION_BOUNDS,
+            on_invalid=_warn_invalid("tenant_turn_detection"),
+        )
+    return resolve_bounded(
+        ((config.stt or {}).get("settings") or {}).get("turn_detection"),
+        TURN_DETECTION_DEFAULTS.get(transport_kind, TURN_DETECTION_DEFAULTS["browser"]),
+        TURN_DETECTION_BOUNDS,
+        on_invalid=_warn_invalid("turn_detection"),
     )
-    overrides = ((config.stt or {}).get("settings") or {}).get("turn_detection") or {}
-    resolved: dict[str, float] = {}
-    for key, default in defaults.items():
-        value = overrides.get(key, default)
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            logger.warning(
-                "turn_detection.%s=%r is not a number; using default %s",
-                key, value, default,
-            )
-            value = default
-        low, high = _TURN_BOUNDS[key]
-        resolved[key] = min(max(value, low), high)
-    return resolved
 
 
-def _sarvam_stream_encodings() -> set[str]:
-    """Audio encodings the installed sarvamai SDK accepts for streaming STT.
+def resolve_noise_gate(
+    config: ResolvedBotConfig, transport_kind: str = "browser"
+) -> dict[str, float]:
+    """Effective caller-audio noise-gate parameters for one call.
 
-    sarvamai 0.1.28 pins AudioData.encoding to Literal["audio/wav"]; newer
-    SDKs may widen it. Introspecting keeps us honest either way — sending an
-    unsupported value fails per-chunk validation and silently kills STT.
+    Uses the per-session tenant snapshot when present and the legacy bot STT
+    location for backward-compatible cached/direct configs. ``enabled`` is a
+    0/1 float so the whole section validates and clamps through one code path.
     """
+    session_values = (config.turn_detection or {}).get(transport_kind, {})
+    if isinstance(session_values, dict) and isinstance(
+        session_values.get("noise_gate"), dict
+    ):
+        return resolve_bounded(
+            session_values["noise_gate"],
+            NOISE_GATE_DEFAULTS.get(transport_kind, NOISE_GATE_DEFAULTS["browser"]),
+            NOISE_GATE_BOUNDS,
+            on_invalid=_warn_invalid("tenant_noise_gate"),
+        )
+    return resolve_bounded(
+        ((config.stt or {}).get("settings") or {}).get("noise_gate"),
+        NOISE_GATE_DEFAULTS.get(transport_kind, NOISE_GATE_DEFAULTS["browser"]),
+        NOISE_GATE_BOUNDS,
+        on_invalid=_warn_invalid("noise_gate"),
+    )
+
+
+# Deepgram Flux end-of-turn defaults, chosen for telephony voice agents:
+# eot_threshold stays at the provider's recommended 0.7 (raising it delays
+# every turn; lowering it interrupts natural pauses), the eager threshold is
+# conservative (speculation costs decision-LLM calls when it misfires), and
+# the silence cap forces a turn end well before the provider's 5 s default —
+# a caller who has said something and then stays quiet for 3 s is done.
+_FLUX_DEFAULT_EAGER_EOT = 0.6
+_FLUX_DEFAULT_EOT_TIMEOUT_MS = 3000
+_FLUX_BOUNDS = {
+    "eot_threshold": (0.5, 0.9),
+    "eager_eot_threshold": (0.3, 0.9),
+    "eot_timeout_ms": (500, 60000),
+}
+
+
+def _flux_setting(settings: dict, key: str, default):
+    """One bounded numeric Flux setting; junk falls back to the default."""
+    value = settings.get(key, default)
+    if value is None:
+        return None  # explicit null disables the feature (eager EOT)
+    low, high = _FLUX_BOUNDS[key]
     try:
-        import typing
+        if isinstance(value, bool):
+            raise TypeError
+        value = float(value)
+    except (TypeError, ValueError):
+        logger.warning("deepgram-stt: %s=%r is not a number; using %s", key, value, default)
+        if default is None:
+            return None
+        value = float(default)
+    value = min(max(value, low), high)
+    return int(value) if key == "eot_timeout_ms" else value
 
-        from sarvamai.requests.audio_data import AudioDataParams
 
-        hints = typing.get_type_hints(AudioDataParams)
-        values = set(typing.get_args(hints["encoding"]))
-        if values:
-            return values
-    except Exception:  # noqa: BLE001 — introspection must never break calls
-        pass
-    return {"audio/wav"}
+def _flux_language_hints(stt_conf: dict, config: ResolvedBotConfig) -> list:
+    """Language hints for flux-general-multi, as pipecat Language values.
+
+    Explicit ``stt_settings.language_hints`` win; otherwise the bot's own
+    configured languages (hi-IN, en-IN → hi, en) are the hints — the model
+    biases toward exactly the languages the bot is allowed to speak.
+    """
+    from pipecat.transcriptions.language import Language
+
+    settings = stt_conf.get("settings") or {}
+    raw = settings.get("language_hints")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raw = [locale for locale in (config.languages or [config.language]) if locale]
+    hints = []
+    for code in raw:
+        base = str(code).split("-")[0].strip().lower()
+        if not base:
+            continue
+        try:
+            hints.append(Language(base))
+        except ValueError:
+            logger.warning("deepgram-stt: unsupported language hint %r ignored", code)
+    seen = set()
+    return [h for h in hints if not (h in seen or seen.add(h))]
 
 
-def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
-                      recorder: SessionRecorder | None = None):
-    """STT service from bot config: Sarvam realtime WS or segmented fallback."""
+def _sarvam_keyterms_for_model(
+    model: str, configured: object, *, recorder: SessionRecorder | None = None,
+    derived: object = None,
+) -> list[str]:
+    """Key terms to hand the Sarvam recognizer for this call, if any.
+
+    ``stt_settings.keyterms`` is only meaningful on ``saaras:v4``; the API
+    rejects it for other models at save time, but a configuration can
+    predate a model switch or arrive through a cached snapshot, so the
+    runtime decides again here and records what it did. Nothing is sent for
+    an absent/empty list, and NOTHING is ever sent for an unsupported model.
+    ``derived`` is the config snapshot's automatic list (shared.bot_config
+    _derived_stt_keyterms), used only when no operator list is configured.
+    """
+    terms = normalize_keyterms(configured)
+    source = "configured"
+    if not terms:
+        terms = normalize_keyterms(derived)[:MAX_KEYTERMS]
+        source = "derived"
+    if not terms:
+        return []
+    if not supports_keyterms(model):
+        logger.warning(
+            "sarvam-stt: %d keyterm(s) configured but model %r does not support "
+            "key-term biasing (saaras:v4 only); not sent", len(terms), model,
+        )
+        if recorder is not None:
+            recorder.add_event(
+                "stt_keyterms", model=model, sent=False,
+                reason="unsupported_model", count=len(terms),
+            )
+        return []
+    if recorder is not None:
+        recorder.add_event(
+            "stt_keyterms", model=model, sent=True, count=len(terms),
+            terms=terms, source=source,
+        )
+    return terms
+
+
+def build_stt_service(
+    config: ResolvedBotConfig,
+    *,
+    sample_rate: int = 16000,
+    recorder: SessionRecorder | None = None,
+    use_provider_vad: bool | None = None,
+    latency=None,
+    barge_in_min_words: int = 2,
+    prefer_primary_language: bool | None = None,
+    spoken_text=None,
+):
+    """STT service from bot config: Deepgram Flux or Sarvam realtime WS,
+    segmented fallback otherwise.
+
+    ``prefer_primary_language`` is accepted for backward compatibility and
+    ignored: whether the recognizer is pinned to the bot's language is now
+    decided by ``auto_detect_language`` (explicit or derived from the bot's
+    languages) on every transport.
+    """
     stt_conf = config.stt or {}
     provider = stt_conf.get("provider") or "sarvam"
 
+    if provider == "deepgram":
+        # Deepgram Flux conversational STT over /v2/listen: one persistent
+        # WebSocket per call, model-integrated turn detection (EndOfTurn is
+        # authoritative — see voice_runtime.deepgram_stt).
+        from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTSettings
+
+        from voice_runtime.deepgram_stt import EchoDeepgramFluxSTTService
+
+        api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
+        if not api_key:
+            raise ProviderError(
+                "deepgram-stt", "auth",
+                "Deepgram STT credentials are not configured (DEEPGRAM_API_KEY)",
+            )
+        settings_kwargs = stt_conf.get("settings") or {}
+        model = stt_conf.get("model") or "flux-general-multi"
+        service_settings = DeepgramFluxSTTSettings(
+            model=model,
+            language=None,
+            eot_threshold=_flux_setting(settings_kwargs, "eot_threshold", 0.7),
+            eager_eot_threshold=_flux_setting(
+                settings_kwargs, "eager_eot_threshold", _FLUX_DEFAULT_EAGER_EOT
+            ),
+            eot_timeout_ms=_flux_setting(
+                settings_kwargs, "eot_timeout_ms", _FLUX_DEFAULT_EOT_TIMEOUT_MS
+            ),
+        )
+        if model == "flux-general-multi":
+            hints = _flux_language_hints(stt_conf, config)
+            if hints:
+                service_settings.language_hints = hints
+        extra_params: dict[str, str] = {}
+        # numerals: spoken numbers arrive as digits ("six zero one" → "6 0 1"),
+        # which identifier extraction fuses into one run. Supported by Flux on
+        # /v2/listen (English-family languages on flux-general-multi; other
+        # languages pass through unchanged). stt_settings.numerals=false
+        # opts a bot out.
+        if settings_kwargs.get("numerals", True):
+            extra_params["numerals"] = "true"
+        return EchoDeepgramFluxSTTService(
+            api_key=api_key,
+            sample_rate=sample_rate,
+            settings=service_settings,
+            recorder=recorder,
+            latency=latency,
+            barge_in_min_words=barge_in_min_words,
+            extra_query_params=extra_params,
+        )
+
     if provider == "sarvam":
-        # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK).
+        # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK),
+        # subclassed to report segment finality — see voice_runtime.sarvam_stt.
         from pipecat.services.sarvam.stt import SarvamSTTService
+        from pipecat.transcriptions.language import Language
+
+        from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
 
         api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
         if not api_key:
@@ -147,34 +414,196 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
                 "Sarvam STT credentials are not configured (SARVAM_API_KEY)",
             )
         settings_kwargs = stt_conf.get("settings") or {}
-        model = stt_conf.get("model") or "saaras:v3"
-        language = stt_conf.get("language") or None  # None → auto-detect ("unknown")
+        model = stt_conf.get("model") or get_settings().stt_model or "saaras:v4"
+        # Language policy (shared.providers.stt_language_policy): an explicit
+        # STT language always pins the recognizer; otherwise the bot's
+        # auto_detect_language decides — explicit true/false when the user set
+        # it, else derived from the bot's languages (more than one → detect,
+        # a single language → pin to it, the reliable choice for the short
+        # narrowband snippets of phone calls). The SAME rule applies to the
+        # browser test transport so Testing and real calls behave alike, and
+        # a pinned label can never trigger a language switch in the brain.
+        auto_detect = resolve_auto_detect_language(
+            settings_kwargs, config.languages or [config.language],
+        )
+        # The resolver stamps the EFFECTIVE boolean into the settings (so the
+        # value above is always right) and keeps the provenance beside it —
+        # report "derived" vs "explicit" from that record when present.
+        resolved_policy = stt_conf.get("auto_detect_language")
+        if isinstance(resolved_policy, dict) and resolved_policy.get("source") in ("explicit", "derived"):
+            auto_detect = replace(auto_detect, source=resolved_policy["source"])
+        mode, language_code = stt_language_mode(
+            stt_conf.get("language"), auto_detect, config.language,
+        )
+        language = None
+        if language_code:
+            try:
+                language = Language(language_code)
+            except ValueError:
+                logger.warning(
+                    "sarvam-stt: unsupported configured language %r; using auto-detect",
+                    language_code,
+                )
+                mode, language_code = "auto", None
+        if recorder is not None:
+            recorder.add_event(
+                "stt_language_mode",
+                mode=mode,
+                language=language_code,
+                auto_detect_language=auto_detect.enabled,
+                source=auto_detect.source,
+                configured_languages=list(auto_detect.languages),
+                default_language=config.language,
+            )
         mode = settings_kwargs.get("mode")
+        provider_vad = settings_kwargs.get("vad_signals", False)
+        if use_provider_vad is not None:
+            provider_vad = use_provider_vad
+        forwarded_setting_names = (
+            "positive_speech_threshold",
+            "negative_speech_threshold",
+            "min_speech_frames",
+            "first_turn_min_speech_frames",
+            "negative_frames_count",
+            "negative_frames_window",
+            "start_speech_volume_threshold",
+            "interrupt_min_speech_frames",
+            "pre_speech_pad_frames",
+            "num_initial_ignored_frames",
+        )
+        forwarded_settings = {
+            key: settings_kwargs[key]
+            for key in forwarded_setting_names
+            if key in settings_kwargs and settings_kwargs[key] is not None
+        }
+        # Sarvam's streaming server opens the FIRST speech segment of a
+        # connection only after ``first_turn_min_speech_frames`` consecutive
+        # speech frames (server default 8 = 512 ms at 8 kHz); every later
+        # segment needs ``min_speech_frames`` (default 2). A short first
+        # answer after the greeting ("haan boliye", ~0.5 s) never reached that
+        # bar: the flush at VAD stop had nothing to finalize, no ``data``
+        # message came back and the utterance was lost (live
+        # cv_80982e36f4f5 / cv_baeaf87927cb 2026-10-22, reproduced offline
+        # with the recorded audio — the same audio transcribes once this
+        # parameter is lowered). Unless the bot sets it explicitly, the first
+        # turn is held to the same requirement as every other turn.
+        forwarded_settings.setdefault(
+            "first_turn_min_speech_frames",
+            forwarded_settings.get("min_speech_frames", SARVAM_MIN_SPEECH_FRAMES_DEFAULT),
+        )
         service_settings = SarvamSTTService.Settings(
             model=model,
             language=language,
-            vad_signals=settings_kwargs.get("vad_signals", False) or None,
-            high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity") or None,
+            vad_signals=provider_vad,
+            high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity"),
+            **forwarded_settings,
         )
-        codec = settings_kwargs.get("input_encoding", "wav")
-        if codec not in ("wav", "pcm_s16le"):
-            codec = "wav"
-        if f"audio/{codec}" not in _sarvam_stream_encodings():
-            # A codec the installed sarvamai SDK rejects would fail EVERY audio
-            # chunk (pydantic Literal validation) and the call would produce no
-            # transcripts at all — clamp to wav (raw PCM16 bytes either way).
+        codec = settings_kwargs.get("input_encoding") or "pcm_s16le"
+        if codec != "pcm_s16le":
+            # Pipecat audio frames are raw little-endian PCM, not standalone
+            # RIFF/WAV files.  Labelling those bytes "wav" made short phone
+            # utterances intermittently disappear at the provider.
             logger.warning(
-                "sarvam-stt: input_encoding '%s' not supported by the installed "
-                "sarvamai SDK; using 'wav'", codec,
+                "sarvam-stt: input_encoding '%s' does not match Pipecat's raw "
+                "audio frames; using 'pcm_s16le'", codec,
             )
-            codec = "wav"
-        return SarvamSTTService(
+            codec = "pcm_s16le"
+        keyterms = _sarvam_keyterms_for_model(
+            model, settings_kwargs.get(KEYTERMS_SETTING), recorder=recorder,
+            derived=stt_conf.get("derived_keyterms"),
+        )
+        runtime_settings = get_settings()
+        if runtime_settings.sarvam_realtime_stt:
+            # Evaluation path (SARVAM_REALTIME_STT=true): Sarvam's realtime
+            # socket — true partials, client- or server-side endpointing. The
+            # endpoint serves saaras:v3-realtime and saaras:v4 only; any other
+            # model keeps the legacy streaming adapter below.
+            from voice_runtime.sarvam_realtime_stt import (
+                RealtimeSarvamSTTService,
+                normalize_endpointing,
+                normalize_stream_type,
+                realtime_model_for,
+            )
+
+            realtime_model = realtime_model_for(model)
+            if realtime_model is None:
+                logger.warning(
+                    "sarvam-stt: SARVAM_REALTIME_STT is on but model %r is not "
+                    "served by the realtime endpoint; using the streaming socket",
+                    model,
+                )
+            else:
+                endpointing = normalize_endpointing(runtime_settings.sarvam_realtime_endpointing)
+                stream_type = normalize_stream_type(runtime_settings.sarvam_realtime_stream_type)
+                # Realtime language policy. With ``language_code=auto`` the
+                # realtime socket renders Hindi speech as ENGLISH ("haan
+                # boliye" came back as "Yes, speak." live on 2026-10-22 and
+                # "Hello, speak." when the recording was replayed on
+                # 2026-10-23; pinned to hi-IN the same audio transcribes
+                # correctly). A bot with one configured language is therefore
+                # always pinned to it on this socket, whatever the
+                # auto-detect setting says; only a multi-language bot keeps
+                # auto-detect (and inherits that behaviour — see
+                # docs/VOICE_PROVIDERS.md). pipecat >= 1.13: ``language=None``
+                # is auto; a Language reaches the handshake as its locale.
+                realtime_language = language
+                language_pinned = None
+                bot_languages = {str(code).strip() for code in (config.languages or []) if code}
+                if realtime_language is None and len(bot_languages) <= 1 and config.language:
+                    try:
+                        realtime_language = Language(config.language)
+                        language_pinned = "single_language_bot"
+                    except ValueError:
+                        logger.warning(
+                            "sarvam-realtime: cannot pin unsupported bot language %r; "
+                            "auto-detect stays on", config.language,
+                        )
+                # Transcription only: ``translate``/``translit``/``codemix``
+                # would change the script or language of what the brain sees.
+                realtime_mode = "transcribe"
+                realtime_settings = RealtimeSarvamSTTService.Settings(
+                    model=realtime_model,
+                    language=realtime_language,
+                    stream_type=stream_type,
+                    mode=realtime_mode,
+                )
+                if recorder is not None:
+                    recorder.add_event(
+                        "stt_realtime", model=realtime_model, configured_model=model,
+                        endpointing=endpointing, stream_type=stream_type,
+                        language=str(realtime_language) if realtime_language else "auto",
+                        language_pinned=language_pinned,
+                        mode=realtime_mode,
+                        mode_forced=bool(mode) and str(mode).lower() != realtime_mode,
+                    )
+                return RealtimeSarvamSTTService(
+                    api_key=api_key,
+                    endpointing=endpointing,
+                    sample_rate=sample_rate,
+                    settings=realtime_settings,
+                    keepalive_timeout=8.0,
+                    recorder=recorder,
+                    keyterms=keyterms or None,
+                    spoken_text=spoken_text,
+                    # Same bound as the streaming adapter so the turn-stop wait
+                    # is identical and the comparison isolates the socket.
+                    ttfs_p99_latency=SARVAM_TTFS_P99_S,
+                )
+        return EndpointedSarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
             sample_rate=sample_rate,
             input_audio_codec=codec,
             settings=service_settings,
             keepalive_timeout=8.0,
+            recorder=recorder,
+            keyterms=keyterms or None,
+            # Measured on this deployment (2026-09-24, 216 turns): the final
+            # lands 260 ms (p50) / 452 ms (p90) after speech end, tail to
+            # 1.5 s. The turn-stop strategy waits for it at most this long
+            # (minus VAD stop_secs) — see the stop strategy in
+            # build_voice_pipeline.
+            ttfs_p99_latency=SARVAM_TTFS_P99_S,
         )
 
     stt_provider = get_stt_provider(
@@ -193,25 +622,174 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
     )
 
 
+class AlignedRecordingProcessor(FrameProcessor):
+    """Feeds the wall-clock-aligned stereo recorder from pipeline frames.
+
+    Pure observer: every frame passes through untouched, so the audio sent to
+    STT and to the caller is byte-identical with or without recording. Ready
+    stereo chunks are handed to a dedicated writer task — disk latency never
+    sits on the audio path — and each aligned region is written exactly once
+    (``stop_recording`` is idempotent, covering both the EndFrame path and
+    the recorder-driven ``CallRecordingWriter.close()``).
+    """
+
+    def __init__(self, *, writer: CallRecordingWriter, sample_rate: int) -> None:
+        super().__init__()
+        self._writer = writer
+        self._aligner = AlignedStereoRecorder(sample_rate=sample_rate)
+        self._in_resampler = create_stream_resampler()
+        self._out_resampler = create_stream_resampler()
+        self._write_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._write_task = None
+        self._stopped = False
+
+    def _enqueue(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        if self._write_task is None:
+            self._write_task = self.create_task(self._write_loop())
+        self._write_queue.put_nowait(chunk)
+
+    async def _write_loop(self) -> None:
+        while True:
+            chunk = await self._write_queue.get()
+            try:
+                await self._writer.append(chunk, self._aligner.sample_rate, 2)
+            except Exception:  # noqa: BLE001 — recording must never break audio
+                logger.warning("aligned recording write failed", exc_info=True)
+            finally:
+                self._write_queue.task_done()
+
+    async def stop_recording(self) -> None:
+        """Flush the tail and drain pending writes. Idempotent."""
+        if self._stopped:
+            return
+        self._stopped = True
+        tail = self._aligner.stop()
+        if tail:
+            self._enqueue(tail)
+        if self._write_task is not None:
+            await self._write_queue.join()
+            await self.cancel_task(self._write_task)
+            self._write_task = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame) and frame.audio and not self._stopped:
+            resampled = await self._in_resampler.resample(
+                frame.audio, frame.sample_rate, self._aligner.sample_rate
+            )
+            self._enqueue(self._aligner.add_user_audio(resampled))
+        elif isinstance(frame, OutputAudioRawFrame) and frame.audio and not self._stopped:
+            resampled = await self._out_resampler.resample(
+                frame.audio, frame.sample_rate, self._aligner.sample_rate
+            )
+            self._enqueue(self._aligner.add_bot_audio(resampled))
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            await self.stop_recording()
+        await self.push_frame(frame, direction)
+
+
+def build_batch_transcriber(config: ResolvedBotConfig):
+    """One-shot batch STT for identifier recovery, or None when unsupported.
+
+    Provider-neutral: the same REST ``STTProvider.transcribe`` the segmented
+    pipeline uses, built lazily on FIRST use so no client or connection
+    exists unless a recovery actually runs. Any setup/availability failure
+    degrades to None-behavior (the caller treats a raised error as a failed,
+    never-retried recovery) — recovery is an optimization, not a dependency.
+    """
+    stt_conf = dict(config.stt or {})
+    provider = stt_conf.get("provider") or "sarvam"
+    holder: list = []
+    extra = dict(stt_conf.get("extra") or {})
+    if provider == "sarvam":
+        # Same key-term biasing as the realtime socket, same v4-only rule:
+        # the REST adapter only forwards it for a supporting model.
+        batch_keyterms = _sarvam_keyterms_for_model(
+            stt_conf.get("model") or "", (stt_conf.get("settings") or {}).get(KEYTERMS_SETTING),
+            derived=stt_conf.get("derived_keyterms"),
+        )
+        if batch_keyterms:
+            extra[KEYTERMS_SETTING] = batch_keyterms
+
+    async def _transcribe(pcm: bytes, sample_rate: int, language: str) -> str:
+        if not holder:
+            holder.append(get_stt_provider(
+                ProviderConfig(
+                    provider=provider,
+                    model=stt_conf.get("model", ""),
+                    language=stt_conf.get("language") or config.language,
+                    api_key_reference=stt_conf.get("api_key_reference", ""),
+                    extra=extra,
+                )
+            ))
+        result = await holder[0].transcribe(
+            pcm, sample_rate=sample_rate,
+            language=stt_conf.get("language") or language or config.language,
+        )
+        return result.text or ""
+
+    return _transcribe
+
+
 def build_tts_service(
     config: ResolvedBotConfig,
     *,
     recorder: SessionRecorder,
     sample_rate: int = 24000,
+    latency=None,
+    naturalness=None,
+    filler_library=None,
+    spoken_text=None,
 ):
-    """TTS service from bot config: streaming router or segmented fallback."""
+    """TTS service from bot config: streaming router or segmented fallback.
+
+    ``spoken_text`` (voice_runtime.spoken_text.SpokenTextReference) receives
+    every text the streaming router speaks — the realtime STT adapter's echo
+    reference. The segmented REST fallback does not feed it.
+    """
     tts_conf = config.tts or {}
     provider = tts_conf.get("provider") or "sarvam"
 
-    if is_streaming_tts_provider(provider):
+    # The catalog marks models without realtime WebSocket support (e.g.
+    # ElevenLabs eleven_v3) with streaming=False at config resolution; those
+    # synthesize segment-by-segment over REST like any non-streaming provider.
+    # Older cached snapshots without the flag keep the streaming path.
+    model_streams = tts_conf.get("streaming", True)
+    if is_streaming_tts_provider(provider) and model_streams:
         return StreamingTTSRouter(
             tts_config=tts_conf,
             language=config.language,
             speed=config.speed,
+            pause_ms=config.pause_ms,
+            energy=config.energy,
             sample_rate=sample_rate,
             recorder=recorder,
+            latency=latency,
+            naturalness=naturalness,
+            # Rare planner-gated breath between sentences (pause mode),
+            # matched to the engine voice's gender — same clips as the
+            # pre-reply latency filler.
+            filler_library=filler_library if filler_library is not None else get_filler_library().new_session(),
+            spoken_text=spoken_text,
         )
 
+    # Delivery tuning for the segmented REST path: canonical speed overrides
+    # legacy pace/speed params and Energy maps onto documented model controls
+    # (same shared helper as the streaming router and previews).
+    extra = apply_delivery_params(
+        provider,
+        tts_conf.get("model") or "",
+        {**(tts_conf.get("extra") or {}), **(tts_conf.get("settings") or {})},
+        speed=config.speed,
+        energy=config.energy,
+    )
+    if provider == "elevenlabs":
+        # Synthesize at the pipeline rate instead of 16 kHz + upsampling
+        # (eleven_v3 replies on a 24 kHz browser call sounded duller than the
+        # same voice over the 24 kHz WebSocket path).
+        extra = {**extra, "output_sample_rate": sample_rate}
     tts_provider = get_tts_provider(
         ProviderConfig(
             provider=provider,
@@ -219,7 +797,7 @@ def build_tts_service(
             voice=tts_conf.get("voice", ""),
             language=config.language,
             api_key_reference=tts_conf.get("api_key_reference", ""),
-            extra=tts_conf.get("extra", {}),
+            extra=extra,
         )
     )
     return EchoTTSService(
@@ -227,14 +805,78 @@ def build_tts_service(
         voice=tts_conf.get("voice") or None,
         language=config.language,
         speed=config.speed,
+        pause_ms=config.pause_ms,
         sample_rate=sample_rate,
         recorder=recorder,
         model=tts_conf.get("model") or "",
+        provider_name=provider,
+        naturalness=naturalness,
+    )
+
+
+def build_latency_filler(
+    naturalness: SpeechNaturalnessPlanner,
+    *,
+    sample_rate: int,
+    recorder=None,
+    library=None,
+    cue_library=None,
+    transport_kind: str = "browser",
+) -> LatencyFillerProcessor | None:
+    """The gap-cover processor for one call, or None when the resolved
+    human-speech config needs none (no processor, no cost).
+
+    Sits between the TTS service and the output transport; the brain arms it
+    per dispatched turn with the active voice's gender. Config already comes
+    merged platform -> tenant -> bot and bounds-clamped from the planner.
+
+    Two independent families ride it: the BREATH (``breathing`` ×
+    ``latency_fillers`` → ``breath_enabled``) and the WORDS (``filler_words``
+    × ``acknowledgements`` → the dispatch-time acknowledgement;
+    ``filler_words`` × ``latency_filler_ladder`` → voiced cues rendered once
+    per voice, voice_runtime.voiced_cues). Turning either family off leaves
+    the other exactly as configured; the processor exists while any of them
+    is on.
+    """
+    if not naturalness.latency_cover_enabled:
+        return None
+    breath = naturalness.latency_fillers_enabled
+    acknowledgements = naturalness.acknowledgements_enabled
+    ladder = naturalness.latency_filler_ladder_enabled
+    return LatencyFillerProcessor(
+        delay_ms=naturalness.latency_filler_delay_ms,
+        breath_enabled=breath,
+        breath_gain_db=naturalness.breath_gain_db,
+        library=library if library is not None else get_filler_library(),
+        sample_rate=sample_rate,
+        recorder=recorder,
+        cue_library=(
+            (cue_library if cue_library is not None else get_voiced_cue_library())
+            if ladder or acknowledgements else None
+        ),
+        hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
+        spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
+        voiced_cue_gap_ms=300 if naturalness.adaptive_latency_cues_enabled else 0,
+        # Telephony serializers packetize outbound PCM; a completed clip's
+        # tail must be flushed explicitly or it plays ahead of the next reply.
+        emit_flush_marker=transport_kind == "telephony",
     )
 
 
 def build_llm_provider(config: ResolvedBotConfig):
     llm_conf = config.llm or {}
+    # A live reply must start streaming within the brain's first-token
+    # deadline (3 s). At its default (medium) effort a reasoning model thinks
+    # first: Manappuram on gpt-6-luna reached its first token at p90 3.8 s,
+    # max 7.5 s (demo 2026-10-26) and missed the deadline on the attempt and
+    # the retry six times — "kuch gadbad ho gayi" instead of a reply. A bot
+    # that does not choose llm_settings.reply_reasoning_effort therefore runs
+    # its call-time conversation-model work at the lowest effort the model
+    # accepts, as its decision calls always do ("none" on gpt-6-luna; models
+    # without reasoning ignore it). Post-call analysis builds its own engine
+    # and keeps the model default.
+    extra = dict(llm_conf.get("extra") or {})
+    extra.setdefault("reasoning_effort", "lowest")
     return get_llm_provider(
         ProviderConfig(
             provider=llm_conf.get("provider", "openai"),
@@ -243,9 +885,66 @@ def build_llm_provider(config: ResolvedBotConfig):
             timeout_seconds=float(
                 (llm_conf.get("settings") or {}).get("timeout_seconds", 15.0)
             ),
-            extra=llm_conf.get("extra", {}),
+            extra=extra,
         )
     )
+
+
+def build_user_turn_stop_strategies(
+    turn: dict[str, float],
+    config: ResolvedBotConfig,
+    *,
+    wait_for_final: bool,
+    tracker=None,
+    recorder=None,
+    smart_turn_enabled: bool | None = None,
+) -> list:
+    """The stop strategies for one call's ``UserTurnProcessor``.
+
+    Always the pause window (``FinalBoundedTurnStopStrategy``): the brain
+    gates the LLM on the resulting UserStoppedSpeakingFrame, so this timeout
+    IS the pause a caller gets before the bot takes the turn. With Smart Turn
+    enabled for the call (tenant ``turn_detection.smart_turn`` + the
+    SMART_TURN_ENABLED kill switch + the model's language list, see
+    voice_runtime.smart_turn) the analyzer strategy runs alongside it:
+    whichever triggers first ends the turn, so the window stays the fallback.
+    """
+    from voice_runtime.smart_turn import build_smart_turn_strategy, smart_turn_mode_from_setting
+    from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+    strategies: list = []
+    smart = build_smart_turn_strategy(
+        mode=smart_turn_mode_from_setting(turn.get("smart_turn", 1)),
+        language=config.language,
+        enabled=(
+            get_settings().smart_turn_enabled
+            if smart_turn_enabled is None else bool(smart_turn_enabled)
+        ),
+        user_speech_timeout=turn["user_speech_timeout"],
+        wait_for_transcript=wait_for_final,
+        tracker=tracker,
+        recorder=recorder,
+    )
+    if smart is not None:
+        strategies.append(smart)
+    strategies.append(FinalBoundedTurnStopStrategy(
+        # The strategy's timer starts AT the VAD stop, which itself
+        # required stop_secs of silence — charging both stacked the
+        # windows (0.9 s effective on telephony where 0.7 s was
+        # configured). The caller's total pause budget IS
+        # user_speech_timeout; deduct the silence already spent.
+        user_speech_timeout=max(
+            0.2, turn["user_speech_timeout"] - turn["stop_secs"]
+        ),
+        # Bounded by the STT's advertised final latency, never by
+        # the processor's 5 s fallback (voice_runtime.turn_stop) — and
+        # never shorter than the Sarvam adapter's missing-final retry
+        # window, so a turn is not closed empty while that retry is pending.
+        wait_for_transcript=wait_for_final,
+        tracker=tracker,
+        stt_retry_window=SARVAM_MISSING_FINAL_WINDOW_S,
+    ))
+    return strategies
 
 
 def build_voice_pipeline(
@@ -261,62 +960,398 @@ def build_voice_pipeline(
     idle_timeout_secs: float | None = None,
     client_info: dict | None = None,
     call_context: dict | None = None,
+    customer_context=None,
+    runtime_context=None,
     transport_kind: str = "browser",
+    previous_memory=None,
+    guardrails=None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
-    stt = build_stt_service(config, sample_rate=stt_sample_rate, recorder=recorder)
-    tts = build_tts_service(config, recorder=recorder, sample_rate=tts_sample_rate)
-    llm_provider = build_llm_provider(config)
+    # Deepgram Flux runs its own model-integrated turn detection server-side:
+    # its adapter emits the user speech boundaries and the finalized turn
+    # transcript itself, so the local Silero VAD and its turn strategies are
+    # not built at all — running both would double every start/stop signal.
+    stt_provider_code = (config.stt or {}).get("provider") or "sarvam"
+    provider_owns_turns = stt_provider_code == "deepgram"
+    if stt_provider_code == "sarvam" and get_settings().sarvam_realtime_stt:
+        # Sarvam realtime with server-side endpointing (SARVAM_REALTIME_
+        # ENDPOINTING=vad) proposes the boundaries itself, like Flux; under
+        # the default "manual" mode our VAD and turn policy stay in charge.
+        from voice_runtime.sarvam_realtime_stt import normalize_endpointing, realtime_model_for
 
+        if (
+            realtime_model_for((config.stt or {}).get("model") or get_settings().stt_model or "saaras:v4") is not None
+            and normalize_endpointing(get_settings().sarvam_realtime_endpointing) == "vad"
+        ):
+            provider_owns_turns = True
+
+    turn = resolve_turn_detection(config, transport_kind)
+    gate_conf = resolve_noise_gate(config, transport_kind)
+    barge_in_min_words = int(round(turn["barge_in_min_words"]))
+
+    # Created before the STT/TTS services: the TTS router stamps synthesis
+    # request/first-byte, and a turn-authoritative STT (Flux) stamps the
+    # physical speech boundaries — all on the same per-call tracker.
+    tracker = TurnLatencyTracker(session_id=recorder.session_id)
+    # One naturalness planner per call, shared by the brain (turn prefaces,
+    # backchannels) and the TTS router (per-sentence pause/rate variation) so
+    # variant no-repeat state and telemetry stay coherent. Resolved config
+    # comes fully merged from bot_config (platform -> tenant -> bot).
+    naturalness = SpeechNaturalnessPlanner(
+        config.human_speech,
+        config_sources=config.human_speech_sources,
+    )
+    # One call owns rotation and the recent-breath suppression clock. The
+    # latency filler and sentence breaths share it within this call only.
+    filler_library = get_filler_library().new_session()
+    # Local Silero owns speech boundaries in the normal pipeline. Enabling
+    # Sarvam server VAD at the same time produces duplicate start/stop frames;
+    # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
+    # The realtime Sarvam adapter matches transcripts against what the bot
+    # is saying (its echo on the line); the TTS router feeds the reference.
+    spoken_text = None
+    if get_settings().sarvam_realtime_stt:
+        from voice_runtime.spoken_text import SpokenTextReference
+
+        spoken_text = SpokenTextReference()
+    stt = build_stt_service(
+        config,
+        sample_rate=stt_sample_rate,
+        recorder=recorder,
+        use_provider_vad=not use_vad,
+        latency=tracker,
+        barge_in_min_words=barge_in_min_words,
+        spoken_text=spoken_text,
+    )
+    tts = build_tts_service(
+        config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
+        naturalness=naturalness, filler_library=filler_library, spoken_text=spoken_text,
+    )
+    llm_provider = build_llm_provider(config)
+    # Latency filler: a gender-matched breath from pre-rendered audio when a
+    # dispatched reply has not started speaking within the configured delay,
+    # cut the instant reply audio arrives (voice_runtime.latency_filler).
+    latency_filler = build_latency_filler(
+        naturalness, sample_rate=tts_sample_rate, recorder=recorder,
+        transport_kind=transport_kind, library=filler_library,
+    )
+    # The gate is the brain's source of caller audio energy for the transcript
+    # quality gate; None when gating is disabled (the gate's signals then simply
+    # do not contribute to a verdict).
+    # Telephony only: the bot's own reply leaks back on the PSTN/FreeSWITCH
+    # caller leg (line + handset echo) 15–35 dB above the noise floor, where a
+    # level margin cannot see it. The gate is handed the recently SENT bot
+    # audio and rejects inbound frames that correlate with it. Browser
+    # sessions keep their own echo canceller and are untouched.
+    # Mode (0 off, 1 shadow, 2 enforce) and lag span come from the generic
+    # telephony noise-gate configuration; the platform default is OFF, in
+    # which case nothing is built and no correlation work happens.
+    echo_reference = None
+    if transport_kind == "telephony" and gate_conf["enabled"] >= 0.5:
+        from voice_runtime.echo_reference import MODE_OFF, EchoReference, mode_from_setting
+
+        echo_mode = mode_from_setting(gate_conf.get("echo_reference_mode", 0))
+        if echo_mode != MODE_OFF:
+            echo_reference = EchoReference(
+                sample_rate=stt_sample_rate, mode=echo_mode, recorder=recorder,
+                max_lag_s=float(gate_conf.get("echo_reference_max_lag_ms", 700.0)) / 1000.0,
+            )
+    audio_gate = (
+        CallerAudioGate(
+            noise_margin_db=gate_conf["noise_margin_db"],
+            min_speech_ms=gate_conf["min_speech_ms"],
+            echo_min_speech_ms=gate_conf["echo_min_speech_ms"],
+            hangover_ms=gate_conf["hangover_ms"],
+            preroll_ms=gate_conf["preroll_ms"],
+            echo_margin_db=gate_conf["echo_margin_db"],
+            echo_tail_ms=gate_conf["echo_tail_ms"],
+            min_threshold_dbfs=gate_conf["min_threshold_dbfs"],
+            echo_reference=echo_reference,
+        )
+        # The gate substitutes silence for sub-floor audio (it never drops
+        # frames), so it composes with a provider-side turn detector too:
+        # Flux keeps receiving a continuous stream, minus the line noise
+        # that would otherwise open phantom turns.
+        if (use_vad or provider_owns_turns) and gate_conf["enabled"] >= 0.5
+        else None
+    )
+    if latency_filler is not None and audio_gate is not None:
+        # A voiced ladder cue ("Hmm…") is bot audio the gate's echo guard
+        # does not see (no bot-speaking state flips for it): shield its echo
+        # the way mid-caller-turn backchannels are shielded.
+        latency_filler.cue_window_hook = (
+            lambda active: audio_gate.begin_backchannel_window()
+            if active else audio_gate.end_backchannel_window()
+        )
+    # Background-speech guard (voice_runtime.caller_level): the caller's own
+    # speech level, learned per call from accepted turns, classifies later
+    # segments as caller vs background-suspect. Needs the gate (it is the
+    # level source); with the guard OFF the baseline still runs in shadow
+    # mode so verdicts land on the call's event stream for tuning.
+    caller_level = (
+        CallerLevelBaseline(
+            margin_db=turn["background_speech_margin_db"],
+            bot_audio_allowance_db=turn["background_bot_audio_allowance_db"],
+            min_segments=int(round(turn["background_baseline_min_segments"])),
+            enforce=turn["background_speech_guard"] >= 0.5,
+        )
+        if audio_gate is not None
+        else None
+    )
+    # Hybrid barge-in (voice_runtime.playback_duck): pause the reply the
+    # moment provisional caller speech is detected, commit or resume once the
+    # arbiter decides. Tenant opt-in; only meaningful with the local VAD
+    # strategies (Flux owns its own turn boundaries).
+    playback_duck = (
+        # The transport's own audio queue pauses with the duck: without it a
+        # reply synthesized ahead of real time keeps playing through the
+        # "pause" (voice_runtime.filler_transport pause_playback/resume_playback).
+        PlaybackDuck(recorder=recorder, playback_control=transport.output())
+        if turn["barge_in_duck_enabled"] >= 0.5 and use_vad and not provider_owns_turns
+        else None
+    )
+    # Caller speaker-consistency evidence (voice_runtime.speaker_consistency):
+    # generic mode from the turn-detection configuration, default OFF. In
+    # shadow mode the brain records attribution evidence per accepted
+    # segment and never acts on it. The tap keeps the audio that passed the
+    # gate so scoring never touches the gate itself.
+    speaker_consistency = None
+    speaker_tap = None
+    if audio_gate is not None:
+        from voice_runtime.speaker_consistency import (
+            MODE_OFF as SPK_OFF, CallerAudioTap, OnnxGE2EBackend, SpeakerConsistency, mode_from_setting as spk_mode,
+        )
+
+        speaker_mode = spk_mode(turn.get("speaker_consistency_mode", 0))
+        if speaker_mode != SPK_OFF:
+            backend = OnnxGE2EBackend.load(get_settings().speaker_model_path)
+            speaker_consistency = SpeakerConsistency(backend=backend, mode=speaker_mode, recorder=recorder)
+            speaker_tap = CallerAudioTap()
+            recorder.add_event(
+                "speaker_consistency_enabled", mode=speaker_mode,
+                backend=None if backend is None else backend.name,
+            )
+    # Whether Smart Turn ends this call's turns (the same gate
+    # build_user_turn_stop_strategies applies below, decided here for the
+    # brain: no decision prefetch under Smart Turn).
+    from voice_runtime.smart_turn import smart_turn_decision, smart_turn_mode_from_setting
+
+    smart_turn_active = not provider_owns_turns and smart_turn_decision(
+        smart_turn_mode_from_setting(turn.get("smart_turn", 1)), config.language,
+        enabled=get_settings().smart_turn_enabled,
+    )[0]
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
+        smart_turn_active=smart_turn_active,
         recorder=recorder,
+        speaker_consistency=speaker_consistency,
+        speaker_tap=speaker_tap,
         knowledge_service=knowledge_service,
         workflow_engine=workflow_engine,
         client_info=client_info,
         call_context=call_context,
+        customer_context=customer_context,
+        runtime_context=runtime_context,
+        finalize_grace=turn["finalize_grace"],
+        finalize_settle=turn["finalize_settle"],
+        complete_endpoint=turn["complete_endpoint"],
+        short_reply_endpoint=turn["short_reply_endpoint"],
+        # A Smart Turn COMPLETE verdict at or above this confidence dispatches
+        # the moment the final is in (brain._smart_turn_short_circuit).
+        smart_turn_threshold=turn["smart_turn_threshold"],
+        latency=tracker,
+        audio_gate=audio_gate,
+        authoritative_eot=provider_owns_turns,
+        previous_memory=previous_memory,
+        guardrails=guardrails,
+        naturalness=naturalness,
+        # Identifier batch recovery (voice_runtime.identifier_capture): at
+        # most one REST transcription of bounded retained audio, only when a
+        # streaming identifier came out invalid. Lazy — no client is built
+        # unless a recovery runs.
+        batch_transcriber=build_batch_transcriber(config),
+        # No-response ladder: first-prompt wait, retry interval and prompt
+        # count are the tenant's Turn Detection values (per transport); the
+        # post-hold grace remains a platform setting.
+        silence_policy=resolve_silence_policy(turn),
+        latency_filler=latency_filler,
+        caller_level=caller_level,
+        # Speech heard during a reply that never confirmed a barge-in is
+        # held, not dispatched at reply end (tenant opt-in).
+        held_segment_guard=turn["held_segment_guard_enabled"] >= 0.5,
+        # Continuation-vs-new-turn boundary while a reply is unheard derives
+        # from the tenant's own pause window (brain._CONTINUATION_GAP_*).
+        user_speech_timeout=turn["user_speech_timeout"],
     )
-
-    turn = resolve_turn_detection(config, transport_kind)
     processors = [transport.input()]
-    if use_vad:
-        processors.append(
-            VADProcessor(
-                vad_analyzer=SileroVADAnalyzer(
-                    params=VADParams(
-                        confidence=turn["confidence"],
-                        start_secs=turn["start_secs"],
-                        stop_secs=turn["stop_secs"],
-                        min_volume=turn["min_volume"],
-                    )
-                )
+    if audio_gate is not None:
+        # Ahead of the VAD on purpose: background noise the gate suppresses can
+        # never start a user turn, interrupt the bot, or reach the STT.
+        processors.append(audio_gate)
+        if speaker_tap is not None:
+            processors.append(speaker_tap)
+    if use_vad and not provider_owns_turns:
+        # Confidence-tracking Silero: same model and decision as pipecat's
+        # analyzer, plus a per-window probability history the probe below
+        # summarises into ``vad_segment`` events (voice_runtime.vad_confidence).
+        vad_analyzer = ConfidenceTrackingSileroVADAnalyzer(
+            params=VADParams(
+                confidence=turn["confidence"],
+                start_secs=turn["start_secs"],
+                stop_secs=turn["stop_secs"],
+                min_volume=turn["min_volume"],
             )
         )
+        processors.append(VADProcessor(vad_analyzer=vad_analyzer))
+        # Physical speech boundaries are only visible here: the UserTurnProcessor
+        # downstream consumes the VAD frames, so the brain cannot time true
+        # end-of-speech itself.
+        processors.append(VADLatencyProbe(tracker))
+        processors.append(VADConfidenceProbe(vad_analyzer, recorder))
     # STT must receive VADUserStoppedSpeakingFrame directly. Sarvam uses that
     # frame to flush its streaming socket; placing UserTurnProcessor first
     # consumed the control frame and left telephony transcripts waiting for
     # the provider's roughly 60-second server-side endpoint.
     processors.append(stt)
-    processors.append(
-        UserTurnProcessor(
-            user_turn_strategies=UserTurnStrategies(
-                start=[VADUserTurnStartStrategy()],
-                # wait_for_transcript must be False: transcripts are consumed by
-                # the brain downstream and never reach the turn processor, so
-                # waiting for one only ever hits the 5s fallback — which also
-                # blocked barge-in (a new turn can't start while the previous
-                # one is stuck open). The brain gates the LLM on the resulting
-                # UserStoppedSpeakingFrame, so this timeout IS the pause window
-                # a caller gets before the bot takes the turn.
-                stop=[SpeechTimeoutUserTurnStopStrategy(
-                    user_speech_timeout=turn["user_speech_timeout"],
-                    wait_for_transcript=False,
-                )],
+    if provider_owns_turns:
+        # Turn boundaries, interruption and the word-confirmed barge-in gate
+        # are all produced by the STT adapter itself (Flux TurnInfo events);
+        # the turn processor only defers to those external signals.
+        user_turn_strategies = ExternalUserTurnStrategies()
+    else:
+        # Barge-in policy: while the bot is quiet VAD starts the user turn
+        # (fast path, unchanged); while it is SPEAKING an interruption must be
+        # confirmed by a transcript of >= barge_in_min_words words — VAD alone
+        # let ambient speech reaching the mic cancel replies mid-word (see
+        # voice_runtime.barge_in). 0 restores pure-VAD interruption.
+        start_strategy = (
+            WordConfirmedBargeInStrategy(
+                min_words=barge_in_min_words,
+                # Sustained-speech fallback: Sarvam produces no interim
+                # transcripts, so without this a caller who keeps talking
+                # could never interrupt (the word gate's arbiter only exists
+                # after a VAD stop + flush).
+                vad_fallback_secs=turn["barge_in_vad_fallback_secs"],
+                # Evidence: which arbiter confirmed each interruption
+                # (transcript words vs sustained VAD vs bot-stopped) lands on
+                # the call's own event stream.
+                on_confirmed=lambda why, sustained: recorder.add_event(
+                    "barge_in_confirmed", reason=why,
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                ),
+                # Hybrid mode: provisional pause at VAD start, commit after
+                # barge_in_commit_secs or the word threshold, resume otherwise.
+                provisional_duck=playback_duck is not None,
+                commit_secs=turn["barge_in_commit_secs"],
+                on_provisional=(
+                    playback_duck.set_provisional if playback_duck is not None else None
+                ),
+                on_provisional_change=lambda state, sustained: recorder.add_event(
+                    "barge_in_provisional" if state == "provisional" else "barge_in_resumed",
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                ),
+                # Background-speech guard: live gated speech far below the
+                # caller's own level must not cancel the reply — neither by
+                # sustained VAD nor by a multi-word transcript. None until a
+                # baseline exists, so early-call behaviour is unchanged.
+                speech_classifier=(
+                    (lambda: caller_level.classify_live(audio_gate))
+                    if caller_level is not None else None
+                ),
+                enforce_background=caller_level.enforce if caller_level is not None else False,
+                on_suppressed=lambda arbiter, sustained, verdict, enforced: recorder.add_event(
+                    "barge_in_background_suppressed" if enforced
+                    else "barge_in_background_shadow",
+                    arbiter=arbiter,
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                    **verdict.as_event(),
+                ),
             )
+            if barge_in_min_words > 0
+            else VADUserTurnStartStrategy()
         )
+        # The Sarvam adapter marks every final ``finalized`` and advertises
+        # its measured final latency, so the turn end can wait for the final
+        # without the open-ended stall this flag used to mean: the wait is
+        # bounded by ``ttfs_p99_latency - stop_secs`` (0.5 s) and ends the
+        # moment the final arrives. Without it the telephony window (0.4 s
+        # after VAD stop) closed the turn before 19 % of finals existed, the
+        # re-queued text of a merge was dispatched alone, and the final that
+        # followed ran as a second turn (2026-09-24 runtime test). Providers
+        # that never set ``finalized`` keep the transcript-free close.
+        from voice_runtime.sarvam_realtime_stt import RealtimeSarvamSTTService
+        from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
+
+        # Both Sarvam adapters mark every final ``finalized`` (the realtime
+        # socket does so natively), so the bounded wait applies to both.
+        wait_for_final = isinstance(
+            stt, (EndpointedSarvamSTTService, RealtimeSarvamSTTService)
+        )
+        user_turn_strategies = UserTurnStrategies(
+            start=[start_strategy],
+            stop=build_user_turn_stop_strategies(
+                turn, config, wait_for_final=wait_for_final, tracker=tracker,
+                recorder=recorder,
+            ),
+        )
+    processors.append(UserTurnProcessor(user_turn_strategies=user_turn_strategies))
+    processors += [brain, tts]
+    if latency_filler is not None:
+        # After the TTS service so it sees reply audio the moment it exists
+        # (cut point), before the transport so its own chunks reach the wire.
+        processors.append(latency_filler)
+    if playback_duck is not None:
+        # Last stop before the wire: holds reply audio during a provisional
+        # barge-in and releases or discards it once the arbiter decides.
+        processors.append(playback_duck)
+    processors.append(transport.output())
+    if audio_gate is not None and echo_reference is not None:
+        output = transport.output()
+        if hasattr(output, "attach_echo_reference"):
+            # Fed inside the transport's write path: the reference holds each
+            # frame BEFORE it goes on the wire, so even the fastest echo path
+            # finds it (see FillerWebsocketOutputTransport.attach_echo_reference).
+            output.attach_echo_reference(echo_reference)
+        else:
+            from voice_runtime.echo_reference import EchoReferenceTap
+
+            # Fallback for transports without the hook: after
+            # transport.output(), on the transport's pacing clock.
+            processors.append(EchoReferenceTap(echo_reference))
+    # Natural Conversation → Background ambience (off unless the bot/tenant
+    # turned it on): room sound mixed into the outbound audio at the wire,
+    # after the echo reference feed. None → the transport is unchanged.
+    from voice_runtime.ambience import build_ambience
+
+    ambience = build_ambience(
+        config, transport_kind=transport_kind, sample_rate=tts_sample_rate, recorder=recorder,
     )
-    processors += [brain, tts, transport.output()]
+    if ambience is not None and hasattr(transport.output(), "attach_ambience"):
+        transport.output().attach_ambience(ambience)
+
+    if get_settings().voice_call_recording_enabled:
+        # Sits after transport.output() so it observes exactly the frames that
+        # were sent. Stereo WAV: caller on the left channel, bot on the right.
+        # The CALLER stream is the master clock (see AlignedStereoRecorder):
+        # pipecat's AudioBufferProcessor advanced the timeline on the arrival
+        # clock of bot audio, and transports that push TTS faster than real
+        # time inflated recordings well past the session's wall-clock length.
+        recording_writer = CallRecordingWriter(recorder)
+        audiobuffer = AlignedRecordingProcessor(
+            writer=recording_writer, sample_rate=stt_sample_rate,
+        )
+        recording_writer.audiobuffer = audiobuffer
+        # The recorder drives the final flush at call end (writer.close) —
+        # teardown does not reliably deliver Cancel/End frames to processors
+        # sitting after the output transport.
+        recorder.recording_writer = recording_writer
+        processors.append(audiobuffer)
+
+    # pipecat's own user-to-bot latency attribution (VAD silence, turn
+    # detection, aggregation, per-service TTFB) stored on the call as
+    # ``turn_latency_breakdown`` beside the brain's ``turn_latency`` spans.
+    from voice_runtime.latency_breakdown import TurnLatencyBreakdownObserver
 
     worker = PipelineWorker(
         Pipeline(processors),
@@ -329,5 +1364,6 @@ def build_voice_pipeline(
         idle_timeout_secs=idle_timeout_secs,
         cancel_on_idle_timeout=False,
         enable_rtvi=False,
+        observers=[TurnLatencyBreakdownObserver(recorder)],
     )
     return worker, brain

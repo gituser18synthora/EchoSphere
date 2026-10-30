@@ -23,6 +23,8 @@ class OpenAITTS(TTSProvider):
         self._client = AsyncOpenAI(api_key=key, timeout=config.timeout_seconds)
         self._model = config.model or settings.tts_model or "tts-1"
         self._voice = config.voice or settings.tts_voice or "alloy"
+        # Fixed output rate — consumers resample when their pipeline differs.
+        self.output_sample_rate = _OPENAI_PCM_RATE
 
     async def synthesize(
         self, text: str, *, voice: str | None = None, language: str | None = None,

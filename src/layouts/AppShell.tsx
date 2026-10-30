@@ -1,24 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Icon, type IconName } from "@/components/Icon";
-import { Avatar, StatusChip, ToastRegion } from "@/components/ui";
+import { StatusChip, ToastRegion } from "@/components/ui";
 import { useApp } from "@/state/AppContext";
 import { useAsync } from "@/hooks/useAsync";
-import { listAlerts, listBots, listTenants } from "@/services/api";
+import { listAlerts, listBots, listTenants, me } from "@/services/api";
 import type { Role } from "@/types/domain";
+import aurexionLogo from "@/assets/brand/Aurexion-logo.svg";
+import aurexionLogoWhite from "@/assets/brand/Aurexion-logo-white.svg";
 
 interface NavEntry {
   to: string;
   label: string;
   icon: IconName;
   badge?: number;
+  /** Entry is shown only when the session holds this permission code.
+   *  UI affordance only — the route and API enforce the same permission. */
+  perm?: string;
 }
 interface NavSection {
   title?: string;
   items: NavEntry[];
 }
 
-export function navFor(role: Role, criticalAlerts: number): NavSection[] {
+export function navFor(
+  role: Role,
+  criticalAlerts: number,
+  hasPermission: (code: string) => boolean = () => true,
+): NavSection[] {
   if (role === "super_admin") {
     return [
       { items: [{ to: "/admin", label: "Dashboard", icon: "dashboard" }] },
@@ -54,16 +63,16 @@ export function navFor(role: Role, criticalAlerts: number): NavSection[] {
       },
     ];
   }
-  return [
+  const sections: NavSection[] = [
     { items: [{ to: "/t", label: "Dashboard", icon: "dashboard" }] },
     {
       title: "Build",
       items: [
         { to: "/t/bots", label: "My VoiceBots", icon: "bot" },
-        { to: "/t/voices", label: "Voices", icon: "mic" },
+        { to: "/t/voices", label: "Cloned Voices", icon: "mic", perm: "manage_voice_clones" },
         { to: "/t/knowledge", label: "Knowledge Hub", icon: "book" },
         { to: "/t/workflows", label: "Workflows", icon: "workflow" },
-        { to: "/t/channels", label: "Channels", icon: "plug" },
+        { to: "/t/channels", label: "Channels", icon: "plug", perm: "manage_channels" },
       ],
     },
     {
@@ -76,12 +85,15 @@ export function navFor(role: Role, criticalAlerts: number): NavSection[] {
     {
       title: "Manage",
       items: [
-        { to: "/t/team", label: "Team", icon: "users" },
-        { to: "/t/integrations", label: "Integrations", icon: "zap" },
-        { to: "/t/settings", label: "Settings", icon: "settings" },
+        { to: "/t/team", label: "Team", icon: "users", perm: "team.manage" },
+        { to: "/t/integrations", label: "Integrations", icon: "zap", perm: "integrations.manage" },
+        { to: "/t/settings", label: "Settings", icon: "settings", perm: "settings.manage" },
       ],
     },
   ];
+  return sections
+    .map((s) => ({ ...s, items: s.items.filter((i) => !i.perm || hasPermission(i.perm)) }))
+    .filter((s) => s.items.length > 0);
 }
 
 const crumbNames: Record<string, string> = {
@@ -93,21 +105,47 @@ const crumbNames: Record<string, string> = {
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
   knowledge: "Knowledge", "knowledge-chunks": "Chunk Review",
   workflows: "Workflows", monitoring: "Monitoring",
-  security: "Security", reports: "Reports", bots: "My VoiceBots", voices: "Voices",
+  security: "Security", reports: "Reports", bots: "My VoiceBots", voices: "Cloned Voices",
   channels: "Channels", analytics: "Analytics", conversations: "Conversation Review",
   team: "Team", integrations: "Integrations", settings: "Settings",
   overview: "Overview", prompts: "Prompts", intents: "Intents & Entities",
   apis: "APIs", testing: "Testing", publish: "Publish",
 };
 
+const roleLabel = (role: Role) =>
+  role === "super_admin" ? "Super Admin" : role === "tenant_admin" ? "Tenant Admin" : "Tenant User";
+
 export default function AppShell() {
-  const { user, signOut, theme, toggleTheme } = useApp();
+  const { user, signOut, theme, toggleTheme, hasPermission, updateSessionUser } = useApp();
+
+  // The stored session caches role/permissions from login time. RBAC changes
+  // on the server (new grants, role reassignment) must reach already-open
+  // sessions, otherwise permission-gated UI drifts out of sync with what the
+  // API actually serves. Refresh from /auth/me on every shell mount; a 401 is
+  // handled by the http layer (sign-out + redirect).
+  useEffect(() => {
+    let cancelled = false;
+    me()
+      .then((u) => {
+        if (cancelled) return;
+        updateSessionUser({
+          id: u.id, name: u.name, email: u.email, role: u.role,
+          tenantId: u.tenantId, tenantName: u.tenantName ?? null,
+          permissions: u.permissions,
+        });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [updateSessionUser]);
   const location = useLocation();
   const navigate = useNavigate();
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchReady, setSearchReady] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileNav, setMobileNav] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
@@ -117,9 +155,11 @@ export default function AppShell() {
   const tenantsQ = useAsync(() => (isSuper ? listTenants() : Promise.resolve([])), [isSuper]);
 
   const critical = (alertsQ.data ?? []).filter((a) => a.status === "open" && (a.severity === "critical" || a.severity === "serious")).length;
-  const sections = useMemo(() => navFor(user!.role, critical), [user, critical]);
+  const sections = useMemo(
+    () => navFor(user!.role, critical, hasPermission),
+    [user, critical, hasPermission],
+  );
 
-  /* ⌘K / Ctrl-K focuses global search */
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -131,7 +171,6 @@ export default function AppShell() {
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  /* close popovers on outside click */
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (popRef.current && !popRef.current.contains(e.target as Node)) {
@@ -142,6 +181,10 @@ export default function AppShell() {
     window.addEventListener("mousedown", h);
     return () => window.removeEventListener("mousedown", h);
   }, []);
+
+  useEffect(() => {
+    setMobileNav(false);
+  }, [location.pathname]);
 
   const crumbs = useMemo(() => {
     const parts = location.pathname.split("/").filter(Boolean);
@@ -164,7 +207,7 @@ export default function AppShell() {
     if (search.trim().length < 2) return [];
     const q = search.toLowerCase();
     const results: { label: string; sub: string; to: string; icon: IconName }[] = [];
-    if (user!.role === "tenant_admin") {
+    if (user!.role !== "super_admin") {
       botsQ.data?.forEach((b) => {
         if (b.name.toLowerCase().includes(q) || b.useCase.toLowerCase().includes(q))
           results.push({ label: b.name, sub: `VoiceBot · ${b.status.replace("_", " ")}`, to: `/t/bots/${b.id}/overview`, icon: "bot" });
@@ -178,167 +221,291 @@ export default function AppShell() {
     return results.slice(0, 6);
   }, [search, user, botsQ.data, tenantsQ.data]);
 
+  const homeTo = isSuper ? "/admin" : "/t";
+  const profileTo = isSuper ? "/admin/profile" : "/t/profile";
+
   return (
     <div className="shell">
-      <aside className="sidebar" aria-label="Primary navigation">
-        <div className="sidebar-brand">
-          <div className="sidebar-brand-logo"><Icon name="mic" size={17} /></div>
-          <div className="sidebar-brand-name">
-            EchoSphere
-            <small>Aurexion</small>
+      <header className="topbar" ref={popRef}>
+        <Link to={homeTo} className="topbar-brand">
+          <img src={theme === "dark" ? aurexionLogoWhite : aurexionLogo} alt="Aurexion" className="topbar-logo" />
+          <span className="topbar-brand-sep" aria-hidden />
+          <div className="topbar-product">
+            <span className="topbar-product-name">EchoSphere</span>
+            <span className="topbar-product-sub">VoiceBot Platform</span>
           </div>
-        </div>
-        <div className="sidebar-role">
-          <Icon name={user!.role === "super_admin" ? "shield" : "building"} size={13} />
-          <span className="truncate">{user!.role === "super_admin" ? "Platform Control" : user!.tenantName}</span>
-        </div>
-        <nav className="sidebar-nav">
-          {sections.map((s, i) => (
-            <div key={i} className="col" style={{ gap: 1 }}>
-              {s.title && <div className="sidebar-section">{s.title}</div>}
-              {s.items.map((it) => (
-                <NavLink
-                  key={it.to}
-                  to={it.to}
-                  end={it.to === "/admin" || it.to === "/t"}
-                  className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-                >
-                  <Icon name={it.icon} size={16} />
-                  {it.label}
-                  {it.badge ? <span className="nav-badge">{it.badge}</span> : null}
-                </NavLink>
+        </Link>
+        <div className="topbar-search-container">
+        <div className="topbar-search">
+          <Icon name="search" size={14} />
+          <input
+            ref={searchRef}
+            type="search"
+            name="echosphere-global-search"
+            className="input"
+            placeholder={user!.role === "super_admin" ? "Search tenants…" : "Search bots…"}
+            value={search}
+            aria-label="Global search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            readOnly={!searchReady}
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-bwignore="true"
+            data-form-type="other"
+            onChange={(e) => { setSearch(e.target.value); setSearchOpen(true); }}
+            onFocus={() => {
+              setSearchReady(true);
+              setSearchOpen(true);
+            }}
+            onBlur={() => {
+              setSearchReady(false);
+              setTimeout(() => setSearchOpen(false), 150);
+            }}
+          />
+          <span className="kbd">ctrl + K</span>
+          {searchOpen && searchResults.length > 0 && (
+            <div className="menu" style={{ top: "calc(100% + 6px)", left: 0, right: 0 }}>
+              {searchResults.map((r) => (
+                <button key={r.to} type="button" className="menu-item" onMouseDown={() => { navigate(r.to); setSearch(""); }}>
+                  <Icon name={r.icon} size={14} />
+                  <span className="col" style={{ gap: 0, alignItems: "flex-start" }}>
+                    <span>{r.label}</span>
+                    <span className="t-micro">{r.sub}</span>
+                  </span>
+                </button>
               ))}
             </div>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <button className="nav-item" onClick={toggleTheme}>
-            <Icon name={theme === "light" ? "moon" : "sun"} size={16} />
-            {theme === "light" ? "Dark mode" : "Light mode"}
-          </button>
-          <button className="nav-item" onClick={() => { signOut(); navigate("/login"); }}>
-            <Icon name="logout" size={16} />
-            Sign out
-          </button>
+          )}
         </div>
-      </aside>
 
-      <div className="main">
-        <header className="header" ref={popRef}>
-          <nav className="breadcrumbs" aria-label="Breadcrumb">
-            {crumbs.map((c, i) => (
-              <span key={c.to} className="row gap-6">
-                {i > 0 && <Icon name="chevron-right" size={12} />}
-                {i === crumbs.length - 1 ? (
-                  <span className="crumb-current truncate" style={{ maxWidth: 260 }}>{c.label}</span>
-                ) : (
-                  <Link to={c.to}>{c.label}</Link>
-                )}
-              </span>
-            ))}
-          </nav>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="topbar-icon-btn topbar-menu-toggle"
+            aria-label="Open navigation"
+            onClick={() => setMobileNav((o) => !o)}
+          >
+            <Icon name="menu" size={20} />
+          </button>
 
-          <div className="header-actions">
-            <div className="header-search">
-              <Icon name="search" size={14} />
-              <input
-                ref={searchRef}
-                className="input"
-                placeholder={user!.role === "super_admin" ? "Search tenants…" : "Search bots…"}
-                value={search}
-                aria-label="Global search"
-                onChange={(e) => { setSearch(e.target.value); setSearchOpen(true); }}
-                onFocus={() => setSearchOpen(true)}
-                onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
-              />
-              <span className="kbd">⌘K</span>
-              {searchOpen && searchResults.length > 0 && (
-                <div className="menu" style={{ top: "calc(100% + 6px)", left: 0, right: 0 }}>
-                  {searchResults.map((r) => (
-                    <button key={r.to} className="menu-item" onMouseDown={() => { navigate(r.to); setSearch(""); }}>
-                      <Icon name={r.icon} size={14} />
-                      <span className="col" style={{ gap: 0, alignItems: "flex-start" }}>
-                        <span>{r.label}</span>
-                        <span className="t-micro">{r.sub}</span>
-                      </span>
-                    </button>
-                  ))}
+
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              className="topbar-icon-btn"
+              aria-label={`Alerts (${critical} critical open)`}
+              onClick={() => { setAlertsOpen((o) => !o); setProfileOpen(false); }}
+            >
+              <Icon name="bell" size={22} />
+              {critical > 0 && <span className="topbar-badge">{critical}</span>}
+            </button>
+            {alertsOpen && (
+              <div className="topbar-alerts">
+                <div className="topbar-alerts-head">
+                  <h3>Notifications</h3>
+                  <button type="button" aria-label="Close alerts" onClick={() => setAlertsOpen(false)}>
+                    <Icon name="x" size={16} />
+                  </button>
                 </div>
-              )}
-            </div>
-
-            <div style={{ position: "relative" }}>
-              <button
-                className="btn-icon"
-                aria-label={`Alerts (${critical} critical open)`}
-                onClick={() => { setAlertsOpen((o) => !o); setProfileOpen(false); }}
-              >
-                <Icon name="bell" />
-                {critical > 0 && (
-                  <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: "50%", background: "var(--status-critical)", border: "2px solid var(--surface)" }} />
-                )}
-              </button>
-              {alertsOpen && (
-                <div className="menu" style={{ right: 0, top: "calc(100% + 6px)", width: 340 }}>
-                  <div className="row-between" style={{ padding: "6px 10px 8px" }}>
-                    <span className="t-strong" style={{ fontSize: 13 }}>Alerts</span>
-                    <StatusChip status={critical > 0 ? "critical" : "good"} label={critical > 0 ? `${critical} need attention` : "All clear"} />
-                  </div>
-                  <div className="menu-sep" />
-                  {(alertsQ.data ?? []).slice(0, 4).map((a) => (
-                    <button key={a.id} className="menu-item" style={{ alignItems: "flex-start" }} onClick={() => {
-                      setAlertsOpen(false);
-                      navigate(user!.role === "super_admin" ? "/admin/monitoring" : "/t");
-                    }}>
+                <div style={{ maxHeight: 360, overflowY: "auto", padding: 10 }}>
+                  {(alertsQ.data ?? []).slice(0, 6).map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className="menu-item"
+                      style={{
+                        width: "100%",
+                        alignItems: "flex-start",
+                        border: "1px solid #e6e8f0",
+                        borderRadius: 8,
+                        marginBottom: 8,
+                        background: "#ffffff",
+                        padding: 10,
+                        color: "#1b1b1b",
+                      }}
+                      onClick={() => {
+                        setAlertsOpen(false);
+                        navigate(user!.role === "super_admin" ? "/admin/monitoring" : "/t");
+                      }}
+                    >
                       <span className={`health-dot ${a.severity}`} style={{ marginTop: 5 }} />
                       <span className="col" style={{ gap: 1, alignItems: "flex-start" }}>
-                        <span style={{ fontSize: 12.5, lineHeight: 1.35 }}>{a.title}</span>
+                        <span style={{ fontSize: 12.5, lineHeight: 1.35, fontWeight: 600 }}>{a.title}</span>
                         <span className="t-micro">{a.source}</span>
                       </span>
                     </button>
                   ))}
+                  {(alertsQ.data ?? []).length === 0 && (
+                    <div className="col" style={{ alignItems: "center", padding: "28px 8px", gap: 6 }}>
+                      <Icon name="bell" size={28} />
+                      <span className="t-strong" style={{ fontSize: 13, color: "#6b7280" }}>No notifications</span>
+                      <span className="t-micro">You're all caught up!</span>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+          </div>
 
-            <div style={{ position: "relative" }}>
-              <button className="row gap-6" style={{ padding: 4, borderRadius: 8 }} aria-label="Profile menu" onClick={() => { setProfileOpen((o) => !o); setAlertsOpen(false); }}>
-                <Avatar name={user!.name} />
-                <Icon name="chevron-down" size={13} />
-              </button>
-              {profileOpen && (
-                <div className="menu" style={{ right: 0, top: "calc(100% + 6px)", width: 230 }}>
-                  <div style={{ padding: "8px 10px" }}>
-                    <div className="t-strong" style={{ fontSize: 13 }}>{user!.name}</div>
-                    <div className="t-micro">{user!.email}</div>
-                    <div className="mt-8"><StatusChip status="active" label={user!.role === "super_admin" ? "Super Admin" : user!.role === "tenant_admin" ? "Tenant Admin" : "Tenant User"} /></div>
-                    {user!.tenantName && <div className="t-micro mt-8">{user!.tenantName}</div>}
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              className="topbar-user"
+              aria-label="Profile menu"
+              onClick={() => { setProfileOpen((o) => !o); setAlertsOpen(false); }}
+            >
+              <div className="topbar-user-avatar">
+                <Icon name="user" size={22} />
+                <span className="presence" aria-hidden />
+              </div>
+              <div className="topbar-user-meta">
+                <span className="topbar-user-name">{user!.name}</span>
+                <span className="topbar-user-role">{roleLabel(user!.role)}</span>
+              </div>
+            </button>
+            {profileOpen && (
+              <div className="topbar-menu">
+                <div style={{ padding: "10px 16px 8px" }}>
+                  <div className="t-strong" style={{ fontSize: 13 }}>{user!.name}</div>
+                  <div className="t-micro">{user!.email}</div>
+                  <div className="mt-8">
+                    <StatusChip status="active" label={roleLabel(user!.role)} />
                   </div>
-                  <div className="menu-sep" />
-                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile"); }}>
-                    <Icon name="user" size={14} /> My profile
-                  </button>
-                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile", { state: { tab: "security" } }); }}>
-                    <Icon name="shield" size={14} /> Change password
-                  </button>
-                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate("/login"); }}>
-                    <Icon name="refresh" size={14} /> Switch role
-                  </button>
-                  <div className="menu-sep" />
-                  <button className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>
-                    <Icon name="logout" size={14} /> Sign out
-                  </button>
+                  {user!.tenantName && <div className="t-micro mt-8">{user!.tenantName}</div>}
                 </div>
-              )}
-            </div>
+                <div className="menu-sep" />
+                <button type="button" className="menu-item" onClick={() => { setProfileOpen(false); navigate(profileTo); }}>
+                  <Icon name="user" size={14} /> My profile
+                </button>
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => { setProfileOpen(false); navigate(profileTo, { state: { tab: "security" } }); }}
+                >
+                  <Icon name="shield" size={14} /> Change password
+                </button>
+                <div className="menu-sep" />
+                <div className="theme-switch-row">
+                  <div className="theme-switch" role="group" aria-label="Color theme">
+                    <button
+                      type="button"
+                      className={`theme-switch-opt${theme === "light" ? " is-active" : ""}`}
+                      aria-pressed={theme === "light"}
+                      onClick={() => { if (theme !== "light") toggleTheme(); }}
+                    >
+                      <Icon name="sun" size={16} />
+                      <span>Light</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`theme-switch-opt${theme === "dark" ? " is-active" : ""}`}
+                      aria-pressed={theme === "dark"}
+                      onClick={() => { if (theme !== "dark") toggleTheme(); }}
+                    >
+                      <Icon name="moon" size={16} />
+                      <span>Dark</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="menu-sep" />
+                <button type="button" className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>
+                  <Icon name="logout" size={14} /> Log out
+                </button>
+              </div>
+            )}
           </div>
-        </header>
+        </div>
+        </div>
+      </header>
 
-        <main className="page">
-          <div className="page-narrow">
-            <Outlet />
+      <div className="breadcrumb-strip">
+        <nav className="breadcrumbs" aria-label="Breadcrumb">
+          {crumbs.map((c, i) => (
+            <span key={c.to} className="row gap-6">
+              {i > 0 && <Icon name="chevron-right" size={14} />}
+              {i === crumbs.length - 1 ? (
+                <span className="crumb-current truncate" style={{ maxWidth: 320 }}>{c.label}</span>
+              ) : (
+                <Link to={c.to}>{c.label}</Link>
+              )}
+            </span>
+          ))}
+        </nav>
+      </div>
+
+      <div className="shell-body">
+        {mobileNav && (
+          <button
+            type="button"
+            className="sidebar-backdrop"
+            aria-label="Close navigation"
+            onClick={() => setMobileNav(false)}
+          />
+        )}
+        <aside
+          className={`sidebar${collapsed ? " collapsed" : ""}${mobileNav ? " mobile-open" : ""}`}
+          aria-label="Primary navigation"
+        >
+          <button
+            type="button"
+            className="sidebar-collapse"
+            aria-label={mobileNav ? "Close navigation" : collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => {
+              if (mobileNav) {
+                setMobileNav(false);
+                return;
+              }
+              setCollapsed((c) => !c);
+            }}
+          >
+            <Icon name={mobileNav || !collapsed ? "chevron-left" : "chevron-right"} size={14} />
+          </button>
+
+          <div className="sidebar-role">
+            <Icon name={user!.role === "super_admin" ? "shield" : "building"} size={13} />
+            <span className="truncate">{user!.role === "super_admin" ? "Platform Control" : user!.tenantName}</span>
           </div>
-        </main>
+
+          <nav className="sidebar-nav">
+            {sections.map((s, i) => (
+              <div key={i} className="col" style={{ gap: 0 }}>
+                {s.title && <div className="sidebar-section">{s.title}</div>}
+                {s.items.map((it) => (
+                  <NavLink
+                    key={it.to}
+                    to={it.to}
+                    end={it.to === "/admin" || it.to === "/t"}
+                    title={collapsed ? it.label : undefined}
+                    className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+                    style={{ position: "relative" }}
+                  >
+                    <Icon name={it.icon} size={16} />
+                    <span className="text-sm font-medium">{it.label}</span>
+                    {it.badge ? <span className="nav-badge">{it.badge}</span> : null}
+                  </NavLink>
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          <div className="sidebar-foot">
+            <button type="button" className="nav-item" title={collapsed ? "Sign out" : undefined} onClick={() => { signOut(); navigate("/login"); }}>
+              <Icon name="logout" size={16} />
+              <span className="nav-label">Sign out</span>
+            </button>
+          </div>
+        </aside>
+
+        <div className="main">
+          <main className="page">
+            <div className="page-narrow">
+              <Outlet />
+            </div>
+          </main>
+        </div>
       </div>
       <ToastRegion />
     </div>

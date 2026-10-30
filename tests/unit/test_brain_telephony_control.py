@@ -6,7 +6,11 @@ barge-in — never racing ahead of the still-rendering TTS audio. Workflow
 queue. Dialer call-context variables become reference data in the system
 prompt."""
 
-from pipecat.frames.frames import BotStoppedSpeakingFrame, UserStartedSpeakingFrame
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    EndWorkerFrame,
+    UserStartedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
 
 from shared.bot_config import ResolvedBotConfig
@@ -28,6 +32,10 @@ class _RecorderStub:
 
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
+
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
 
 
 class _WorkflowStub:
@@ -103,7 +111,7 @@ class TestDeferredTransferControls:
         brain = make_brain(workflow_engine=engine)
         await brain._handle_workflow(
             RouteDecision(kind=RouteKind.WORKFLOW, action="payment_plan_journey"),
-            "only 100",
+            "only 100", 0.0,
         )
         assert brain._active_workflow is None
         assert brain._pending_controls == [{
@@ -111,7 +119,7 @@ class TestDeferredTransferControls:
             "reason": "workflow_handover", "transfer_queue": "billing",
         }]
 
-    async def test_workflow_done_without_handoff_queues_nothing(self):
+    async def test_workflow_done_ends_worker_after_goodbye(self):
         engine = _WorkflowStub({
             "reply": "Thank you, goodbye!", "done": True, "status": "done",
             "source": "definition", "workflowId": "wf_1", "trace": ["n7"],
@@ -120,9 +128,16 @@ class TestDeferredTransferControls:
         brain = make_brain(workflow_engine=engine)
         await brain._handle_workflow(
             RouteDecision(kind=RouteKind.WORKFLOW, action="payment_plan_journey"),
-            "yes",
+            "yes", 0.0,
         )
         assert brain._pending_controls == []
+        endings = [f for f in brain._pushed if isinstance(f, EndWorkerFrame)]
+        assert len(endings) == 1
+        assert endings[0].reason == "workflow_completed"
+        assert brain._closing is True
+        assert ("call_completed_by_workflow", {
+            "workflow": "payment_plan_journey", "disposition": None,
+        }) in brain._recorder.events
 
 
 class TestCallContext:
@@ -135,5 +150,10 @@ class TestCallContext:
         assert "- outstanding_amount: 2000" in text
         assert "never invent values" in text
 
-    def test_no_context_means_no_instruction(self):
-        assert make_brain()._call_context_instruction() == ""
+    def test_no_context_states_absence_explicitly(self):
+        # An LLM told "use the customer name from the call context" invents
+        # bracket placeholders when the context is silently absent — absence
+        # must be stated, with a ban on speaking placeholders.
+        instruction = make_brain()._call_context_instruction()
+        assert "No customer-specific values" in instruction
+        assert "placeholder" in instruction

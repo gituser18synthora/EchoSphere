@@ -9,7 +9,7 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
-    require_tenant_admin,
+    require_permission,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
@@ -17,9 +17,45 @@ from shared.ids import new_id
 from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import User, VoiceBot, Workflow
+from shared.readiness import refresh_readiness
 from backend.serializers import serialize_workflow
+from shared.orchestration.behavior import LATEST_BEHAVIOR_VERSION, stamp_behavior
 
 router = APIRouter(tags=["Workflows"])
+
+
+def _latest_workflow(db: Session, bot_id: str) -> Workflow | None:
+    """The bot's newest workflow row.
+
+    Sorted by id only: ordering full rows makes MySQL sort the nodes/edges
+    JSON too, and a large authored graph (hundreds of KB) then fails with
+    error 1038 "Out of sort memory" — surfacing to the UI as a 503 on every
+    save. The single row is loaded by primary key afterwards.
+    """
+    latest_id = db.scalar(
+        select(Workflow.id)
+        .where(Workflow.bot_id == bot_id, Workflow.is_deleted.is_(False))
+        .order_by(Workflow.version.desc())
+        .limit(1)
+    )
+    return db.get(Workflow, latest_id) if latest_id else None
+
+
+def _snapshot_revision(db: Session, w: Workflow, user: User) -> None:
+    """Store an immutable copy of this save so a published release can keep
+    executing it after later edits. No-op until migration a1b2c3d4e5f6."""
+    from shared.db.schema_features import table_exists
+    from shared.models import WorkflowRevision
+    from shared.orchestration.behavior import resolve_behavior
+
+    if not table_exists("workflow_revisions") or not (w.nodes or []):
+        return
+    db.add(WorkflowRevision(
+        id=new_id("wfr"), workflow_id=w.id, tenant_id=w.tenant_id, bot_id=w.bot_id,
+        version=w.version, name=w.name, nodes=w.nodes, edges=w.edges,
+        behavior_version=resolve_behavior({"nodes": w.nodes or []}).version,
+        created_by=user.id,
+    ))
 
 
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
@@ -47,11 +83,7 @@ def get_bot_workflow(
     bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     bot = _bot_checked(db, bot_id, user)
-    w = db.scalar(
-        select(Workflow)
-        .where(Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False))
-        .order_by(Workflow.version.desc())
-    )
+    w = _latest_workflow(db, bot.id)
     if w is None:
         raise NotFoundError("Workflow")
     return ok(serialize_workflow(w, updated_by_name=_updated_by_name(db, w)))
@@ -180,15 +212,11 @@ def save_bot_workflow(
     bot_id: str,
     body: SaveWorkflowRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_workflows", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
-    w = db.scalar(
-        select(Workflow)
-        .where(Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False))
-        .order_by(Workflow.version.desc())
-    )
+    w = _latest_workflow(db, bot.id)
     if w is None:
         w = Workflow(
             id=new_id("wf"), tenant_id=bot.tenant_id, bot_id=bot.id,
@@ -205,6 +233,11 @@ def save_bot_workflow(
         errors, computed_issues = validate_definition(nodes, edges)
         if errors:
             raise ApiError("Workflow validation failed.", 422, errors=errors)
+        if w.version == 0 and not (w.nodes or []):
+            # A brand-new definition runs on the latest engine behaviour;
+            # existing definitions keep the version they were tested under
+            # (see shared/orchestration/behavior.py).
+            stamp_behavior(nodes, LATEST_BEHAVIOR_VERSION)
         w.nodes = nodes
         w.edges = edges
         # Issues are server-computed and authoritative — client-supplied
@@ -214,6 +247,8 @@ def save_bot_workflow(
         w.status = body.status
     w.version += 1
     w.updated_by = user.id
+    _snapshot_revision(db, w, user)
+    refresh_readiness(db, bot, keys=("r5",))
     record_audit(
         db, user=user, action="Saved workflow", entity_type="workflow", entity_id=w.id,
         target_label=f"{w.name} v{w.version}", tenant_id=bot.tenant_id,
@@ -221,4 +256,10 @@ def save_bot_workflow(
         request=request,
     )
     db.commit()
+    # The engine caches definitions in-process for 30 s; drop this bot's
+    # entries so the Studio chat tester (same process) runs the save
+    # immediately. Lazy import: the engine module is heavy.
+    from shared.orchestration.workflow_engine import invalidate_workflow_definitions
+
+    invalidate_workflow_definitions(tenant_id=bot.tenant_id, bot_id=bot.id)
     return ok(serialize_workflow(w, updated_by_name=user.name))

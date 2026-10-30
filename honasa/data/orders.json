@@ -1,0 +1,250 @@
+{
+  "_comment": "Honasa mock order book. Dates are stored as day OFFSETS (…_days_ago / eta_days_ahead) and materialized to real dates by the mock service at read time, so scenarios never rot. Coverage: 7001001 delivered+return-eligible (happy return / damaged / order info), 7001002 shipped with ETA+tracking (ETA/tracking/discount), 7001003 out for delivery today, 7001004 processing with NO eta/tracking (fact unavailable), 7001005 delivered 12d ago (return window closed + quality window closed), 7001006 refund in process, 7001007 COD no refund, 7001008 non-returnable hygiene category, 7001009/7001010 same phone (latest order wins), 7001011 wrong item, 7001012 missing item.",
+  "7001001": {
+    "order_id": "7001001",
+    "customer_name": "Rekha Nair",
+    "phone": "9876501001",
+    "items": [
+      {"name": "Mamaearth Vitamin C Face Wash", "qty": 1, "price_inr": 349},
+      {"name": "Mamaearth Onion Hair Oil", "qty": 1, "price_inr": 399}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 6,
+    "shipped_days_ago": 5,
+    "delivered_days_ago": 2,
+    "courier_name": "Delhivery",
+    "awb": "DLV8901201001",
+    "order_amount_inr": 698,
+    "payment_mode": "prepaid",
+    "discount_inr": 50,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001002": {
+    "order_id": "7001002",
+    "customer_name": "Arjun Patel",
+    "phone": "9876501002",
+    "items": [
+      {"name": "The Derma Co 2% Salicylic Acid Face Serum", "qty": 1, "price_inr": 549}
+    ],
+    "order_status": "shipped",
+    "placed_days_ago": 3,
+    "shipped_days_ago": 1,
+    "eta_days_ahead": 2,
+    "courier_name": "Blue Dart",
+    "awb": "BD4501201002",
+    "order_amount_inr": 494,
+    "payment_mode": "prepaid",
+    "discount_inr": 55,
+    "cashback_inr": 60,
+    "refund": null,
+    "returnable": true
+  },
+  "7001003": {
+    "order_id": "7001003",
+    "customer_name": "Sana Khan",
+    "phone": "9876501003",
+    "items": [
+      {"name": "Aqualogica Glow+ Dewy Sunscreen SPF 50", "qty": 2, "price_inr": 798}
+    ],
+    "order_status": "out_for_delivery",
+    "placed_days_ago": 4,
+    "shipped_days_ago": 2,
+    "eta_days_ahead": 0,
+    "courier_name": "Ecom Express",
+    "awb": "EC7801201003",
+    "order_amount_inr": 758,
+    "payment_mode": "cod",
+    "discount_inr": 40,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001004": {
+    "order_id": "7001004",
+    "customer_name": "Vikram Rao",
+    "phone": "9876501004",
+    "items": [
+      {"name": "Dr. Sheth's Ceramide & Vitamin C Sunscreen", "qty": 1, "price_inr": 449},
+      {"name": "Mamaearth Ubtan Face Mask", "qty": 1, "price_inr": 499}
+    ],
+    "order_status": "processing",
+    "placed_days_ago": 1,
+    "order_amount_inr": 898,
+    "payment_mode": "prepaid",
+    "discount_inr": 50,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001005": {
+    "order_id": "7001005",
+    "customer_name": "Meera Joshi",
+    "phone": "9876501005",
+    "items": [
+      {"name": "BBlunt Salon Secret High Shine Creme Hair Colour", "qty": 1, "price_inr": 299}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 16,
+    "shipped_days_ago": 15,
+    "delivered_days_ago": 12,
+    "courier_name": "Delhivery",
+    "awb": "DLV8901201005",
+    "order_amount_inr": 299,
+    "payment_mode": "prepaid",
+    "discount_inr": 0,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001006": {
+    "order_id": "7001006",
+    "customer_name": "Rohit Sen",
+    "phone": "9876501006",
+    "items": [
+      {"name": "Mamaearth Tea Tree Face Serum", "qty": 1, "price_inr": 499}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 9,
+    "shipped_days_ago": 8,
+    "delivered_days_ago": 3,
+    "courier_name": "Xpressbees",
+    "awb": "XB3401201006",
+    "order_amount_inr": 499,
+    "payment_mode": "prepaid",
+    "discount_inr": 0,
+    "cashback_inr": 0,
+    "refund": {
+      "status": "in_process",
+      "amount_inr": 499,
+      "initiated_days_ago": 2,
+      "expected_days_ahead": 4,
+      "mode": "original payment method"
+    },
+    "returnable": true
+  },
+  "7001007": {
+    "order_id": "7001007",
+    "customer_name": "Divya Iyer",
+    "phone": "9876501007",
+    "items": [
+      {"name": "Aqualogica Hydrate+ Splash Gel Moisturizer", "qty": 1, "price_inr": 385}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 5,
+    "shipped_days_ago": 4,
+    "delivered_days_ago": 1,
+    "courier_name": "Delhivery",
+    "awb": "DLV8901201007",
+    "order_amount_inr": 385,
+    "payment_mode": "cod",
+    "discount_inr": 0,
+    "cashback_inr": 25,
+    "refund": null,
+    "returnable": true
+  },
+  "7001008": {
+    "order_id": "7001008",
+    "customer_name": "Kabir Malhotra",
+    "phone": "9876501008",
+    "items": [
+      {"name": "Mamaearth Natural Bamboo Toothbrush Pack", "qty": 1, "price_inr": 199}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 8,
+    "shipped_days_ago": 7,
+    "delivered_days_ago": 4,
+    "courier_name": "Ecom Express",
+    "awb": "EC7801201008",
+    "order_amount_inr": 199,
+    "payment_mode": "prepaid",
+    "discount_inr": 0,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": false,
+    "non_returnable_reason": "personal hygiene category"
+  },
+  "7001009": {
+    "order_id": "7001009",
+    "customer_name": "Anita Desai",
+    "phone": "9876509999",
+    "items": [
+      {"name": "The Derma Co 10% Niacinamide Face Serum", "qty": 1, "price_inr": 594}
+    ],
+    "order_status": "shipped",
+    "placed_days_ago": 2,
+    "shipped_days_ago": 1,
+    "eta_days_ahead": 1,
+    "courier_name": "Blue Dart",
+    "awb": "BD4501201009",
+    "order_amount_inr": 534,
+    "payment_mode": "prepaid",
+    "discount_inr": 60,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001010": {
+    "order_id": "7001010",
+    "customer_name": "Anita Desai",
+    "phone": "9876509999",
+    "items": [
+      {"name": "Mamaearth Rice Water Shampoo", "qty": 1, "price_inr": 349}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 14,
+    "shipped_days_ago": 13,
+    "delivered_days_ago": 10,
+    "courier_name": "Delhivery",
+    "awb": "DLV8901201010",
+    "order_amount_inr": 349,
+    "payment_mode": "prepaid",
+    "discount_inr": 0,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001011": {
+    "order_id": "7001011",
+    "customer_name": "Farhan Sheikh",
+    "phone": "9876501011",
+    "items": [
+      {"name": "Aqualogica Radiance+ Face Wash", "qty": 1, "price_inr": 299}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 6,
+    "shipped_days_ago": 5,
+    "delivered_days_ago": 2,
+    "courier_name": "Xpressbees",
+    "awb": "XB3401201011",
+    "order_amount_inr": 299,
+    "payment_mode": "prepaid",
+    "discount_inr": 30,
+    "cashback_inr": 0,
+    "refund": null,
+    "returnable": true
+  },
+  "7001012": {
+    "order_id": "7001012",
+    "customer_name": "Priyanka Ghosh",
+    "phone": "9876501012",
+    "items": [
+      {"name": "Mamaearth CoCo Body Lotion", "qty": 1, "price_inr": 299},
+      {"name": "Mamaearth Argan Hair Mask", "qty": 1, "price_inr": 399},
+      {"name": "Mamaearth Aloe Vera Gel", "qty": 1, "price_inr": 249}
+    ],
+    "order_status": "delivered",
+    "placed_days_ago": 9,
+    "shipped_days_ago": 8,
+    "delivered_days_ago": 5,
+    "courier_name": "Delhivery",
+    "awb": "DLV8901201012",
+    "order_amount_inr": 872,
+    "payment_mode": "prepaid",
+    "discount_inr": 75,
+    "cashback_inr": 75,
+    "refund": null,
+    "returnable": true
+  }
+}

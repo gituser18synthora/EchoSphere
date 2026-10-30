@@ -28,17 +28,32 @@ from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
-from shared.models import KnowledgeSource, Prompt, PromptVersion, User, VoiceBot
+from shared.models import (
+    KnowledgeSource, Prompt, PromptVersion, SupportedLanguage, User, VoiceBot,
+)
+from shared.tenant_languages import tenant_allowed_language_codes
+from shared.orchestration.speech_style import spoken_reply_instruction
 from shared.orchestration.prompt_compiler import (
     compile_prompt,
+    compile_source,
     estimate_tokens,
+    extract_variables,
+    render_preview,
     validate_config,
 )
 from backend.serializers import serialize_prompt
+from shared.readiness import refresh_readiness
+
+
+def _refresh_prompt_readiness(db: Session, prompt: Prompt) -> None:
+    bot = db.get(VoiceBot, prompt.bot_id)
+    if bot is not None and not bot.is_deleted:
+        refresh_readiness(db, bot, keys=("r3",))
 
 router = APIRouter(tags=["Prompts"])
 
 PROMPT_TYPES = "^(system|greeting|fallback|escalation|closing|reprompt|hold)$"
+PROMPT_MODES_PATTERN = "^(structured|full)$"
 
 
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
@@ -57,14 +72,26 @@ def _prompt_checked(db: Session, prompt_id: str, user: User) -> Prompt:
     return row
 
 
-def _compile_structured(config: dict | None) -> tuple[dict | None, str | None]:
-    """Validate + compile a structured config; raises ApiError on invalid."""
+def _compile_version_content(
+    mode: str, config: dict | None, full_prompt: str | None
+) -> tuple[dict | None, str | None, str | None]:
+    """Validate + compile one authoring mode; raises ApiError on invalid.
+
+    Returns (structured_config, full_prompt, compiled_prompt) as stored on the
+    version row. Non-system prompt types pass (None, None) through untouched —
+    their content lives in per-language variants.
+    """
+    if mode == "full":
+        errors, compiled = compile_source("full", full_prompt=full_prompt)
+        if errors:
+            raise ApiError("The full prompt is invalid.", 422, errors=errors)
+        return None, (full_prompt or "").strip(), compiled
     if config is None:
-        return None, None
-    errors = validate_config(config)
+        return None, None, None
+    errors, compiled = compile_source("structured", structured_config=config)
     if errors:
         raise ApiError("The prompt configuration is incomplete.", 422, errors=errors)
-    return config, compile_prompt(config)
+    return config, None, compiled
 
 
 @router.get("/bots/{bot_id}/prompts")
@@ -85,13 +112,53 @@ class VariantPayload(BaseModel):
     content: str = Field(max_length=4000)
 
 
+def _validate_variant_languages(
+    db: Session,
+    tenant_id: str,
+    variants: list[VariantPayload],
+    *,
+    previous_languages: set[str] | None = None,
+) -> None:
+    """Allow retaining/removing historical variants, but scope every new one.
+
+    This keeps an old variant editable after its language is unassigned while
+    ensuring “Add language” cannot bypass the tenant assignment via the API.
+    """
+    codes = [variant.language.strip() for variant in variants]
+    if not codes:
+        raise ApiError("At least one prompt language is required.", 422)
+    if len(codes) != len(set(codes)):
+        raise ApiError("A prompt can contain only one variant per language.", 422)
+
+    allowed = tenant_allowed_language_codes(db, tenant_id)
+    if allowed is None:
+        allowed = set(db.scalars(
+            select(SupportedLanguage.code)
+            .where(SupportedLanguage.enabled.is_(True))
+        ).all())
+    newly_added = set(codes) - (previous_languages or set())
+    rejected = sorted(newly_added - allowed)
+    if rejected:
+        raise ApiError(
+            "Language(s) not assigned to this tenant or inactive: "
+            + ", ".join(rejected),
+            422,
+        )
+    for variant, code in zip(variants, codes):
+        variant.language = code
+
+
 class CreatePromptRequest(BaseModel):
     type: str = Field(pattern=PROMPT_TYPES)
+    prompt_mode: str = Field(
+        default="structured", alias="promptMode", pattern=PROMPT_MODES_PATTERN
+    )
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=500)
     variables: list[str] = Field(default_factory=list)
     variants: list[VariantPayload] = Field(default_factory=list)
     structured_config: dict | None = Field(default=None, alias="structuredConfig")
+    full_prompt: str | None = Field(default=None, alias="fullPrompt")
     note: str = Field(default="Initial version", max_length=500)
 
     model_config = {"populate_by_name": True}
@@ -118,10 +185,18 @@ def create_prompt(
     if duplicate is not None:
         raise ApiError(f"A prompt named '{name}' already exists on this bot.", 409)
 
-    config, compiled = _compile_structured(body.structured_config)
+    if body.type != "system":
+        _validate_variant_languages(db, bot.tenant_id, body.variants)
+
+    config, full, compiled = _compile_version_content(
+        body.prompt_mode, body.structured_config, body.full_prompt
+    )
+    # Variables the author listed plus every variable the prompt text uses —
+    # the runtime-context screens read this to know what a prompt expects.
+    variables = list(dict.fromkeys([*body.variables, *extract_variables(compiled)]))
     prompt = Prompt(
         id=new_id("pr"), tenant_id=bot.tenant_id, bot_id=bot.id, type=body.type,
-        name=name, description=body.description, variables=body.variables,
+        name=name, description=body.description, variables=variables,
         state="draft", active_version=1, created_by=user.id,
     )
     db.add(prompt)
@@ -130,9 +205,11 @@ def create_prompt(
             id=new_id("prv"), prompt_id=prompt.id, version=1, edited_by=user.name,
             edited_by_user_id=user.id, edited_at=datetime.now(timezone.utc),
             note=body.note, variants=[v.model_dump() for v in body.variants],
-            structured_config=config, compiled_prompt=compiled,
+            prompt_mode=body.prompt_mode, structured_config=config,
+            full_prompt=full, compiled_prompt=compiled,
         )
     )
+    refresh_readiness(db, bot, keys=("r3",))
     record_audit(
         db, user=user, action="Created prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=f"{prompt.name} ({bot.name})", tenant_id=bot.tenant_id,
@@ -145,8 +222,12 @@ def create_prompt(
 
 class NewVersionRequest(BaseModel):
     note: str = Field(default="", max_length=500)
+    prompt_mode: str | None = Field(
+        default=None, alias="promptMode", pattern=PROMPT_MODES_PATTERN
+    )
     variants: list[VariantPayload] = Field(default_factory=list)
     structured_config: dict | None = Field(default=None, alias="structuredConfig")
+    full_prompt: str | None = Field(default=None, alias="fullPrompt")
     submit_for_approval: bool = Field(default=True, alias="submitForApproval")
 
     model_config = {"populate_by_name": True}
@@ -161,7 +242,32 @@ def add_prompt_version(
     db: Session = Depends(get_db),
 ):
     prompt = _prompt_checked(db, prompt_id, user)
-    config, compiled = _compile_structured(body.structured_config)
+    if prompt.type != "system":
+        previous = {
+            str(variant.get("language") or "").strip()
+            for variant in ((prompt.versions[0].variants or []) if prompt.versions else [])
+            if variant.get("language")
+        }
+        _validate_variant_languages(
+            db,
+            prompt.tenant_id,
+            body.variants,
+            previous_languages=previous,
+        )
+    # Mode defaults to the payload shape, then the previous version's mode —
+    # so existing clients that only ever send structuredConfig keep working.
+    mode = body.prompt_mode or (
+        "full" if body.full_prompt is not None
+        else ("structured" if body.structured_config is not None
+              else (prompt.versions[0].prompt_mode if prompt.versions else "structured"))
+    )
+    config, full, compiled = _compile_version_content(
+        mode, body.structured_config, body.full_prompt
+    )
+    if compiled:
+        prompt.variables = list(dict.fromkeys(
+            [*(prompt.variables or []), *extract_variables(compiled)]
+        ))
     latest = max((v.version for v in prompt.versions), default=0)
     db.add(
         PromptVersion(
@@ -169,12 +275,14 @@ def add_prompt_version(
             edited_by=user.name, edited_by_user_id=user.id,
             edited_at=datetime.now(timezone.utc), note=body.note,
             variants=[v.model_dump() for v in body.variants],
-            structured_config=config, compiled_prompt=compiled,
+            prompt_mode=mode, structured_config=config,
+            full_prompt=full, compiled_prompt=compiled,
         )
     )
     prompt.active_version = latest + 1
     prompt.state = "pending_approval" if body.submit_for_approval else "draft"
     prompt.updated_by = user.id
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user,
         action="Edited prompt (pending approval)" if body.submit_for_approval else "Saved prompt draft",
@@ -189,7 +297,14 @@ def add_prompt_version(
 
 
 class CompilePreviewRequest(BaseModel):
-    structured_config: dict = Field(alias="structuredConfig")
+    prompt_mode: str = Field(
+        default="structured", alias="promptMode", pattern=PROMPT_MODES_PATTERN
+    )
+    structured_config: dict | None = Field(default=None, alias="structuredConfig")
+    full_prompt: str | None = Field(default=None, alias="fullPrompt")
+    # Optional sample runtime-context values: when present the response also
+    # carries the rendered prompt + missing-variable warnings.
+    test_context: dict | None = Field(default=None, alias="testContext")
 
     model_config = {"populate_by_name": True}
 
@@ -201,14 +316,61 @@ def compile_preview(
 ):
     """Stateless compile: preview + validation for the builder UI. The backend
     is the single compiler — the UI never assembles the runtime prompt."""
-    errors = validate_config(body.structured_config)
-    compiled = compile_prompt(body.structured_config) if not errors else ""
-    return ok({
+    errors, compiled = compile_source(
+        body.prompt_mode,
+        structured_config=body.structured_config or {},
+        full_prompt=body.full_prompt,
+    )
+    result = {
         "compiled": compiled,
         "valid": not errors,
         "errors": errors,
         "characterCount": len(compiled),
         "tokenEstimate": estimate_tokens(compiled) if compiled else 0,
+        "variables": extract_variables(compiled),
+    }
+    if body.test_context is not None and compiled:
+        result["render"] = render_preview(compiled, body.test_context)
+    return ok(result)
+
+
+class RenderPreviewRequest(BaseModel):
+    """Render a SAVED version against sample context (Prompt Studio preview)."""
+
+    version: int | None = Field(default=None, ge=1)
+    test_context: dict = Field(default_factory=dict, alias="testContext")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/prompts/{prompt_id}/render-preview")
+def render_prompt_preview(
+    prompt_id: str,
+    body: RenderPreviewRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The prompt a live call would run, rendered with the supplied test data.
+
+    Uses the runtime resolver, so 'missing' here is exactly what a call with
+    this context would leave unresolved (and therefore handle per the
+    prompt's missing-information instructions — never by inventing values).
+    """
+    prompt = _prompt_checked(db, prompt_id, user)
+    version_no = body.version or prompt.active_version
+    version = next((v for v in prompt.versions if v.version == version_no), None)
+    if version is None:
+        raise ApiError("Unknown prompt version.", 422)
+    compiled = version.compiled_prompt or ""
+    if not compiled:
+        variant = next((v for v in (version.variants or []) if v.get("content")), None)
+        compiled = variant["content"] if variant else ""
+    if not compiled:
+        raise ApiError("This version has no content to render.", 422)
+    return ok({
+        "promptVersion": version_no,
+        "promptMode": version.prompt_mode,
+        **render_preview(compiled, body.test_context),
     })
 
 
@@ -239,10 +401,13 @@ def duplicate_prompt(
             edited_by_user_id=user.id, edited_at=datetime.now(timezone.utc),
             note=f"Duplicated from {src.name} v{src.active_version}",
             variants=(active.variants if active else []) or [],
+            prompt_mode=active.prompt_mode if active else "structured",
             structured_config=active.structured_config if active else None,
+            full_prompt=active.full_prompt if active else None,
             compiled_prompt=active.compiled_prompt if active else None,
         )
     )
+    _refresh_prompt_readiness(db, clone)
     record_audit(
         db, user=user, action="Duplicated prompt", entity_type="prompt",
         entity_id=clone.id, target_label=name, tenant_id=src.tenant_id,
@@ -337,6 +502,7 @@ def update_prompt(
                 previous_value=before, new_value={"state": "rejected"}, request=request,
             )
     prompt.updated_by = user.id
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user, action="Updated prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=prompt.name, tenant_id=prompt.tenant_id, previous_value=before,
@@ -345,6 +511,16 @@ def update_prompt(
     )
     db.commit()
     db.refresh(prompt)
+    if prompt.state == "published" and (
+        before["state"] != "published"
+        or before["activeVersion"] != prompt.active_version
+    ):
+        # A publish or a live-version move must reach calls NOW, not after the
+        # bot-config cache TTL: the conversation record traces the version it
+        # ran on, so serving a stale one would falsify that trace.
+        from shared.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(prompt.tenant_id, prompt.bot_id)
     return ok(serialize_prompt(prompt))
 
 
@@ -361,6 +537,7 @@ def delete_prompt(
         guard_hard_delete()
     soft_delete(prompt, user)
     prompt.state = "archived"
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user, action="Archived prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=prompt.name, tenant_id=prompt.tenant_id, request=request,
@@ -391,9 +568,15 @@ async def test_prompt(
     """Run a sample caller message against a prompt version: routing decision,
     optional KB retrieval, and an LLM response using the bot's configured
     provider. Text-only — no tools are executed, nothing is state-changing."""
+    from shared.bot_config import resolve_voice_identity_for_settings
     from shared.config import get_settings
     from shared.models import Intent, VoiceBotSetting
+    from shared.orchestration.placeholders import resolve_placeholders
     from shared.orchestration.router import RouteKind, TurnRouter
+    from shared.orchestration.voice_identity import (
+        voice_context_values,
+        voice_identity_instruction,
+    )
     from shared.providers.base import ProviderConfig
     from shared.providers.factory import get_llm_provider
 
@@ -456,6 +639,16 @@ async def test_prompt(
     # 3. LLM response with the bot's configured provider (mock works keyless).
     settings = get_settings()
     vbs = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
+    voice_identity = resolve_voice_identity_for_settings(
+        db, vbs, bot.tenant_id, body.language,
+        default_provider=settings.tts_provider,
+        default_voice=settings.tts_voice,
+    )
+    system = (
+        resolve_placeholders(system, voice_context_values(voice_identity))
+        + voice_identity_instruction(voice_identity, body.language)
+        + spoken_reply_instruction(body.language)
+    )
     provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
     model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)
     llm = get_llm_provider(ProviderConfig(

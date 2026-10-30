@@ -15,15 +15,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/state/AppContext";
 import {
   createMaster, deleteMaster, duplicatePlan, getMasterAudit, getModelLanguages,
-  listMaster, listPlanTenants, setMasterStatus, updateMaster, type MasterType,
+  listGuardrailProfiles, listMaster, listPlanTenants, setMasterStatus,
+  updateMaster, type MasterType,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import type { ModelLanguagesInfo, ProviderSettings, VoiceCapability } from "@/types/domain";
 import {
   Button, Callout, ConfirmModal, Drawer, EmptyState, ErrorState, Field, Modal,
-  NumberInput, StatusChip, Tabs, Toggle,
+  MultiSelect, NumberInput, StatusChip, Tabs, Toggle,
+  type MultiSelectOption,
 } from "@/components/ui";
-import { ModelSelect, ProviderSelect, useModelInfos } from "@/components/ProviderModelSelect";
+import {
+  ModelSelect, ProviderSelect, VoiceSelect, useModelInfos, useModelOptions,
+} from "@/components/ProviderModelSelect";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
 import { DataTable, type Column } from "@/components/DataTable";
 
@@ -45,7 +49,7 @@ type Row = Record<string, unknown> & {
 interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider" | "datetime";
+  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voice" | "voiceProvider" | "datetime" | "guardrailProfile";
   options?: { value: string; label: string }[];
   required?: boolean;
   /** Required only while creating; legacy records can still be edited. */
@@ -62,8 +66,10 @@ interface FieldDef {
   /** provider/model fields whose capability is itself a form value (pricing):
       the form key holding the selected capability. */
   capabilityKey?: string;
-  /** model fields: the form key holding the selected provider. */
+  /** model and voice fields: the form key holding the selected provider. */
   providerKey?: string;
+  /** voice fields: the form key holding the selected model. */
+  modelKey?: string;
   /** Initial value in the add form (overrides the per-type defaults). */
   defaultValue?: string;
   /** An explicit empty value is submitted on edit to clear the column. */
@@ -120,13 +126,19 @@ const unitLabel = (unit: unknown): string =>
   PRICING_UNITS.find((u) => u.value === String(unit ?? ""))?.label
     ?? String(unit ?? "").replaceAll("_", " ");
 
-/** "$0.006 per minute" — amount with its currency symbol and unit. */
+/** "$0.006 per minute" — amount with its currency symbol and unit.
+ *
+ * Two minimum decimals so whole and one-decimal list prices read as money
+ * ($15.00, $1.60 — not $15, $1.6); the high maximum keeps sub-cent rates
+ * like $0.0058 per minute intact rather than rounding them to nothing. */
 function PriceCell({ amount, currency, unit }: { amount: unknown; currency: unknown; unit: unknown }) {
   if (amount === null || amount === undefined || amount === "") return <span className="t-sub">—</span>;
   return (
     <span className="t-num">
       {currencySymbol(currency) || String(currency ?? "")}
-      {Number(amount).toLocaleString(undefined, { maximumFractionDigits: 10 })}{" "}
+      {Number(amount).toLocaleString(undefined, {
+        minimumFractionDigits: 2, maximumFractionDigits: 10,
+      })}{" "}
       <span className="t-micro">{unitLabel(unit)}</span>
     </span>
   );
@@ -216,6 +228,11 @@ const ALL_SPECS: TypeSpec[] = [
       text("code", "Code", { required: true, createOnly: true, hint: "Stable identifier, e.g. banking", section: "Identity" }),
       text("name", "Name", { required: true, section: "Identity" }),
       { key: "description", label: "Description", type: "textarea", section: "Identity" },
+      {
+        key: "defaultGuardrailProfileId", label: "Default guardrail profile",
+        type: "guardrailProfile", section: "Governance", clearable: true,
+        hint: "Recommended default suggested during onboarding — the Super Admin can override it per tenant.",
+      },
       text("icon", "Icon", { section: "Presentation" }),
       num("sortOrder", "Order", { section: "Presentation" }),
     ],
@@ -328,7 +345,9 @@ const ALL_SPECS: TypeSpec[] = [
       { key: "llmModel", label: "LLM model", type: "model", capability: "llm", providerKey: "llmProvider", section: "Language model" },
       { key: "ttsProvider", label: "TTS provider", type: "provider", capability: "tts", section: "Text to speech" },
       { key: "ttsModel", label: "TTS model", type: "model", capability: "tts", providerKey: "ttsProvider", section: "Text to speech" },
-      text("defaultVoice", "Default voice", { section: "Text to speech" }),
+      { key: "defaultVoice", label: "Default voice", type: "voice", providerKey: "ttsProvider",
+        modelKey: "ttsModel", section: "Text to speech",
+        hint: "Only voices of the selected TTS provider that support the selected model are listed." },
       { key: "embeddingProvider", label: "Embedding provider", type: "provider", capability: "embedding", section: "Retrieval" },
       { key: "embeddingModel", label: "Embedding model", type: "model", capability: "embedding", providerKey: "embeddingProvider", section: "Retrieval" },
       num("embeddingDimension", "Embedding dimension", { section: "Retrieval" }),
@@ -408,6 +427,12 @@ const ALL_SPECS: TypeSpec[] = [
     columns: [
       { ...nameCol, render: (r) => <span className="row gap-8"><span className="t-strong">{String(r.name ?? "")}</span>{Boolean(r.isDefault) && <span className="tag">Default</span>}</span> },
       { key: "provider", header: "Provider", render: (r) => <span>{String(r.provider ?? "platform")}</span> },
+      { key: "modelCodes", header: "Models", render: (r) => {
+        const codes = (r.modelCodes as string[] | undefined) ?? [];
+        return codes.length
+          ? <span className="row gap-4" style={{ flexWrap: "wrap" }}>{codes.map((c) => <span key={c} className="tag">{c}</span>)}</span>
+          : <span className="t-micro">All models</span>;
+      } },
       { key: "languages", header: "Languages", render: (r) => <span className="t-micro">{((r.languages as string[]) ?? []).join(", ") || String(r.locale ?? "")}</span> },
       { key: "gender", header: "Gender", render: (r) => <span>{String(r.gender ?? "")}</span> },
       { key: "speakingRate", header: "Rate", align: "right", render: (r) => <span>{Number(r.speakingRate ?? 1).toFixed(2)}×</span> },
@@ -554,6 +579,27 @@ function buildFormFromRow(spec: TypeSpec, row: Row): Record<string, unknown> {
   return form;
 }
 
+/** Every language a voice may be used for. Rows created before the languages
+    multi-select carry only `locale` — seed the selection from it so an edit
+    keeps the language the voice was actually created for. */
+function voiceLanguages(row: Row | null): string[] {
+  const stored = (row?.languages as string[] | undefined) ?? [];
+  if (stored.length > 0) return [...stored];
+  const locale = String(row?.locale ?? "");
+  return locale ? [locale] : [];
+}
+
+/** Comma-separated locale codes typed by hand (providers with no catalog
+    languages), de-duplicated in typing order. */
+function parseLanguageCodes(text: string): string[] {
+  const codes: string[] = [];
+  for (const raw of text.split(",")) {
+    const code = raw.trim();
+    if (code && !codes.includes(code)) codes.push(code);
+  }
+  return codes;
+}
+
 /** Voice form state — the provider decides which settings exist; the single
     selected model is stored as `modelCodes: [model]` on the API. */
 function buildVoiceForm(row: Row | null): Record<string, unknown> {
@@ -565,6 +611,7 @@ function buildVoiceForm(row: Row | null): Record<string, unknown> {
     providerVoiceId: String(row?.providerVoiceId ?? ""),
     model: (row?.modelCodes as string[] | undefined)?.[0] ?? "",
     locale: String(row?.locale ?? ""),
+    languages: voiceLanguages(row),
     sampleText: String(row?.sample ?? ""),
     premium: Boolean(row?.premium),
     isDefault: Boolean(row?.isDefault),
@@ -638,7 +685,7 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
     // A provider change invalidates its dependent model selection; a
     // capability change invalidates both downstream selections (pricing).
     for (const f of spec.fields) {
-      if (f.type === "model" && f.providerKey === key && form[f.key]) patch[f.key] = "";
+      if ((f.type === "model" || f.type === "voice") && f.providerKey === key && form[f.key]) patch[f.key] = "";
       if (f.capabilityKey === key && form[f.key]) patch[f.key] = "";
     }
     onChange(patch);
@@ -677,7 +724,7 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
         if (f.type === "number") value = value === "" || value === null ? undefined : Number(value);
         // Provider/model and explicitly clearable fields submit on edit so an
         // emptied value clears the stored column instead of being skipped.
-        const clearable = f.type === "provider" || f.type === "model" || Boolean(f.clearable);
+        const clearable = f.type === "provider" || f.type === "model" || f.type === "voice" || Boolean(f.clearable);
         if ((value === "" && !(row && clearable)) || value === undefined) continue;
         payload[f.key] = value;
       }
@@ -789,6 +836,20 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
           disabled={locked} onChange={(code) => set(f.key, code)} />
       );
     }
+    if (f.type === "guardrailProfile") {
+      return (
+        <GuardrailProfileSelect value={String(form[f.key] ?? "")} label={f.label}
+          disabled={locked} onChange={(id) => set(f.key, id)} />
+      );
+    }
+    if (f.type === "voice" && f.providerKey) {
+      return (
+        <VoiceSelect provider={String(form[f.providerKey] ?? "")}
+          model={f.modelKey ? String(form[f.modelKey] ?? "") : ""}
+          value={String(form[f.key] ?? "")} label={f.label} disabled={locked}
+          invalid={Boolean(fieldErrors[f.key])} onChange={(id) => set(f.key, id)} />
+      );
+    }
     if (f.type === "model" && f.capability && f.providerKey) {
       return (
         <ModelSelect capability={f.capability} provider={String(form[f.providerKey] ?? "")}
@@ -895,6 +956,9 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  /* Raw text of the hand-typed language list, so a half-typed code ("hi-IN,")
+     is not rewritten under the cursor by the parsed round-trip. */
+  const [languagesText, setLanguagesText] = useState<string | null>(null);
   const [switchNote, setSwitchNote] = useState<string | null>(null);
 
   const provider = String(form.provider ?? "");
@@ -939,7 +1003,8 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
   };
 
   const applyProvider = (next: string) => {
-    set({ provider: next, model: "", providerVoiceId: "", locale: "", providerSettings: {} });
+    set({ provider: next, model: "", providerVoiceId: "", locale: "", languages: [], providerSettings: {} });
+    setLanguagesText(null);
     setSwitchNote(next
       ? `Provider changed — model, voice ID, language and provider settings were reset for ${next}. Name, gender and description were kept.`
       : null);
@@ -980,6 +1045,7 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
         name: String(form.name).trim(),
         provider,
         modelCodes: model ? [model] : [],
+        languages,
         providerSettings: settings,
         premium: Boolean(form.premium),
         isDefault: Boolean(form.isDefault),
@@ -1017,7 +1083,17 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
     hint: "Identifier of this voice on the provider's side, if any.",
   };
   const localeOptions = langInfo?.languages ?? [];
-  const localeKnown = localeOptions.some((l) => l.code === String(form.locale ?? ""));
+  const languages = (form.languages as string[] | undefined) ?? [];
+  /* Codes saved earlier that the selected model does not support stay listed
+     (and removable) instead of vanishing from the dialog. */
+  const languageOptions: MultiSelectOption[] = [
+    ...localeOptions.map((l) => ({ value: l.code, label: l.name, sub: l.code })),
+    ...languages.filter((code) => !localeOptions.some((l) => l.code === code))
+      .map((code) => ({ value: code, label: `${code} (not supported by this model)`, sub: code })),
+  ];
+  /* `locale` stays the primary language of the voice — list columns, the
+     tenant locale filter and older readers still read it. */
+  const setLanguages = (next: string[]) => set({ languages: next, locale: next[0] ?? "" });
 
   return (
     <Modal open onClose={onClose} wide
@@ -1025,7 +1101,8 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
       sub={row ? undefined : "Closing this dialog keeps your draft — it clears on Create or Reset."}
       footer={
         <>
-          <Button onClick={onReset} icon="undo" title="Restore the initial values">Reset</Button>
+          <Button onClick={() => { setLanguagesText(null); onReset(); }} icon="undo"
+            title="Restore the initial values">Reset</Button>
           <div className="grow" />
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" busy={busy} disabled={busy} onClick={() => void save()}>
@@ -1058,19 +1135,20 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
                 disabled={!provider}
                 onChange={(e) => set({ providerVoiceId: e.target.value })} />
             </Field>
-            <Field label="Language" error={fieldErrors.locale}
-              hint={model ? "Languages supported by the selected model." : "Select a model to list its supported languages."}>
+            <Field label="Languages" plain error={fieldErrors.languages ?? fieldErrors.locale}
+              hint={localeOptions.length > 0
+                ? "Every language this voice may be offered for — pick as many as it speaks. Leaving it empty offers it for all of them."
+                : model
+                  ? "Comma-separated locale codes, e.g. hi-IN, en-IN."
+                  : "Select a model to list its supported languages."}>
               {localeOptions.length > 0 ? (
-                <select className="select" aria-label="Language" value={String(form.locale ?? "")}
-                  onChange={(e) => set({ locale: e.target.value })}>
-                  <option value="">—</option>
-                  {!localeKnown && form.locale ? <option value={String(form.locale)}>{String(form.locale)} (not supported)</option> : null}
-                  {localeOptions.map((l) => <option key={l.code} value={l.code}>{l.name} ({l.code})</option>)}
-                </select>
+                <MultiSelect options={languageOptions} selected={languages} onChange={setLanguages}
+                  ariaLabel="Languages" placeholder="All languages" searchPlaceholder="Search languages…"
+                  invalid={Boolean(fieldErrors.languages || fieldErrors.locale)} />
               ) : (
-                <input className="input" aria-label="Language" placeholder="e.g. hi-IN"
-                  value={String(form.locale ?? "")} disabled={!provider}
-                  onChange={(e) => set({ locale: e.target.value })} />
+                <input className="input" aria-label="Languages" placeholder="e.g. hi-IN, en-IN"
+                  value={languagesText ?? languages.join(", ")} disabled={!provider}
+                  onChange={(e) => { setLanguagesText(e.target.value); setLanguages(parseLanguageCodes(e.target.value)); }} />
               )}
             </Field>
           </div>
@@ -1273,6 +1351,42 @@ function VoiceProviderSelect({ value, onChange, disabled, label }: {
   );
 }
 
+/** Guardrail profile options for the Industries default-profile field.
+    Inactive profiles stay visible (an industry may still point at one) but
+    cannot be newly selected; an unknown current value stays selectable so
+    editing an unrelated field never silently clears it. */
+function GuardrailProfileSelect({ value, onChange, disabled, label }: {
+  value: string; onChange: (id: string) => void; disabled?: boolean; label?: string;
+}) {
+  const [profiles, setProfiles] = useState<
+    { id: string; name: string; status: string }[] | null
+  >(null);
+  useEffect(() => {
+    let alive = true;
+    listGuardrailProfiles()
+      .then((rows) => {
+        if (alive) setProfiles(rows.map((p) => ({ id: p.id, name: p.name, status: p.status })));
+      })
+      .catch(() => { if (alive) setProfiles([]); });
+    return () => { alive = false; };
+  }, []);
+  const loading = profiles === null;
+  const known = (profiles ?? []).some((p) => p.id === value);
+  return (
+    <select className="select" value={value} disabled={disabled || loading}
+      aria-label={label ?? "Default guardrail profile"}
+      onChange={(e) => onChange(e.target.value)}>
+      <option value="">{loading ? "Loading profiles…" : "No default (mandatory rules only)"}</option>
+      {value && !loading && !known && <option value={value}>{value} (unavailable)</option>}
+      {(profiles ?? []).map((p) => (
+        <option key={p.id} value={p.id} disabled={p.status !== "active" && p.id !== value}>
+          {p.name}{p.status !== "active" ? " (inactive)" : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /* ---------- Pricing: master-data-backed provider/model selects ---------- */
 
 /** Provider/model options for pricing come from the master-data lists, not
@@ -1405,26 +1519,41 @@ function PricingFilters({ value, onChange }: {
 
 interface VoiceFilterState {
   provider: string;
+  /** Catalog model of the selected provider; cleared with the provider. */
+  model: string;
   gender: string;
   status: string;
 }
 
-const EMPTY_VOICE_FILTERS: VoiceFilterState = { provider: "", gender: "", status: "" };
+const EMPTY_VOICE_FILTERS: VoiceFilterState = { provider: "", model: "", gender: "", status: "" };
 
 function VoiceFilters({ value, onChange }: {
   value: VoiceFilterState;
   onChange: (next: VoiceFilterState) => void;
 }) {
   const providers = useVoiceProviders();
+  /* The model filter appears once a provider is chosen and lists that
+     provider's catalog models; "platform"/"voice"-kind catalogs have none. */
+  const { models } = useModelOptions("tts", value.provider || null);
   const active = Object.values(value).filter(Boolean).length;
   return (
     <>
       <select className="select" style={{ width: 170 }} value={value.provider}
         aria-label="Filter voices by provider"
-        onChange={(e) => onChange({ ...value, provider: e.target.value })}>
+        onChange={(e) => onChange({ ...value, provider: e.target.value, model: "" })}>
         <option value="">All providers</option>
         {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
       </select>
+      {value.provider && (models ?? []).length > 0 && (
+        <select className="select" style={{ width: "auto", minWidth: 200 }} value={value.model}
+          aria-label="Filter voices by model"
+          onChange={(e) => onChange({ ...value, model: e.target.value })}>
+          <option value="">All models</option>
+          {(models ?? []).map((m) => (
+            <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " · default" : ""}</option>
+          ))}
+        </select>
+      )}
       <select className="select" style={{ width: 130 }} value={value.gender}
         aria-label="Filter voices by gender"
         onChange={(e) => onChange({ ...value, gender: e.target.value })}>
@@ -1505,6 +1634,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         provider: spec.voiceFilters ? voiceFilters.provider || undefined
           : spec.pricingFilters ? pricingFilters.provider || undefined : undefined,
         gender: spec.voiceFilters ? voiceFilters.gender || undefined : undefined,
+        model: spec.voiceFilters ? voiceFilters.model || undefined : undefined,
         status: spec.voiceFilters ? voiceFilters.status || undefined : undefined,
         capability: spec.pricingFilters ? pricingFilters.capability || undefined : undefined,
       });

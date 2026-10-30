@@ -7,19 +7,27 @@
 
 import type {
   AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent,
-  ChannelConfig, ChannelProviderConfig, Conversation, DocumentStatus, DocumentUploadResult, EntityDef,
-  EntityExtraction, Guardrail, HealthMetric, Intent, IntentTestResult,
+  ChannelConfig, ChannelProviderConfig, Conversation, CustomerContext,
+  CustomerContextCallState, CustomerContextInput,
+  DocumentStatus, DocumentUploadResult, EntityDef,
+  BotEffectiveGuardrails,
+  EffectiveGuardrails, EntityExtraction, Guardrail, GuardrailProfile,
+  GuardrailTrigger, HealthMetric, IdentityConfirmationMode, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
-  PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptTestResult,
-  Release, RoleInfo, SearchTestResult, SessionUserInfo, SipTrunk,
-  StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
-  TenantSettings, TestScenario, UploadConfig, VoiceBot, VoiceCatalog,
-  VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
+  PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
+  Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
+  RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
+  StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantApiToken, TenantProfile,
+  TenantSettings, TestScenario, TurnDetectionConfig, TurnDetectionMode,
+  TurnDetectionOverrides, UploadConfig, VoiceBot, VoiceCatalog,
+  VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow, EndCallToggleResult,
   ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
   ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
-  ModelLanguagesInfo, ProviderInfo, ProviderModelInfo, ProviderSettings,
+  ModelLanguagesInfo, PronunciationDictionary, PronunciationMap,
+  ProviderInfo, ProviderModelInfo, ProviderSettings,
   ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability,
   VoiceCloneConfig, VoiceOption,
+  NaturalConversationAudio,
 } from "@/types/domain";
 import { http, requestWithMeta, type Paged } from "./http";
 import { downloadFile } from "./fileDownload";
@@ -43,12 +51,58 @@ export const listTenants = async (): Promise<Tenant[]> =>
 export const getTenant = (id: string): Promise<Tenant> => http.get(`/tenants/${id}`);
 export const createTenant = (body: {
   name: string; code?: string; domain: string; industry?: string; region?: string;
-  aiProfileCode?: string; planCode: string; adminEmail: string; adminName?: string;
-  status?: string; seats?: number;
-}) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string } }>("/tenants", body);
-export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail"> & { planCode: string; aiProfileCode: string }>) =>
+  aiProfileCode?: string; guardrailProfileId?: string; planCode: string;
+  adminEmail: string; adminName?: string;
+  status?: string; seats?: number; defaultLanguages?: string[];
+  callSummaryEnabled?: boolean; usePreviousCallSummary?: boolean;
+}) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string }; apiToken?: TenantApiToken }>("/tenants", body);
+/* Tenant API token (Super Admin). Only the SHA-256 is stored server-side, so
+   `getTenantApiToken` returns metadata (prefix/status/last use) and the
+   plaintext is only ever in the rotate response — show it once, then it is gone. */
+export const getTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.get(`/tenants/${tenantId}/api-token`);
+export const rotateTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.post(`/tenants/${tenantId}/api-token/rotate`);
+export const revokeTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.delete(`/tenants/${tenantId}/api-token`);
+export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages" | "callSummaryEnabled" | "usePreviousCallSummary"> & { planCode: string; aiProfileCode: string; guardrailProfileId: string }>) =>
   http.patch<Tenant>(`/tenants/${id}`, body);
+export const getTenantEffectiveGuardrails = (id: string): Promise<EffectiveGuardrails> =>
+  http.get(`/tenants/${id}/effective-guardrails`);
 export const archiveTenant = (id: string) => http.delete<{ archived: boolean }>(`/tenants/${id}`);
+
+/* Tenant Copy/Paste deployment. The exported package is the transfer
+   artifact: downloaded as one JSON file on the source environment and
+   re-uploaded verbatim on the target — every id (tenant, bots, workflows,
+   prompts, tools, channels, …) is preserved by the backend. */
+export interface TenantExportPackage {
+  kind: string;
+  schema_version: number;
+  exported_at?: string;
+  source?: { tenant_id?: string; name?: string };
+  shared?: Record<string, unknown>;
+  resources: {
+    tenant: { id: string; name?: string };
+    bots?: { id: string; name?: string }[];
+    [section: string]: unknown;
+  };
+  knowledge_plane?: { documents?: unknown[] } | null;
+}
+
+export interface TenantImportReport {
+  tenantId: string;
+  created: Record<string, number>;
+  updated: Record<string, number>;
+  reused: Record<string, number>;
+  remappedIds: Record<string, string>;
+  warnings: string[];
+  knowledgeDocuments: number;
+}
+
+export const exportTenantPackage = (id: string): Promise<TenantExportPackage> =>
+  http.get(`/tenants/${id}/export?includeKnowledge=true`);
+export const importTenantPackage = (pkg: TenantExportPackage): Promise<TenantImportReport> =>
+  http.post("/tenants/import", pkg);
 
 export const listSubscriptions = async (): Promise<Subscription[]> =>
   (await http.getPaged<Subscription>("/subscriptions?pageSize=200")).items;
@@ -58,6 +112,17 @@ export const listInvoices = async (): Promise<Invoice[]> =>
 /* ---------- Bots ---------- */
 export const listBots = async (tenantId?: string): Promise<VoiceBot[]> =>
   (await http.getPaged<VoiceBot>(`/bots?pageSize=200${tenantId ? `&tenantId=${tenantId}` : ""}`)).items;
+/** Every bot the caller can see, across as many 200-row pages as it takes —
+    a platform-wide table that filters client-side must never search a
+    truncated first page. */
+export const listAllBots = async (): Promise<VoiceBot[]> => {
+  const first = await http.getPaged<VoiceBot>("/bots?pageSize=200");
+  const rows = [...first.items];
+  for (let page = 2; page <= first.meta.totalPages; page++) {
+    rows.push(...(await http.getPaged<VoiceBot>(`/bots?pageSize=200&page=${page}`)).items);
+  }
+  return rows;
+};
 export const getBot = (id: string): Promise<VoiceBot> => http.get(`/bots/${id}`);
 export const createBot = (body: { name: string; useCase?: string; description?: string; languages?: string[] }) =>
   http.post<VoiceBot>("/bots", body);
@@ -65,7 +130,81 @@ export const updateBot = (
   id: string,
   body: Partial<{ name: string; useCase: string; description: string; status: string; languages: string[]; voiceId: string | null; readiness: Record<string, boolean> }>,
 ) => http.patch<VoiceBot>(`/bots/${id}`, body);
-export const archiveBot = (id: string) => http.delete<{ archived: boolean }>(`/bots/${id}`);
+/* Lifecycle. Archive is reversible (status "archived", still listed); Restore
+   returns an archived bot to draft; Delete is permanent (tombstoned, gone from
+   every list, no restore). */
+export const archiveBot = (id: string) =>
+  http.post<{ archived: boolean; id: string; status: "archived"; channelsDisabled: number; phoneNumbersReserved: number }>(
+    `/bots/${id}/archive`,
+  );
+export const restoreBot = (id: string) =>
+  http.post<{ restored: boolean; id: string; status: "draft"; phoneNumbersReassigned: number }>(
+    `/bots/${id}/restore`,
+  );
+export const deleteBot = (id: string) =>
+  http.delete<{ deleted: boolean; id: string; channelsArchived: number; phoneNumbersReleased: number }>(
+    `/bots/${id}`,
+  );
+/** Deep-clone a bot's configuration into a new Draft bot (channels/numbers/data excluded). */
+export const cloneBot = (id: string): Promise<VoiceBot> => http.post(`/bots/${id}/clone`);
+
+/* Bot Export / Import — environment migration of ONE bot. The package keeps
+   tenant_id + bot_id; the backend creates the bot with the same id or updates
+   the existing one in place, same tenant only. */
+export interface BotExportPackage {
+  kind: string;
+  schema_version: number;
+  exported_at?: string;
+  tenant_id: string;
+  bot_id: string;
+  source?: { tenant_name?: string | null; bot_name?: string | null; bot_status?: string | null };
+  bot: { id: string; tenant_id?: string; name?: string; status?: string; languages?: string[]; [k: string]: unknown };
+  resources: Record<string, unknown>;
+  shared?: Record<string, unknown>;
+  environment?: { channel_configs?: unknown[]; phone_numbers?: { number: string }[] };
+  knowledge_plane?: { documents?: unknown[] } | null;
+  integrity?: string;
+}
+
+export interface BotImportReport {
+  botId: string;
+  tenantId: string;
+  botName: string | null;
+  existing: boolean;
+  action: "create" | "update";
+  dryRun: boolean;
+  created: Record<string, number>;
+  updated: Record<string, number>;
+  removed: Record<string, number>;
+  reused: Record<string, number>;
+  remappedIds: Record<string, string>;
+  preserved: { kind: string; label: string; reason: string; differs?: string[] }[];
+  secretsMissing: { owner: string; reference: string }[];
+  warnings: string[];
+  knowledgeDocuments: number;
+}
+
+export interface BotImportOptions {
+  /** Destination tenant — only meaningful for super admins (defaults to the package tenant). */
+  tenantId?: string;
+  /** Also apply channel configuration / phone numbers / local API URLs from the package. */
+  applyEnvironment?: boolean;
+}
+
+const botImportQuery = (opts?: BotImportOptions) => {
+  const params = new URLSearchParams();
+  if (opts?.tenantId) params.set("tenantId", opts.tenantId);
+  if (opts?.applyEnvironment) params.set("applyEnvironment", "true");
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+export const exportBotPackage = (botId: string): Promise<BotExportPackage> =>
+  http.get(`/bots/${botId}/export?includeKnowledge=true`);
+export const previewBotImport = (pkg: BotExportPackage, opts?: BotImportOptions): Promise<BotImportReport> =>
+  http.post(`/bots/import/preview${botImportQuery(opts)}`, pkg);
+export const importBotPackage = (pkg: BotExportPackage, opts?: BotImportOptions): Promise<BotImportReport> =>
+  http.post(`/bots/import${botImportQuery(opts)}`, pkg);
 
 export const getVoiceSettings = (botId: string): Promise<VoiceSettings> =>
   http.get(`/bots/${botId}/voice-settings`);
@@ -76,6 +215,23 @@ export const saveVoiceSettings = async (
   const { data, meta } = await requestWithMeta<VoiceSettings>("PUT", `/bots/${botId}/voice-settings`, body);
   return { settings: data, warnings: meta?.warnings ?? [] };
 };
+
+/** Switch ONLY goal_policy.endCall.enabled; the server merges it into the
+ *  latest stored goal policy (never send goalPolicy through saveVoiceSettings). */
+export const setGoalPolicyEndCall = (botId: string, enabled: boolean): Promise<EndCallToggleResult> =>
+  http.patch(`/bots/${botId}/goal-policy/end-call`, { enabled });
+
+/* ---------- Natural Conversation audio (read-only preview catalog) ---------- */
+export const getNaturalConversationAudio = (botId: string): Promise<NaturalConversationAudio> =>
+  http.get(`/bots/${botId}/natural-conversation/audio`);
+/** WAV of the exact clip the runtime plays (fetch with the JWT; <audio src> cannot carry it). */
+export const naturalConversationClipUrl = (botId: string, clipId: string): string =>
+  `/api/v1/bots/${botId}/natural-conversation/audio/clip?id=${encodeURIComponent(clipId)}`;
+export const naturalConversationCueUrl = (
+  botId: string, language: string, kind: "hmm" | "wait", cueId: string,
+): string =>
+  `/api/v1/bots/${botId}/natural-conversation/audio/cue?language=${encodeURIComponent(language)}`
+  + `&kind=${kind}&id=${encodeURIComponent(cueId)}`;
 
 /* ---------- Knowledge ---------- */
 export const listKnowledge = async (botId?: string, tenantId?: string): Promise<KnowledgeSource[]> => {
@@ -192,10 +348,69 @@ export const reviewRetrievalTest = (body: {
 }): Promise<RetrievalTestResult> => http.post(`${REVIEW}/retrieval-test`, body);
 
 /* ---------- Voice runtime ---------- */
-export const createVoiceSession = (botId: string, channel = "browser"): Promise<VoiceSessionInfo> =>
-  http.post("/voice-sessions", { botId, channel });
+export const createVoiceSession = (
+  botId: string,
+  channel = "browser",
+  opts?: { variables?: Record<string, string>; customerContextId?: string },
+): Promise<VoiceSessionInfo> =>
+  http.post("/voice-sessions", {
+    botId,
+    channel,
+    ...(opts?.variables ? { variables: opts.variables } : {}),
+    ...(opts?.customerContextId ? { customerContextId: opts.customerContextId } : {}),
+  });
 export const getVoiceCatalog = (): Promise<VoiceCatalog> =>
   http.get("/providers/voice-catalog");
+
+/* ---------- Customer collection context ---------- */
+export const listCustomerContexts = async (botId: string): Promise<CustomerContext[]> =>
+  (await http.getPaged<CustomerContext>(`/bots/${botId}/customer-contexts`)).items;
+export const lookupCustomerContext = (botId: string, phone: string): Promise<CustomerContext> =>
+  http.get(`/bots/${botId}/customer-contexts/lookup?phone=${encodeURIComponent(phone)}`);
+export const getCustomerContext = (id: string): Promise<CustomerContext> =>
+  http.get(`/customer-contexts/${id}`);
+export const createCustomerContext = (botId: string, body: CustomerContextInput): Promise<CustomerContext> =>
+  http.post(`/bots/${botId}/customer-contexts`, body);
+export const updateCustomerContext = (id: string, body: CustomerContextInput): Promise<CustomerContext> =>
+  http.patch(`/customer-contexts/${id}`, body);
+export const updateCustomerContextCallState = (
+  id: string, body: CustomerContextCallState,
+): Promise<CustomerContext> => http.patch(`/customer-contexts/${id}/call-state`, body);
+export const deleteCustomerContext = (id: string): Promise<{ deleted: boolean }> =>
+  http.delete(`/customer-contexts/${id}`);
+
+/* ---------- Runtime context / user details (per bot) ---------- */
+export const getRuntimeContext = (botId: string): Promise<RuntimeContextConfig> =>
+  http.get(`/bots/${botId}/runtime-context`);
+export const saveRuntimeContext = (botId: string, body: {
+  name?: string; sourceMode: "api" | "manual"; apiConnectionId?: string | null;
+  responsePath?: string | null; fields: RuntimeContextField[]; allowAdditional: boolean;
+  testPayload?: Record<string, unknown> | null; missingValuePolicy?: string | null;
+  domainPolicy: "generic" | "collections";
+  identityConfirmationMode?: IdentityConfirmationMode | null;
+}): Promise<RuntimeContextConfig> => http.put(`/bots/${botId}/runtime-context`, body);
+/** Validate a payload against the schema (or unsaved `fields`) and return the
+    effective, source-tagged, masked context a live call would see. */
+export const validateRuntimeContext = (botId: string, body: {
+  payload: Record<string, unknown>; fields?: RuntimeContextField[]; allowAdditional?: boolean;
+}): Promise<RuntimeContextValidateResult> =>
+  http.post(`/bots/${botId}/runtime-context/validate`, body);
+export const listContextRecords = (botId: string, params?: {
+  page?: number; pageSize?: number; search?: string;
+}): Promise<Paged<RuntimeContextRecord>> => {
+  const sp = new URLSearchParams({ pageSize: String(params?.pageSize ?? 25) });
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.search) sp.set("search", params.search);
+  return http.getPaged<RuntimeContextRecord>(`/bots/${botId}/runtime-context/records?${sp}`);
+};
+export const createContextRecord = (botId: string, body: {
+  customerRef?: string; phone?: string; data: Record<string, unknown>;
+}): Promise<RuntimeContextRecord> => http.post(`/bots/${botId}/runtime-context/records`, body);
+export const updateContextRecord = (recordId: string, body: {
+  customerRef?: string; phone?: string; data: Record<string, unknown>;
+}): Promise<RuntimeContextRecord> => http.patch(`/runtime-context-records/${recordId}`, body);
+export const deleteContextRecord = (recordId: string): Promise<{ deleted: boolean }> =>
+  http.delete(`/runtime-context-records/${recordId}`);
 
 /* ---------- Provider catalog (database-driven voice configuration) ---------- */
 export const getProviderCatalog = (
@@ -225,7 +440,26 @@ export const testProviderConnection = (body: {
 }): Promise<ProviderTestResult> => http.post("/providers/test", body);
 export const generateTtsPreview = (body: {
   provider: string; model: string; voice: string; language: string; text: string; params?: ProviderSettings;
+  /* Delivery tuning — applied server-side with the same mapping as live calls. */
+  speed?: number; pauseMs?: number; energy?: number;
 }): Promise<TtsPreviewResult> => http.post("/providers/tts-preview", body);
+
+/* ---------- Pronunciation dictionaries (Sarvam dict_id) ---------- */
+export const listPronunciationDictionaries = (): Promise<PronunciationDictionary[]> =>
+  http.get("/pronunciation-dictionaries");
+export const getPronunciationDictionary = (id: string): Promise<PronunciationDictionary> =>
+  http.get(`/pronunciation-dictionaries/${id}`);
+export const createPronunciationDictionary = (
+  body: { name: string; description?: string; pronunciations: PronunciationMap },
+): Promise<PronunciationDictionary> => http.post("/pronunciation-dictionaries", body);
+export const updatePronunciationDictionary = (
+  id: string,
+  body: { name?: string; description?: string; pronunciations?: PronunciationMap },
+): Promise<PronunciationDictionary> => http.put(`/pronunciation-dictionaries/${id}`, body);
+export const deletePronunciationDictionary = (
+  id: string,
+): Promise<{ deleted: boolean; providerDeleted: boolean }> =>
+  http.delete(`/pronunciation-dictionaries/${id}`);
 
 /* ---------- Tenant voice cloning ---------- */
 export const getVoiceCloneConfig = (): Promise<VoiceCloneConfig> =>
@@ -260,8 +494,16 @@ export const listVoices = (filters?: { provider?: string; language?: string; loc
   const qs = params.toString();
   return http.get(`/voices${qs ? `?${qs}` : ""}`);
 };
-export const listLanguages = (includeDisabled = false): Promise<{ id: string; code: string; name: string; nativeName?: string | null; direction?: string; enabled: boolean }[]> =>
-  http.get(`/languages${includeDisabled ? "?includeDisabled=true" : ""}`);
+export const listLanguages = (
+  includeDisabled = false,
+  tenantId?: string,
+): Promise<{ id: string; code: string; name: string; nativeName?: string | null; direction?: string; isDefault?: boolean; enabled: boolean }[]> => {
+  const params = new URLSearchParams();
+  if (includeDisabled) params.set("includeDisabled", "true");
+  if (tenantId) params.set("tenantId", tenantId);
+  const query = params.toString();
+  return http.get(`/languages${query ? `?${query}` : ""}`);
+};
 
 /* ---------- Intents / Entities / APIs / Workflows ---------- */
 export const listIntents = (botId: string): Promise<Intent[]> => http.get(`/bots/${botId}/intents`);
@@ -295,6 +537,8 @@ export const archiveChannel = (botId: string, type: string): Promise<{ archived:
 export const listChannelsSummary = (): Promise<{ type: string; live: number; testing: number; failed: number; configured: number }[]> =>
   http.get("/channels/summary");
 export const listScenarios = (botId: string): Promise<TestScenario[]> => http.get(`/bots/${botId}/scenarios`);
+export const createScenario = (botId: string, body: { name: string; suite?: string; steps?: number }): Promise<TestScenario> =>
+  http.post(`/bots/${botId}/scenarios`, body);
 
 /** One text turn through the REAL runtime stack (TurnRouter + WorkflowEngine). */
 export interface ChatTestResult {
@@ -306,6 +550,9 @@ export interface ChatTestResult {
   reason: string;
   reply: string;
   done: boolean;
+  language: string;
+  latencyMs: number;
+  at: string;
   activeWorkflow: string | null;
   workflow: {
     name: string;
@@ -317,27 +564,59 @@ export interface ChatTestResult {
     done: boolean;
   } | null;
 }
-export const testBotChat = (botId: string, message: string, sessionId?: string): Promise<ChatTestResult> =>
-  http.post(`/bots/${botId}/testing/chat`, { message, ...(sessionId ? { sessionId } : {}) });
+export const testBotChat = (
+  botId: string,
+  message: string,
+  sessionId?: string,
+  messages: { role: "user" | "assistant"; content: string }[] = [],
+  language?: string,
+): Promise<ChatTestResult> =>
+  http.post(`/bots/${botId}/testing/chat`, {
+    message,
+    messages,
+    ...(sessionId ? { sessionId } : {}),
+    ...(language ? { language } : {}),
+  });
+/** One complete runtime turn (context → prompt → routing → policy → tools →
+    workflow/LLM) with the full trace — the Testing Studio simulator. */
+export const simulateTurn = (botId: string, body: {
+  message: string; messages?: { role: "user" | "assistant"; content: string }[];
+  promptId?: string; promptVersion?: number;
+  contextSource?: "saved" | "manual" | "api_mock" | "none";
+  contextPayload?: Record<string, unknown>; language?: string;
+  isFinal?: boolean; interrupted?: boolean;
+  mockToolResults?: Record<string, unknown>; sessionId?: string;
+}): Promise<SimulateTrace> => http.post(`/bots/${botId}/testing/simulate`, body);
 export const runSuite = (botId: string): Promise<{ passed: number; failed: number; total: number; at: string }> =>
   http.post(`/bots/${botId}/scenarios/run`);
 export const listReleases = (botId: string): Promise<Release[]> => http.get(`/bots/${botId}/releases`);
 export const createRelease = (botId: string, body: { version: string; notes?: string; diff?: { area: string; change: string; kind: string }[] }) =>
   http.post<Release>(`/bots/${botId}/releases`, body);
-export const updateReleaseStage = (releaseId: string, stage: string) =>
-  http.patch<Release>(`/releases/${releaseId}`, { stage });
+/** `overrideReason` is honoured for super admins only: it publishes past a
+    failing checklist and is written to the audit log with the failed items. */
+export const updateReleaseStage = (releaseId: string, stage: string, extra?: { note?: string; overrideReason?: string }) =>
+  http.patch<Release>(`/releases/${releaseId}`, { stage, ...(extra ?? {}) });
 
 /* ---------- Conversations ---------- */
-export const listConversations = async (filters?: { botId?: string; channel?: string; sentiment?: string; flagged?: boolean; search?: string }): Promise<Conversation[]> => {
+/** `dateFrom`/`dateTo` bound `startedAt` inclusively. Send instants (ISO-8601)
+    rather than bare days: the server stores UTC, so the caller decides which
+    timezone's day boundaries it means — the Conversations page sends the
+    viewer's local day so the filter agrees with the dates it renders. */
+export const listConversations = async (filters?: { botId?: string; channel?: string; sentiment?: string; flagged?: boolean; search?: string; dateFrom?: string; dateTo?: string }): Promise<Conversation[]> => {
   const params = new URLSearchParams({ pageSize: "100" });
   if (filters?.botId) params.set("botId", filters.botId);
   if (filters?.channel) params.set("channel", filters.channel);
   if (filters?.sentiment) params.set("sentiment", filters.sentiment);
   if (filters?.flagged !== undefined) params.set("flagged", String(filters.flagged));
   if (filters?.search) params.set("search", filters.search);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
   return (await http.getPaged<Conversation>(`/conversations?${params}`)).items;
 };
-export const getConversation = (id: string): Promise<Conversation> => http.get(`/conversations/${id}`);
+/** `currency` selects the display currency for the cost breakdown only; the
+    authoritative `costUsd` total is always returned in the base currency. */
+export const getConversation = (id: string, currency?: string): Promise<Conversation> =>
+  http.get(`/conversations/${id}${currency ? `?currency=${encodeURIComponent(currency)}` : ""}`);
 export const flagConversation = (id: string, flagged: boolean) =>
   http.patch<Conversation>(`/conversations/${id}`, { flagged });
 
@@ -352,7 +631,26 @@ export const updateModelStatus = (id: string, status: string) => http.patch<Appr
 export const listGuardrails = (): Promise<Guardrail[]> => http.get("/guardrails");
 export const updateGuardrail = (id: string, body: { enabled?: boolean; enforcement?: string }) =>
   http.patch<Guardrail>(`/guardrails/${id}`, body);
+export const listGuardrailProfiles = (): Promise<GuardrailProfile[]> => http.get("/guardrail-profiles");
+export const createGuardrailProfile = (body: { code: string; name: string; description?: string; guardrailIds?: string[] }) =>
+  http.post<GuardrailProfile>("/guardrail-profiles", body);
+export const updateGuardrailProfile = (id: string, body: { name?: string; description?: string; guardrailIds?: string[] }) =>
+  http.patch<GuardrailProfile>(`/guardrail-profiles/${id}`, body);
+export const setGuardrailProfileStatus = (id: string, status: "active" | "inactive" | "archived") =>
+  http.post<GuardrailProfile>(`/guardrail-profiles/${id}/status`, { status });
+export const listGuardrailTriggers = (tenantId?: string): Promise<GuardrailTrigger[]> =>
+  http.get(`/guardrail-triggers${tenantId ? `?tenantId=${tenantId}` : ""}`);
+export const setBotGuardrailProfile = (botId: string, guardrailProfileId: string) =>
+  http.patch<VoiceBot>(`/bots/${botId}/guardrail-profile`, { guardrailProfileId });
+export const getBotEffectiveGuardrails = (botId: string): Promise<BotEffectiveGuardrails> =>
+  http.get(`/bots/${botId}/effective-guardrails`);
 export const listPhoneNumbers = (): Promise<PhoneNumber[]> => http.get("/phone-numbers");
+export const updatePhoneNumber = (
+  id: string,
+  body: Partial<{ number: string; country: string; provider: string; monthlyCost: number; status: string }>,
+): Promise<PhoneNumber> => http.patch(`/phone-numbers/${id}`, body);
+export const setPhoneNumberActive = (id: string, active: boolean): Promise<PhoneNumber> =>
+  http.post(`/phone-numbers/${id}/${active ? "activate" : "deactivate"}`, {});
 export const listSipTrunks = (): Promise<SipTrunk[]> => http.get("/sip-trunks");
 export const getPlatformHealth = (): Promise<HealthMetric[]> => http.get("/health-metrics");
 export const listTemplates = (kind: string): Promise<Record<string, unknown>[]> =>
@@ -363,7 +661,10 @@ export const listTeam = async (tenantId?: string): Promise<TeamMember[]> =>
   (await http.getPaged<TeamMember>(`/users?scope=tenant&pageSize=200${tenantId ? `&tenantId=${tenantId}` : ""}`)).items;
 export const listPlatformUsers = async (): Promise<TeamMember[]> =>
   (await http.getPaged<TeamMember>("/users?scope=platform&pageSize=200")).items;
-export const inviteUser = (body: { name: string; email: string; roleCode: string }) =>
+/** Add a team member. Without `password` the backend issues a one-time
+ *  temporary password (invite flow); with `password` the account is created
+ *  active and can sign in immediately (direct-create flow). */
+export const inviteUser = (body: { name: string; email: string; roleCode: string; password?: string }) =>
   http.post<TeamMember & { temporaryPassword?: string }>("/users", body);
 export const updateUser = (id: string, body: { name?: string; roleCode?: string; status?: string }) =>
   http.patch<TeamMember>(`/users/${id}`, body);
@@ -378,8 +679,29 @@ export const disconnectIntegration = (id: string) => http.post<Integration>(`/in
 /* ---------- Settings ---------- */
 export const getTenantSettings = (tenantId?: string): Promise<TenantSettings> =>
   http.get(`/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`);
-export const saveTenantSettings = (body: Partial<TenantSettings>, tenantId?: string) =>
-  http.put<TenantSettings>(`/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`, body);
+export const saveTenantSettings = (body: Partial<TenantSettings>, tenantId?: string) => {
+  // Effective/source metadata is read-only. Send only sparse overrides and
+  // editable tenant fields so a form can never persist a resolved value as a
+  // new override merely because it displayed it.
+  const {
+    humanSpeechEffective: _effective,
+    humanSpeechSources: _sources,
+    humanSpeechInherited: _inherited,
+    humanSpeechInheritedSources: _inheritedSources,
+    ...editable
+  } = body;
+  return http.put<TenantSettings>(
+    `/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`,
+    editable,
+  );
+};
+export const getTurnDetectionSettings = (): Promise<TurnDetectionConfig> =>
+  http.get("/tenant/turn-detection");
+export const saveTurnDetectionSettings = (
+  mode: TurnDetectionMode,
+  overrides: TurnDetectionOverrides,
+): Promise<TurnDetectionConfig> =>
+  http.put("/tenant/turn-detection", { mode, overrides });
 
 /* ---------- Analytics ---------- */
 export const getTenantAnalytics = (days = 30, botId?: string, tenantId?: string): Promise<AnalyticsBundle> =>
@@ -397,7 +719,12 @@ export interface PlatformAnalytics {
   revVsCost: { t: string; revenue: number; aiCost: number }[];
   planMix: { label: string; value: number }[];
   mrrByPlan: { label: string; value: number }[];
-  topTenantsByCalls: { label: string; value: number }[];
+  topTenantsByCalls: {
+    label: string;
+    value: number;
+    avgDurationSec: number | null; // talk minutes ÷ calls in the window
+    avgDuration: string; // backend-formatted mm:ss
+  }[];
   aiCostByProvider: { label: string; value: number }[];
 }
 
@@ -468,6 +795,8 @@ export const listMaster = <T = Record<string, unknown>>(
     kind?: string; includeInactive?: boolean;
     /** Voices + provider-models server-side filters. */
     provider?: string; gender?: string; status?: string; language?: string;
+    /** Voices-only filter: catalog model code (voices without models match every model). */
+    model?: string;
     /** Provider-models-only filter (stt | tts | llm | embedding). */
     capability?: string;
   },
@@ -482,6 +811,7 @@ export const listMaster = <T = Record<string, unknown>>(
   if (opts?.gender) params.set("gender", opts.gender);
   if (opts?.status) params.set("status", opts.status);
   if (opts?.language) params.set("language", opts.language);
+  if (opts?.model) params.set("model", opts.model);
   if (opts?.capability) params.set("capability", opts.capability);
   if (opts?.includeInactive === false) params.set("includeInactive", "false");
   return http.getPaged<T>(`/master/${mtype}?${params}`);
@@ -529,16 +859,24 @@ export const getUploadConfig = (): Promise<UploadConfig> => http.get("/knowledge
 
 /* ---------- Prompts: create / builder / lifecycle / test ---------- */
 export const createPrompt = (botId: string, body: {
-  type: string; name: string; description?: string; variables?: string[];
-  variants?: { language: string; content: string }[];
-  structuredConfig?: StructuredPromptConfig; note?: string;
+  type: string; promptMode?: "structured" | "full"; name: string; description?: string;
+  variables?: string[]; variants?: { language: string; content: string }[];
+  structuredConfig?: StructuredPromptConfig; fullPrompt?: string; note?: string;
 }): Promise<Prompt> => http.post(`/bots/${botId}/prompts`, body);
 export const savePromptVersion = (promptId: string, body: {
-  note?: string; variants?: { language: string; content: string }[];
-  structuredConfig?: StructuredPromptConfig; submitForApproval?: boolean;
+  note?: string; promptMode?: "structured" | "full";
+  variants?: { language: string; content: string }[];
+  structuredConfig?: StructuredPromptConfig; fullPrompt?: string; submitForApproval?: boolean;
 }): Promise<Prompt> => http.post(`/prompts/${promptId}/versions`, body);
-export const compilePromptPreview = (structuredConfig: StructuredPromptConfig): Promise<PromptCompileResult> =>
-  http.post("/prompts/compile-preview", { structuredConfig });
+/** Stateless compile of either authoring mode; with testContext the response
+    also carries the rendered prompt + missing-variable report. */
+export const compilePromptPreview = (body: {
+  promptMode: "structured" | "full"; structuredConfig?: StructuredPromptConfig;
+  fullPrompt?: string; testContext?: Record<string, unknown>;
+}): Promise<PromptCompileResult> => http.post("/prompts/compile-preview", body);
+export const renderPromptPreview = (promptId: string, body: {
+  version?: number; testContext: Record<string, unknown>;
+}): Promise<PromptRenderResult> => http.post(`/prompts/${promptId}/render-preview`, body);
 export const duplicatePrompt = (promptId: string): Promise<Prompt> =>
   http.post(`/prompts/${promptId}/duplicate`);
 export const deletePrompt = (promptId: string): Promise<{ archived: boolean }> =>

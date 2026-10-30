@@ -37,7 +37,8 @@ at the root path), `voice_runtime/app.py` (`telephony_session`),
 
 ## Webhook signature verification
 
-Two schemes (`backend/telephony/webhooks.py`):
+Two schemes (`shared/telephony_webhooks.py`; `backend/telephony/webhooks.py`
+is a compatibility re-export):
 
 | Provider | Scheme |
 |---|---|
@@ -69,6 +70,17 @@ assigned bot. A bot id that does not exist, is archived, has no published
 release, or belongs to **another tenant** answers with a sanitized `404`
 (existence is never revealed); a malformed `botId` is `422`.
 
+**Direct bot routing (`To` = bot id).** A dialer may target a bot that has no
+DID assignment at all: when `To` starts with `bot_` it is treated as a bot id
+(pattern `^[A-Za-z0-9_-]{1,64}$`, otherwise `422`) and resolved directly —
+the `phone_numbers` table is not consulted. The signed webhook is the
+authorization to name a bot; the bot must exist, not be archived, have a
+published release and not have its voice channel disabled — the same gates a
+number's assigned bot passes — or the answer is a sanitized `404`/`403`. The
+bot's own tenant becomes the anchor, so `botId` may still pick a same-tenant
+sibling on top. `From`, `callId`, `variables`, the compliance gate and the
+voice session are handled identically on both routes.
+
 ## Connect payloads
 
 `connect_instructions()` returns what the webhook answers with, pointing the
@@ -82,7 +94,7 @@ provider's media stream at
 | Telnyx | JSON `{"stream_url": ..., "stream_track": "inbound_track"}` (for the TeXML/Call Control handler) |
 | Exotel | JSON `{"url": ...}` (Voicebot applet) |
 | Vaani | JSON `{"url": ...}` (bidirectional VoiceBOT WebSocket endpoint) |
-| FreeSWITCH | JSON `{"audio_fork_url": ...}` (consumed by the dialplan helper) |
+| FreeSWITCH | JSON `{"audio_stream_url": ..., "audio_fork_url": ...}` — the fork URL is the same WS URL with `?transport=audio_fork` appended (consumed by the dialplan helper) |
 
 `public_ws_base` comes from `TELEPHONY_PUBLIC_WS_BASE` when set (required when
 the voice worker is not reachable on the host:port that served the webhook —
@@ -127,8 +139,10 @@ session's returned URL only ever points at one instance.
 3. `build_media_serializer()` constructs the Pipecat serializer:
    `TwilioFrameSerializer` (streamSid/callSid), `TelnyxFrameSerializer`
    (stream_id/call_control_id/outbound encoding), `PlivoFrameSerializer`,
-   `ExotelFrameSerializer`, `VaaniFrameSerializer` — or
-   `RawPCMSerializer(input_sample_rate=8000)` for FreeSWITCH.
+   `ExotelFrameSerializer`, `VaaniFrameSerializer` — or, for FreeSWITCH,
+   `FreeSwitchAudioStreamSerializer` (default, `mod_audio_stream`) /
+   `FreeSwitchAudioForkSerializer` (when the WS URL carries
+   `?transport=audio_fork`).
 4. The regular voice pipeline runs (see [VOICE_RUNTIME.md](VOICE_RUNTIME.md)); the
    channel recorded on the transcript is the provider name.
 
@@ -144,8 +158,10 @@ mono PCM:
 - EchoSphere → Vaani: `media` chunks for bot audio, `clear` on interruption,
   `transfer` on human handoff, and `stop` at call termination.
 - Bot audio is emitted on 320-byte boundaries, targeting at least 3.2 KB per
-  chunk and never more than 100 KB. A final short remainder is flushed when bot
-  speech stops; exactly one `stop` is ever sent and nothing follows it.
+  steady-state chunk and never more than 100 KB. The first packets of each
+  utterance ramp up from 640 bytes so time-to-first-audio stays low. A final
+  short remainder is flushed when bot speech stops; exactly one `stop` is ever
+  sent and nothing follows it.
 
 The `start.mediaFormat.sampleRate` must be `8000` and `channels` must be `1`;
 invalid Vaani handshakes are rejected with close code `4400`.
@@ -172,20 +188,42 @@ workflow `handover` node — whose configured `queue` becomes `transfer_queue`)
 emits the `transfer` event *after* the bot has finished speaking its
 announcement, so the caller hears it before Vaani re-routes the call.
 
-**Call metadata.** The signed Vaani webhook may include `callId` (logged and
-attached to the session for trace correlation) and a `variables` object of
-per-call dialer values (max 20 keys, `[A-Za-z0-9_.-]{1,40}` names, values
-capped at 200 chars). Variables enter the LLM system prompt as reference data
+**Call metadata.** The signed Vaani webhook may include `callId` (attached to
+the session, written on the `call_started` event and stored on the
+conversation row as `callId`, so `GET /conversations/{callId}` and
+`?callId=` find the call) and a `variables` object of per-call dialer values
+(max 50 keys, `[A-Za-z0-9_.-]{1,40}` names, values capped at 200 chars; the
+names of entries that could not be kept — invalid key, non-scalar value, or
+past the cap — are logged and recorded on the `call_started` event as
+`variables_dropped`, never silently lost). Variables enter the LLM system
+prompt as reference data
 ("Call context") — they are never treated as instructions and never override
 tenant/bot resolution, which always comes from the dialed number mapping.
+For a bot with a runtime-context schema, a variable whose name matches a
+schema field flagged `sessionOverride` (spelling-insensitive: `customerName`
+fills `customer_name`) replaces that field's User Details API / test value for
+the call; fields the dialer omits or sends blank still come from the API, and
+the API is skipped entirely when the dialer covered every declared field.
 
 ## FreeSWITCH
 
 Two integration surfaces (`voice_runtime/freeswitch.py`):
 
-- **Media**: the dialplan attaches `mod_audio_fork` to the worker's
-  `/ws/telephony/freeswitch/{session_id}` endpoint — raw L16 @ 8 kHz both ways, no
-  JSON handshake, handled by `RawPCMSerializer`.
+- **Media**: the dialplan attaches an audio module to the worker's
+  `/ws/telephony/freeswitch/{session_id}` endpoint — no JSON stream-start
+  handshake. Two wire protocols (`voice_runtime/telephony.py`):
+  - `mod_audio_stream` (default): inbound binary **stereo** L16 @ 8 kHz
+    (caller/read + bot/write interleaved; the caller channel is selected per
+    `FREESWITCH_CALLER_CHANNEL`, default `auto`); bot audio goes out in the
+    module's `streamAudio` JSON/base64 envelope, and barge-in sends
+    `{"type": "killAudio"}` (`FREESWITCH_SEND_KILL_AUDIO`, default on) so the
+    module drops already-buffered playback.
+  - `mod_audio_fork` (WS URL with `?transport=audio_fork`): inbound binary
+    **mono** L16 @ 8 kHz (the fork is started in `mono 8k` mode; the caller leg
+    stays native narrowband end to end and streaming STT receives the same
+    8 kHz PCM without resampling); bot audio
+    goes out in the module's `playAudio` JSON envelope; barge-in also sends
+    `killAudio`.
 - **Control**: `ESLClient`, a minimal asyncio Event Socket Layer client (inbound
   mode) implementing `transfer` (`uuid_transfer`), `hangup` (`uuid_kill`),
   `api`, and `health_check`. Configuration: `FREESWITCH_HOST` (default 127.0.0.1),
@@ -204,4 +242,6 @@ Deployment notes for the ESL socket are in
 | 4401 | unknown or expired session id |
 | 4403 | session tenant does not match bot tenant (defense in depth) |
 | 4404 | unknown provider, or bot configuration unavailable |
+| 4409 | a live connection already exists for this session (one session, one media stream) |
 | 4429 | voice worker at capacity (`VOICE_WORKER_CONCURRENCY`) |
+| 4500 | voice engine configuration error (pipeline construction failed) |

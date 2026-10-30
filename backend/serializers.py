@@ -8,6 +8,8 @@ secrets) are never emitted.
 import re
 from datetime import date, datetime
 
+from shared.orchestration.behavior import resolve_behavior
+from shared.post_call.structured import display_structured_fields
 from shared.models import (
     AiConfigProfile,
     ApiConnection,
@@ -21,10 +23,10 @@ from shared.models import (
     ChannelConfig,
     ConversationSession,
     Currency,
+    CustomerCollectionContext,
     EntityDef,
     ExchangeRate,
     Guardrail,
-    HealthMetric,
     Intent,
     Integration,
     Invoice,
@@ -45,6 +47,7 @@ from shared.models import (
     TestScenario,
     User,
     VoiceBot,
+    VoiceCloneAudio,
     VoiceProfile,
     Workflow,
 )
@@ -60,7 +63,9 @@ def iso(value: datetime | date | None) -> str | None:
 
 def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
                      calls_month: int, minutes_month: float, mrr: float,
-                     ai_cost_month: float) -> dict:
+                     ai_cost_month: float,
+                     default_languages: list[str] | None = None,
+                     guardrail_profile: dict | None = None) -> dict:
     return {
         "id": t.id,
         "name": t.name,
@@ -69,6 +74,12 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
         "industry": t.industry or "",
         "region": t.region or "",
         "aiProfileCode": t.ai_profile_code or "",
+        "guardrailProfileId": t.guardrail_profile_id or "",
+        # Summary of the assigned profile (code/name/status) — present even
+        # when the profile was deactivated after assignment, so existing
+        # tenants stay fully readable.
+        "guardrailProfile": guardrail_profile,
+        "defaultLanguages": default_languages or [],
         "plan": plan or "starter",
         "status": t.status,
         "createdAt": iso(t.created_at),
@@ -80,6 +91,8 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
         "aiCostMonth": round(ai_cost_month),
         "health": t.health,
         "adminEmail": t.admin_email or "",
+        "callSummaryEnabled": bool(t.call_summary_enabled),
+        "usePreviousCallSummary": bool(t.use_previous_call_summary),
         "website": t.website or "",
         "contactName": t.contact_name or "",
         "contactPhone": t.contact_phone or "",
@@ -202,6 +215,7 @@ def serialize_provider_model(row: ProviderModel, *, usage: int = 0, names: dict 
         "code": row.code,
         "name": row.display_name,
         "displayName": row.display_name,
+        "description": row.description,
         "providerCode": row.provider_code,
         "capability": row.capability,
         "languages": row.languages or [],
@@ -324,7 +338,8 @@ def serialize_plan(p: Plan, *, usage: int = 0, names: dict | None = None) -> dic
 
 
 def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
-                  calls_today: int, calls_month: int) -> dict:
+                  calls_today: int, calls_month: int,
+                  avg_cost_per_call: float, include_costs: bool = True) -> dict:
     return {
         "id": b.id,
         "tenantId": b.tenant_id,
@@ -340,10 +355,16 @@ def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
         "containment": b.containment,
         "callsToday": calls_today,
         "callsMonth": calls_month,
-        "avgCostPerCall": float(b.avg_cost_per_call),
+        # Month-to-date metered AI cost / calls (usage_records rollup) — the
+        # static voice_bots.avg_cost_per_call column is demo-seed-only.
+        # Null (not 0) for viewers without costs.view: financial fields are
+        # never sent to roles that may not see them.
+        "avgCostPerCall": round(float(avg_cost_per_call), 4) if include_costs else None,
         "csat": b.csat,
         "channels": channels,
         "voiceId": b.voice_id,
+        # Explicit bot-level guardrail profile; "" → inherits the tenant default.
+        "guardrailProfileId": b.guardrail_profile_id or "",
         "updatedAt": iso(b.updated_at),
         "publishedAt": iso(b.published_at),
         "readiness": [
@@ -404,7 +425,9 @@ def serialize_prompt(p: Prompt, *, include_config: bool = True) -> dict:
                 "editedAt": iso(v.edited_at) or iso(v.created_at),
                 "note": v.note or "",
                 "variants": v.variants or [],
+                "promptMode": v.prompt_mode or "structured",
                 "structuredConfig": (v.structured_config or None) if include_config else None,
+                "fullPrompt": (v.full_prompt or None) if include_config else None,
                 "compiledPrompt": (v.compiled_prompt or None) if include_config else None,
                 "modelCompatibility": v.model_compatibility or [],
             }
@@ -440,6 +463,26 @@ def serialize_voice(v: VoiceProfile, *, usage: int = 0) -> dict:
         "providerSettings": v.provider_settings or {},
         "usageCount": usage,
         "updatedAt": iso(v.updated_at),
+    }
+
+
+def serialize_clone_audio(a: VoiceCloneAudio) -> dict:
+    """Stored source-audio sample of a cloned voice. url is the authenticated
+    playback endpoint — the storage path itself is never exposed."""
+    return {
+        "id": a.id,
+        "voiceId": a.voice_id,
+        "originalFilename": a.original_filename,
+        "mimeType": a.mime_type,
+        "sizeBytes": a.size_bytes,
+        "durationSec": a.duration_sec,
+        "sourceType": a.source_type,
+        "provider": a.provider or "",
+        "providerVoiceId": a.provider_voice_id or "",
+        "status": a.status,
+        "createdBy": a.created_by,
+        "createdAt": iso(a.created_at),
+        "url": f"/api/v1/voice-clones/{a.voice_id}/audio/{a.id}",
     }
 
 
@@ -561,6 +604,7 @@ def serialize_workflow(w: Workflow, *, updated_by_name: str) -> dict:
         "nodes": w.nodes or [],
         "edges": w.edges or [],
         "issues": w.issues or [],
+        "behaviorVersion": resolve_behavior({"nodes": w.nodes or []}).version,
         "updatedAt": iso(w.updated_at),
         "updatedBy": updated_by_name,
     }
@@ -630,9 +674,41 @@ def serialize_release(r: Release) -> dict:
 
 
 def serialize_conversation(c: ConversationSession, *, bot_name: str,
-                           transcript: list | None = None) -> dict:
+                           transcript: list | None = None,
+                           recording: dict | None = None,
+                           cost_breakdown: dict | None = None,
+                           summary: dict | None = None,
+                           character_usage: dict | None = None,
+                           include_costs: bool = True) -> dict:
+    """One conversation for the API.
+
+    ``costUsd`` is the single authoritative total for BOTH the list and the
+    detail view — a cache of the sum of this conversation's usage events (see
+    shared.billing.conversation_cost), never recomputed in the client. It is
+    always in the base currency (USD); display conversion happens at render
+    time from the configured exchange rate, so the stored cost does not move
+    when a viewer changes their display currency.
+
+    ``cost`` carries the auditable per-component breakdown and is present on
+    the detail view only — the list would otherwise run one query per row.
+
+    ``include_costs=False`` (viewers without the costs.view permission) nulls
+    every financial field and strips per-turn costs from the transcript — the
+    server is the boundary, not hidden UI columns.
+    """
+    if not include_costs:
+        cost_breakdown = None
+        if transcript:
+            transcript = [
+                {k: v for k, v in turn.items() if k != "costUsd"}
+                if isinstance(turn, dict) else turn
+                for turn in transcript
+            ]
     return {
         "id": c.id,
+        # The dialer's own call id (telephony webhook callId / CallSid), so an
+        # integrator can correlate without knowing EchoSphere's ids.
+        "callId": c.call_id,
         "botId": c.bot_id,
         "bot": bot_name,
         "channel": c.channel,
@@ -644,11 +720,179 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "contained": c.contained,
         "escalationReason": c.escalation_reason,
         "csat": c.csat,
-        "costUsd": float(c.cost_usd),
+        "costUsd": float(c.cost_usd) if include_costs else None,
+        # Rate view of the same stored total over the call's real length —
+        # derived HERE so the client renders it rather than computing it.
+        # Null (not 0) when the call never connected: a rate over zero
+        # minutes is meaningless, and 0 would read as "free".
+        "costPerMinuteUsd": (
+            float(c.cost_usd) * 60.0 / c.duration_sec
+            if include_costs and c.duration_sec else None
+        ),
+        "cost": cost_breakdown,
         "language": c.language or "en-US",
         "qaScore": c.qa_score,
         "flagged": c.flagged,
+        # Call outcome captured by the runtime conversation policy.
+        "disposition": c.disposition,
+        # Which published prompt version this call actually ran on.
+        "promptId": c.prompt_id,
+        "promptVersion": c.prompt_version,
         "transcript": transcript or [],
+        # Present only when the audio file is actually available on disk.
+        "recording": recording,
+        # Post-call intelligence (AI summary / outcome / Next Best Action) —
+        # detail view only, null while nothing has been generated.
+        "summary": summary,
+        # Detail-only operational voice usage. Independent of cost visibility.
+        "characterUsage": character_usage,
+    }
+
+
+def _ordered_structured_fields(
+    memory: dict, summary_fields: list[dict] | None
+) -> tuple[dict, dict]:
+    """Structured fields in the bot's CONFIGURED order, plus display labels.
+
+    The memory row is a MySQL JSON column, which normalises object keys (by
+    length, then alphabetically) — so the stored order is meaningless and the
+    review page showed "call cx" before "reach customer location". The bot's
+    goal_policy.summaryFields list is the authoritative order; a field the
+    config no longer declares keeps its value and follows at the end when it
+    HAS one — a retired field that was never determined is left out, so a
+    configuration change does not add "not determined" rows to older calls.
+    """
+    stored = memory.get("structured_fields") or {}
+    labels: dict[str, str] = {}
+    ordered: dict = {}
+    for spec in summary_fields or []:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "").strip()
+        if not name:
+            continue
+        if name in stored:
+            ordered[name] = stored[name]
+        label = " ".join(str(spec.get("label") or "").split())
+        if label and name in stored:
+            labels[name] = label
+    for name, value in stored.items():
+        if value is not None:
+            ordered.setdefault(name, value)
+    return ordered, labels
+
+
+def serialize_conversation_memory(m, summary_fields: list[dict] | None = None) -> dict:
+    """Post-call intelligence for one tenant-scoped conversation (camelCase).
+
+    Mirrors src/types/domain.ts ConversationAiSummary. The structured memory
+    JSON is already validated/bounded at persistence time. ``summary_fields``
+    is the bot's goal_policy.summaryFields (order + labels); without it the
+    fields come out in stored order and unlabelled.
+    """
+    memory = m.memory or {}
+    structured_fields, structured_labels = _ordered_structured_fields(memory, summary_fields)
+    return {
+        "status": m.status,
+        "callOutcome": m.call_outcome,
+        "summary": m.summary,
+        "customerIntent": memory.get("customer_intent") or None,
+        "customerSentiment": memory.get("customer_sentiment") or None,
+        "customerCommitments": [
+            {
+                "type": c.get("type"),
+                "description": c.get("description"),
+                "amount": c.get("amount"),
+                "currency": c.get("currency"),
+                "dueDate": c.get("due_date"),
+                "status": c.get("status"),
+            }
+            for c in (memory.get("customer_commitments") or [])
+        ],
+        "objections": memory.get("objections") or [],
+        "importantFacts": memory.get("important_facts") or [],
+        "resolvedItems": memory.get("resolved_items") or [],
+        "unresolvedItems": memory.get("unresolved_items") or [],
+        "missingSlots": memory.get("missing_slots") or [],
+        # Configured structured summary (goal_policy.summaryFields): stable
+        # keys, None where the call did not settle a field, plus provenance.
+        "structuredFields": structured_fields,
+        "structuredFieldSources": memory.get("structured_field_sources") or {},
+        "structuredFieldEvidence": memory.get("structured_field_evidence") or {},
+        # Human-readable field names from the same configuration ({} when
+        # the bot's fields carry no labels).
+        "structuredFieldLabels": structured_labels,
+        # Display forms of normalized date/time fields ("20 Oct 2026",
+        # "05:00 PM IST"); the value itself stays machine-readable.
+        "structuredFieldDisplay": display_structured_fields(summary_fields, structured_fields),
+        "nextBestAction": (
+            {
+                "action": (m.next_best_action or {}).get("action") or m.next_action,
+                "reason": (m.next_best_action or {}).get("reason"),
+                "priority": (m.next_best_action or {}).get("priority"),
+                "recommendedAt": (m.next_best_action or {}).get("recommended_at"),
+            }
+            if (m.next_best_action or m.next_action)
+            else None
+        ),
+        "followUpRequired": bool(m.follow_up_required),
+        "followUpAt": iso(m.follow_up_at) if m.follow_up_at else None,
+        "confidence": float(m.confidence) if m.confidence is not None else None,
+        "generatedAt": iso(m.generated_at) if m.generated_at else None,
+        "error": (m.error or None) if m.status == "failed" else None,
+    }
+
+
+def serialize_customer_context(cc: CustomerCollectionContext) -> dict:
+    """Customer collection context, always masked.
+
+    The full phone and loan account number are write-only: this serializer is
+    the ONLY read path and never emits them. Nullable business values stay
+    null when unknown so clients can distinguish missing from false/zero.
+    """
+    from shared.customer_context import mask_tail, phone_tail
+
+    tail = phone_tail(cc.phone)
+    money = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "id": cc.id,
+        "tenantId": cc.tenant_id,
+        "botId": cc.bot_id,
+        "customerRef": cc.customer_ref,
+        "phoneMasked": mask_tail(tail, keep=4, prefix="XXXXXX"),
+        "customerName": cc.customer_name,
+        "dcsName": cc.dcs_name,
+        "lenderName": cc.lender_name,
+        "loanAccountMasked": mask_tail(cc.loan_account_number),
+        "preferredLanguage": cc.preferred_language,
+        "overdueAmount": money(cc.overdue_amount),
+        "totalOutstanding": money(cc.total_outstanding),
+        "minimumPayable": money(cc.minimum_payable),
+        "penalCharges": money(cc.penal_charges),
+        "daysOverdue": cc.days_overdue,
+        "dueDate": iso(cc.due_date),
+        "previousPromiseDate": iso(cc.previous_promise_date),
+        "partialPaymentAllowed": cc.partial_payment_allowed,
+        "paymentMethods": cc.payment_methods,
+        "securePaymentLinkAvailable": cc.secure_payment_link_available,
+        "activeOffers": cc.active_offers,
+        "offerTerms": cc.offer_terms,
+        "creditReportingStatus": cc.credit_reporting_status,
+        "callbackNumber": mask_tail(phone_tail(cc.callback_number),
+                                    keep=4, prefix="XXXXXX"),
+        "grievanceContact": cc.grievance_contact,
+        "paymentStatus": cc.payment_status,
+        "customerVerified": cc.customer_verified,
+        "recordingNoticeRequired": cc.recording_notice_required,
+        "complaintPending": cc.complaint_pending,
+        "accountDisputed": cc.account_disputed,
+        "callbackRequested": cc.callback_requested,
+        "callbackRequestedAt": iso(cc.callback_requested_at),
+        "lastCallId": cc.last_call_id,
+        "lastDisposition": cc.last_disposition,
+        "isFinalTranscript": cc.is_final_transcript,
+        "interruptionDetected": cc.interruption_detected,
+        "updatedAt": iso(cc.updated_at),
     }
 
 
@@ -733,12 +977,55 @@ def serialize_model(m: ApprovedModel) -> dict:
 def serialize_guardrail(g: Guardrail) -> dict:
     return {
         "id": g.id,
+        "code": g.code or "",
         "name": g.name,
         "category": g.category or "",
         "description": g.description or "",
         "enforcement": g.enforcement,
         "enabled": g.enabled,
+        "isMandatory": bool(g.is_mandatory),
         "triggers30d": g.triggers_30d,
+    }
+
+
+def serialize_guardrail_profile(p, guardrails: list[Guardrail], *, usage: int = 0) -> dict:
+    """`guardrails` are the profile's linked rule rows (resolved by the caller)."""
+    return {
+        "id": p.id,
+        "code": p.code,
+        "name": p.name,
+        "description": p.description or "",
+        "status": p.status,
+        "version": p.version,
+        "usageCount": usage,
+        "guardrailIds": [g.id for g in guardrails],
+        "guardrails": [serialize_guardrail(g) for g in guardrails],
+        "createdAt": iso(p.created_at),
+        "updatedAt": iso(p.updated_at),
+        "createdBy": p.created_by or "",
+        "updatedBy": p.updated_by or "",
+    }
+
+
+def serialize_guardrail_trigger(t) -> dict:
+    return {
+        "id": t.id,
+        "tenantId": t.tenant_id or "",
+        "botId": t.bot_id or "",
+        "sessionId": t.session_id or "",
+        "guardrailId": t.guardrail_id or "",
+        "guardrailCode": t.guardrail_code,
+        "ruleName": t.rule_name or "",
+        "action": t.action,
+        "stage": t.stage,
+        "detail": t.detail or "",
+        "profileId": t.profile_id or "",
+        "profileVersion": t.profile_version,
+        "policyCode": t.policy_code or "",
+        "policyVersion": t.policy_version,
+        "outcome": t.outcome or "",
+        "channel": t.channel or "",
+        "createdAt": iso(t.created_at),
     }
 
 
@@ -752,6 +1039,7 @@ def serialize_phone_number(p: PhoneNumber, *, tenant_name: str | None,
         "bot": bot_name,
         "provider": p.provider or "",
         "status": p.status,
+        "isActive": bool(p.is_active),
         "monthlyCost": float(p.monthly_cost),
     }
 
@@ -769,17 +1057,17 @@ def serialize_sip_trunk(t: SipTrunk) -> dict:
     }
 
 
-def serialize_health_metric(h: HealthMetric) -> dict:
-    return {
-        "name": h.name,
-        "status": h.status,
-        "value": h.value or "",
-        "target": h.target or "",
-        "spark": h.spark or [],
-    }
+# Platform Health rows are built by backend/core/service_health.py from live
+# probes — they never come from a stored row, so there is nothing to
+# serialize here.
 
 
 def serialize_tenant_settings(s: TenantSetting) -> dict:
+    from shared.audio.ambience_presets import ambience_preset_catalog
+    from shared.orchestration.naturalness import resolve_human_speech_with_sources
+
+    effective, sources = resolve_human_speech_with_sources(s.human_speech)
+    inherited, inherited_sources = resolve_human_speech_with_sources()
     return {
         "tenantId": s.tenant_id,
         "displayName": s.display_name,
@@ -791,6 +1079,12 @@ def serialize_tenant_settings(s: TenantSetting) -> dict:
         "notifications": s.notifications or [],
         "security": s.security or {},
         "retentionDays": s.retention_days,
+        "humanSpeech": s.human_speech or {},
+        "humanSpeechEffective": effective,
+        "humanSpeechSources": sources,
+        "humanSpeechInherited": inherited,
+        "humanSpeechInheritedSources": inherited_sources,
+        "ambiencePresets": ambience_preset_catalog(),
     }
 
 

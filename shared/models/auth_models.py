@@ -75,6 +75,12 @@ class User(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)  # active | invited | deactivated
     title: Mapped[str | None] = mapped_column(String(100), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # A per-tenant machine identity behind a tenant API token (see
+    # TenantApiKey). It cannot sign in, has no usable password, is hidden
+    # from team views and seat counts, and only ever authenticates through
+    # the token — but it IS a users row, so every permission, tenant-scope
+    # and audit path applies to API calls exactly as to a person.
+    is_service_account: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

@@ -7,9 +7,7 @@
    (--series-1 … --series-8) — fixed order, never cycled.
    ============================================================ */
 
-import {
-  useLayoutEffect, useRef, useState, type ReactNode,
-} from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, Fragment } from "react";
 
 export const seriesColor = (i: number) => `var(--series-${(i % 8) + 1})`;
 
@@ -20,7 +18,7 @@ export function fmtNum(v: number): string {
   return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(1);
 }
 
-function useWidth(): [React.RefObject<HTMLDivElement>, number] {
+function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {  // @types/react 19: useRef(null) is RefObject<T | null>
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(600);
   useLayoutEffect(() => {
@@ -372,33 +370,46 @@ export function Donut({ data, size = 168, centerValue, centerLabel, thickness = 
 }
 
 /* ---------- Horizontal bar list (top-N rankings) ---------- */
-export function HBarList({ data, color = "var(--series-1)", valueFmt = fmtNum, trend }: {
-  data: { label: string; value: number }[];
+export function HBarList({ data, color = "var(--series-1)", valueFmt = fmtNum, trend, columns }: {
+  /** `detail`: a secondary figure shown in its own right-aligned column (e.g. an average). */
+  data: { label: string; value: number; detail?: string }[];
   color?: string;
   valueFmt?: (v: number) => string;
   trend?: number[]; // optional per-row trend %
+  /** Column headings for the value and detail columns; omit for a bare list. */
+  columns?: { value: string; detail?: string };
 }) {
   const max = Math.max(1, ...data.map((d) => d.value));
+  const hasDetail = data.some((d) => d.detail);
+  // One grid for the whole list so the value/detail columns line up across
+  // rows; each bar spans the full row beneath its label.
   return (
-    <div className="col gap-12">
-      {data.map((d, i) => (
-        <div key={d.label} className="col gap-4">
-          <div className="row-between" style={{ fontSize: 12.5 }}>
-            <span className="t-sub truncate" style={{ fontWeight: 550 }}>{d.label}</span>
-            <span className="row gap-6">
-              <span className="t-num t-strong">{valueFmt(d.value)}</span>
+    <div className={`hbar-list${hasDetail ? " has-detail" : ""}`}>
+      {columns && (
+        <>
+          <span className="hbar-head" />
+          <span className="hbar-head hbar-num">{columns.value}</span>
+          {hasDetail && <span className="hbar-head hbar-num">{columns.detail}</span>}
+        </>
+      )}
+      {data.map((d, i) => {
+        const tip = [d.label, valueFmt(d.value), d.detail].filter(Boolean).join(" · ");
+        return (
+          <Fragment key={d.label}>
+            <span className="hbar-label truncate" title={tip}>{d.label}</span>
+            <span className="hbar-num hbar-value t-num" title={tip}>
+              {valueFmt(d.value)}
               {trend && trend[i] !== undefined && (
-                <span className={`t-micro t-num ${trend[i] >= 0 ? "" : ""}`} style={{ color: "var(--ink-3)" }}>
-                  {trend[i] >= 0 ? "+" : ""}{trend[i]}%
-                </span>
+                <span className="hbar-trend t-num">{trend[i] >= 0 ? "+" : ""}{trend[i]}%</span>
               )}
             </span>
-          </div>
-          <div className="progress" style={{ height: 8 }}>
-            <div className="progress-fill" style={{ width: `${(d.value / max) * 100}%`, background: color }} />
-          </div>
-        </div>
-      ))}
+            {hasDetail && <span className="hbar-num hbar-detail t-num" title={tip}>{d.detail ?? "—"}</span>}
+            <div className="hbar-track" title={tip}>
+              <div className="hbar-fill" style={{ width: `${(d.value / max) * 100}%`, background: color }} />
+            </div>
+          </Fragment>
+        );
+      })}
     </div>
   );
 }

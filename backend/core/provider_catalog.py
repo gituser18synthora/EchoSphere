@@ -21,9 +21,12 @@ from shared.models import (
     ProviderDef,
     ProviderModel,
     SupportedLanguage,
+    VoiceBotSetting,
     VoiceProfile,
 )
 from shared.providers.languages import matches_model_language
+from shared.providers.stt.sarvam_keyterms import KEYTERMS_SETTING, keyterm_problems
+from shared.turn_detection import validate_noise_gate, validate_turn_detection
 
 CAPABILITIES = ("stt", "tts", "llm", "embedding")
 
@@ -190,6 +193,15 @@ def has_credentials(provider: ProviderDef) -> bool:
     return bool(get_settings().resolve_secret(reference))
 
 
+def get_platform_language(db: Session, code: str | None) -> SupportedLanguage | None:
+    """Language catalog record for a platform locale code (any enabled state)."""
+    if not code or not str(code).strip():
+        return None
+    return db.scalar(
+        select(SupportedLanguage).where(SupportedLanguage.code == str(code).strip())
+    )
+
+
 # ── parameter-schema validation ──────────────────────────────────────────────
 
 def validate_params(schema: dict | None, params: dict | None, *, prefix: str) -> list[str]:
@@ -247,6 +259,181 @@ def validate_params(schema: dict | None, params: dict | None, *, prefix: str) ->
                     errors.append(
                         f"{prefix}: every '{key}' entry must be between {spec.get('min')} and {spec.get('max')}."
                     )
+        elif kind == "string_list":
+            if (not isinstance(value, list)
+                    or any(not isinstance(v, str) for v in value)):
+                errors.append(f"{prefix}: '{key}' must be a list of strings.")
+            else:
+                if len(value) > int(spec.get("max_items", 16)):
+                    errors.append(f"{prefix}: '{key}' has too many entries.")
+                if any(len(v) > int(spec.get("max_length", 50)) for v in value):
+                    errors.append(f"{prefix}: a '{key}' entry is too long.")
+                if any(not v.strip() for v in value):
+                    errors.append(f"{prefix}: '{key}' entries must not be blank.")
+                allowed = spec.get("values")
+                if allowed and any(v not in allowed for v in value):
+                    errors.append(
+                        f"{prefix}: every '{key}' entry must be one of "
+                        f"{', '.join(map(str, allowed))}."
+                    )
+    return errors
+
+
+# ── platform-owned LLM settings ──────────────────────────────────────────────
+# These keys configure the EchoSphere orchestration layer (Goal Engine /
+# intent pipeline / memory greeting) rather than the LLM provider, so they
+# intentionally do not belong to a provider model's ``params_schema`` — the
+# same design as the STT ``turn_detection``/``noise_gate`` sections below.
+# Safe ranges mirror the runtime clamps in shared.orchestration.goal_engine.
+
+_PLATFORM_LLM_BOOLEAN_KEYS = (
+    "goal_engine_enabled",
+    "intent_llm_enabled",
+    "memory_greeting_enabled",
+    # Injects a "# Current date and time" section (tenant timezone) into
+    # every generation — shared.orchestration.time_context.
+    "time_context_enabled",
+    # Whether the Goal Engine decision also writes a short reply
+    # (response_text). Unset = automatic: off for workflow bots without a
+    # collections policy, on otherwise (voice_runtime.brain).
+    "orchestration_response_text",
+    # Phase 4 latency switches (each default off; voice_runtime.brain):
+    # a short answer to a paused workflow question skips the decision LLM.
+    "deterministic_answers",
+    # the decision writes its routing fields first and no reason.
+    "decision_fast_output",
+    # the reply LLM starts at dispatch, in parallel with the decision.
+    "speculative_reply",
+    # the workflow's semantic extraction starts with the decision; grounded
+    # rewrites stream sentence by sentence.
+    "parallel_extraction",
+)
+_PLATFORM_LLM_STRING_KEYS = {
+    "orchestration_provider": 40,
+    "orchestration_model": 80,
+    # OpenAI request option for the decision call only. Unset = the platform
+    # default (ORCHESTRATION_SERVICE_TIER, "fast"); "default" opts a bot out.
+    "orchestration_service_tier": 20,
+    # Request options for every call on the bot's CONVERSATION model (replies,
+    # grounded rewrites, workflow fact extraction, intent classification).
+    # Unset = standard tier / the model's default reasoning effort.
+    "reply_service_tier": 20,
+    "reply_reasoning_effort": 10,
+}
+# Values the request-option keys accept (OpenAI service tiers; reasoning
+# efforts, "lowest" = the lowest the model accepts).
+_PLATFORM_LLM_STRING_CHOICES = {
+    "reply_service_tier": frozenset({"auto", "default", "flex", "priority", "fast", "scale"}),
+    "reply_reasoning_effort": frozenset({"lowest", "none", "minimal", "low", "medium", "high"}),
+}
+_PLATFORM_LLM_NUMBER_BOUNDS = {
+    "orchestration_timeout_seconds": (0.5, 5.0),
+    "intent_timeout_seconds": (0.5, 5.0),
+    "memory_greeting_timeout_seconds": (1.0, 10.0),
+}
+_PLATFORM_LLM_INTEGER_BOUNDS = {
+    "orchestration_max_tokens": (64, 340),
+    # Provider-independent spoken-output cap. Runtime also derives a native
+    # provider token budget from it and enforces the character ceiling.
+    "max_output_characters": (120, 2000),
+    # Phase 4: one short acknowledgement when no reply audio is ready this
+    # many ms after dispatch (voice_runtime.brain; unset = off).
+    "early_ack_ms": (300, 3000),
+}
+PLATFORM_LLM_SETTING_KEYS = frozenset(
+    (*_PLATFORM_LLM_BOOLEAN_KEYS, *_PLATFORM_LLM_STRING_KEYS,
+     *_PLATFORM_LLM_NUMBER_BOUNDS, *_PLATFORM_LLM_INTEGER_BOUNDS)
+)
+
+
+def validate_llm_settings(
+    schema: dict | None, params: dict | None, *, prefix: str = "LLM"
+) -> list[str]:
+    """Validate provider parameters plus platform-owned orchestration settings.
+
+    The orchestration keys control the EchoSphere decision layer, not the LLM
+    provider, so they are validated against the platform contract here and
+    removed before the remaining settings go through the strict
+    provider-schema validation.
+    """
+    params = params or {}
+    errors: list[str] = []
+    for key in _PLATFORM_LLM_BOOLEAN_KEYS:
+        if key in params and not isinstance(params[key], bool):
+            errors.append(f"{prefix}: '{key}' must be true or false.")
+    for key, max_length in _PLATFORM_LLM_STRING_KEYS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append(f"{prefix}: '{key}' must be a string.")
+        elif len(value) > max_length:
+            errors.append(f"{prefix}: '{key}' is too long.")
+        elif key in _PLATFORM_LLM_STRING_CHOICES and value.strip().lower() not in (
+            _PLATFORM_LLM_STRING_CHOICES[key]
+        ):
+            errors.append(
+                f"{prefix}: '{key}' must be one of "
+                + ", ".join(sorted(_PLATFORM_LLM_STRING_CHOICES[key])) + "."
+            )
+    for key, (low, high) in _PLATFORM_LLM_NUMBER_BOUNDS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            errors.append(f"{prefix}: '{key}' must be a number.")
+        elif not low <= float(value) <= high:
+            errors.append(f"{prefix}: '{key}' must be between {low:g} and {high:g}.")
+    for key, (low, high) in _PLATFORM_LLM_INTEGER_BOUNDS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(f"{prefix}: '{key}' must be an integer.")
+        elif not low <= value <= high:
+            errors.append(f"{prefix}: '{key}' must be between {low} and {high}.")
+    provider_params = {
+        key: value
+        for key, value in params.items()
+        if key not in PLATFORM_LLM_SETTING_KEYS
+    }
+    errors.extend(validate_params(schema, provider_params, prefix=prefix))
+    return errors
+
+
+def validate_stt_settings(
+    schema: dict | None, params: dict | None, *, prefix: str = "STT"
+) -> list[str]:
+    """Validate provider parameters plus platform-owned turn timing.
+
+    ``turn_detection`` and ``noise_gate`` control the EchoSphere pipeline rather
+    than the STT provider, so they intentionally do not belong to a provider
+    model's ``params_schema``.  Validate them against the shared runtime
+    contract and keep the remaining settings under the normal strict provider
+    validation.
+    """
+    params = params or {}
+    schema = schema or {}
+    errors = validate_turn_detection(
+        params.get("turn_detection"), prefix=f"{prefix} turn detection"
+    )
+    errors.extend(
+        validate_noise_gate(params.get("noise_gate"), prefix=f"{prefix} noise gate")
+    )
+    provider_params = {
+        key: value
+        for key, value in params.items()
+        if key not in ("turn_detection", "noise_gate")
+    }
+    # Sarvam key-term biasing: the model's schema says WHETHER the parameter
+    # exists (saaras:v4 only — any other model fails below as an unknown
+    # parameter), while the documented Sarvam contract (count, length, one
+    # term per entry) is checked by the shared rule set the runtime uses.
+    if KEYTERMS_SETTING in provider_params and KEYTERMS_SETTING in schema:
+        errors.extend(
+            keyterm_problems(provider_params.pop(KEYTERMS_SETTING), prefix=prefix)
+        )
+    errors.extend(validate_params(schema, provider_params, prefix=prefix))
     return errors
 
 
@@ -265,6 +452,7 @@ def _validate_engine(
     warnings: list[str],
     require_voice: bool = False,
     tenant_id: str | None = None,
+    require_streaming: bool = False,
 ) -> ProviderModel | None:
     """Validate one TTS engine selection (provider+model+voice+language+params)."""
     if not provider:
@@ -283,6 +471,14 @@ def _validate_engine(
         model_row = get_model(db, "tts", provider, model)
         if model_row is None:
             errors.append(f"{prefix}: model '{model}' does not belong to provider '{provider}'.")
+        elif require_streaming and not model_row.streaming:
+            # Fallback and per-language engines exist only inside the realtime
+            # streaming router — a model without realtime streaming support
+            # (e.g. ElevenLabs eleven_v3) can never serve them.
+            errors.append(
+                f"{prefix}: model '{model}' does not support realtime streaming — "
+                "choose a streaming model (e.g. eleven_flash_v2_5)."
+            )
     elif require_voice:
         errors.append(f"{prefix}: a model is required.")
     if voice:
@@ -298,6 +494,22 @@ def _validate_engine(
             )
     elif require_voice:
         errors.append(f"{prefix}: a voice is required.")
+    if language:
+        # The languages table is the source of truth: the locale must be a
+        # catalog record. A record an admin disabled AFTER it was configured
+        # stays usable (bot languages are enabled-checked when added), but is
+        # flagged so the operator sees the legacy state.
+        lang_row = get_platform_language(db, language)
+        if lang_row is None:
+            errors.append(
+                f"{prefix}: language '{language}' is not in the platform language catalog."
+            )
+        elif not lang_row.enabled:
+            warnings.append(
+                f"{prefix}: language '{language}' is disabled on the platform — "
+                "the existing configuration keeps working, but re-enable the "
+                "language or remove this selection."
+            )
     if model_row is not None:
         if language and not matches_model_language(provider, language, model_row.languages):
             errors.append(
@@ -321,6 +533,12 @@ def validate_voice_settings(
     # Voice lookups are scoped to the bot's tenant: platform voices plus the
     # tenant's own clones. Another tenant's cloned voice must fail validation.
     tenant_id = getattr(bot, "tenant_id", None)
+    # Persisted settings distinguish a NEW language selection (rejected when
+    # the language is missing/disabled) from an unchanged legacy one
+    # (preserved with a warning).
+    persisted = db.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id)
+    )
 
     bot_languages = set(db.scalars(
         select(BotLanguage.language_code).where(BotLanguage.bot_id == bot.id)
@@ -349,6 +567,34 @@ def validate_voice_settings(
                         f"STT model '{model}' does not belong to provider '{stt_provider}'."
                     )
             stt_language = payload.get("stt_language")
+            if stt_language and stt_language != "unknown":
+                # Catalog check: the language must exist and be active. An
+                # unchanged persisted value is grandfathered (warning) so a
+                # later-deactivated language never bricks an existing config;
+                # a NEW selection of a missing/disabled language is rejected.
+                lang_row = get_platform_language(db, stt_language)
+                unchanged = (
+                    persisted is not None
+                    and (persisted.stt_language or "") == stt_language
+                )
+                if lang_row is None:
+                    message = (
+                        f"STT language '{stt_language}' is not in the platform "
+                        "language catalog."
+                    )
+                    if unchanged:
+                        warnings.append(message + " Existing configuration preserved.")
+                    else:
+                        errors.append(message)
+                elif not lang_row.enabled:
+                    message = f"STT language '{stt_language}' is disabled on the platform."
+                    if unchanged:
+                        warnings.append(
+                            message + " The existing configuration keeps working; "
+                            "re-enable the language or pick an active one."
+                        )
+                    else:
+                        errors.append(message + " Choose an active language.")
             if stt_language and model_row is not None:
                 if (stt_language != "unknown"
                         and not matches_model_language(
@@ -358,7 +604,7 @@ def validate_voice_settings(
                         f"{stt_provider}/{model}."
                     )
             if model_row is not None:
-                errors.extend(validate_params(
+                errors.extend(validate_stt_settings(
                     model_row.params_schema, payload.get("stt_settings"), prefix="STT"
                 ))
 
@@ -383,14 +629,38 @@ def validate_voice_settings(
                         f"LLM model '{model}' does not belong to provider '{llm_provider}'."
                     )
             if model_row is not None:
-                errors.extend(validate_params(
+                errors.extend(validate_llm_settings(
                     model_row.params_schema, payload.get("llm_settings"), prefix="LLM"
                 ))
 
+    # ── Orchestration engine (platform-owned llm_settings keys) ──
+    # The Goal Engine's dedicated decision model must exist in the governed
+    # catalog like any other engine. The runtime additionally degrades to the
+    # conversation LLM if governance changes later — but a NEW selection of an
+    # unknown/inactive engine is rejected at save time.
+    llm_settings_blob = payload.get("llm_settings") or {}
+    orch_provider = llm_settings_blob.get("orchestration_provider")
+    if isinstance(orch_provider, str) and orch_provider.strip():
+        orch_provider = orch_provider.strip()
+        orch_row = get_provider(db, "llm", orch_provider)
+        if orch_row is None:
+            errors.append(
+                f"LLM: orchestration provider '{orch_provider}' is not available."
+            )
+        else:
+            orch_model = llm_settings_blob.get("orchestration_model")
+            if isinstance(orch_model, str) and orch_model.strip():
+                if get_model(db, "llm", orch_provider, orch_model.strip()) is None:
+                    errors.append(
+                        f"LLM: orchestration model '{orch_model.strip()}' does not "
+                        f"belong to provider '{orch_provider}'."
+                    )
+
     # ── TTS (default engine) ──
     tts_provider = payload.get("tts_provider")
+    tts_model_row = None
     if tts_provider:
-        _validate_engine(
+        tts_model_row = _validate_engine(
             db,
             provider=tts_provider,
             model=payload.get("tts_model"),
@@ -419,7 +689,25 @@ def validate_voice_settings(
             errors=errors,
             warnings=warnings,
             tenant_id=tenant_id,
+            require_streaming=True,
         )
+
+    # A non-streaming default engine (ElevenLabs eleven_v3) runs the segmented
+    # REST pipeline, which has no fallback and no per-language switching —
+    # surface that those configured features will not apply on live calls.
+    if tts_model_row is not None and not tts_model_row.streaming:
+        lang_overrides = [k for k in (payload.get("language_voice_map") or {}) if k != "default"]
+        unavailable = []
+        if fallback_provider:
+            unavailable.append("the fallback engine")
+        if lang_overrides:
+            unavailable.append("per-language voice overrides")
+        if unavailable:
+            warnings.append(
+                f"TTS: model '{tts_model_row.code}' does not stream in realtime — "
+                f"live calls synthesize each reply over REST and "
+                f"{' and '.join(unavailable)} will not apply."
+            )
 
     # ── Per-language voice map ──
     if lang_map:
@@ -444,6 +732,7 @@ def validate_voice_settings(
                     errors=errors,
                     warnings=warnings,
                     tenant_id=tenant_id,
+                    require_streaming=bool(entry.get("model")),
                 )
             elif isinstance(entry, str):
                 voice_row = db.get(VoiceProfile, entry)
@@ -457,6 +746,35 @@ def validate_voice_settings(
                     )
             else:
                 errors.append(f"Voice mapping [{locale}]: invalid entry.")
+
+    # A bot language WITHOUT its own mapping falls through to the default
+    # engine at runtime (shared.orchestration.voice_identity.
+    # resolve_language_engine: exact locale → base code → default). The block
+    # above only checks the languages that do have a mapping, so a language
+    # the default engine cannot speak used to save cleanly and then fail mid
+    # call — ElevenLabs answers an unsupported language_code with HTTP 400 /
+    # a 1008 "unsupported_language" frame. Surfaced as a warning, not an
+    # error: an existing configuration must stay saveable, and the runtime
+    # now drops the unsupported enforcement code instead of going mute.
+    if tts_model_row is not None and tts_model_row.languages and bot_languages:
+        mapped = {
+            locale for locale, entry in lang_map.items()
+            if locale != "default" and isinstance(entry, (dict, str))
+        }
+        unsupported = sorted(
+            locale for locale in bot_languages
+            if locale not in mapped
+            and not matches_model_language(
+                tts_provider, locale, tts_model_row.languages)
+        )
+        if unsupported:
+            warnings.append(
+                f"TTS: {tts_provider}/{tts_model_row.code} does not support "
+                f"{', '.join(unsupported)} — these bot languages have no voice "
+                "mapping of their own, so live calls fall back to this engine "
+                "and will not be spoken correctly. Add a per-language voice "
+                "override on a provider that supports them."
+            )
 
     # ── Audio / transport settings ──
     audio = payload.get("audio_settings") or {}

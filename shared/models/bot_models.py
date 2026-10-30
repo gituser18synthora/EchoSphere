@@ -50,6 +50,13 @@ class VoiceBot(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedM
     voice_id: Mapped[str | None] = mapped_column(
         String(ID_LEN), ForeignKey("voice_profiles.id"), nullable=True
     )
+    # Optional bot-specific guardrail profile. NULL → the bot inherits the
+    # tenant's default profile; an explicit assignment stays unchanged when
+    # the tenant default changes. Mandatory platform guardrails apply either
+    # way and can never be weakened by this override.
+    guardrail_profile_id: Mapped[str | None] = mapped_column(
+        String(ID_LEN), nullable=True
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     readiness_items: Mapped[list["VoiceBotReadiness"]] = relationship(
@@ -86,8 +93,9 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     # platform (curated catalog) | cloned (tenant-created via a provider
     # voice-cloning API — provider_voice_id is the provider clone id).
     source: Mapped[str] = mapped_column(String(20), default="platform", nullable=False)
-    # Clone provenance: sample file names/sizes, requires_verification, the
-    # provider options used. Training audio itself is never stored.
+    # Clone provenance: sample file names/sizes/durations, source types,
+    # requires_verification, the provider options used. The audio itself is
+    # retained in voice_clone_audio rows (files under VOICE_CLONE_AUDIO_DIR).
     clone_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     gender: Mapped[str] = mapped_column(String(10), default="neutral", nullable=False)
@@ -111,6 +119,58 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     model_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Per-voice default provider parameters (e.g. ElevenLabs VoiceSettings).
     provider_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class PronunciationDictionary(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Tenant-scoped metadata for provider pronunciation dictionaries.
+
+    The provider account (Sarvam) stores the actual pronunciations and issues
+    provider_dict_id; its list API returns bare ids with no names, so this
+    table owns the tenant-facing name plus a cached per-language word-count
+    summary. TTS (preview and live calls) passes provider_dict_id as dict_id.
+    """
+
+    __tablename__ = "pronunciation_dictionaries"
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(40), default="sarvam", nullable=False)
+    provider_dict_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # {"hi-IN": 12, "en-IN": 3} — display summary only, provider is authoritative.
+    language_word_counts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class VoiceCloneAudio(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Source audio a cloned voice was built from — retained after cloning so
+    tenants can replay exactly what was sent to the provider. One row per
+    sample; files live under VOICE_CLONE_AUDIO_DIR at storage_path (relative,
+    server-generated — user filenames never form the on-disk path)."""
+
+    __tablename__ = "voice_clone_audio"
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    voice_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("voice_profiles.id"), nullable=False, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # live_recording (browser microphone) | file_upload
+    source_type: Mapped[str] = mapped_column(
+        String(20), default="file_upload", nullable=False
+    )
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="stored", nullable=False)
 
 
 class SupportedLanguage(Base, TimestampMixin, AuditByMixin):
@@ -185,6 +245,16 @@ class VoiceBotSetting(Base, TimestampMixin, AuditByMixin):
     # Transport audio configuration: {"browser": {"codec","sampleRate"},
     #                                 "telephony": {"codec","sampleRate"}}
     audio_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Goal Engine configuration (shared.orchestration.goal_engine
+    # .BotGoalPolicy shape: role, domain, goals, allowedTopics,
+    # restrictedTopics, identity, slots, toolRules, escalation,
+    # completionCriteria, tone, outOfScope, safety). NULL → a safe default is
+    # derived at runtime from the published prompt, intents and domain policy.
+    goal_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Human speech naturalness overrides (shared.orchestration.naturalness
+    # HUMAN_SPEECH_DEFAULTS keys). Sparse: only keys the bot overrides are
+    # stored. NULL → tenant override / platform defaults apply.
+    human_speech: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ChannelConfig(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedMixin):
@@ -226,6 +296,9 @@ class PhoneNumber(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(20), default="available", nullable=False
     )  # assigned | available | porting | error
     monthly_cost: Mapped[float] = mapped_column(Numeric(8, 2), default=0, nullable=False)
+    # Admin gate: an inactive number keeps its current assignment/routing but
+    # cannot be claimed for NEW bot/channel assignments.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class SipTrunk(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):

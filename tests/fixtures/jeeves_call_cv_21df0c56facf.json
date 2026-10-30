@@ -1,0 +1,100 @@
+{
+ "id": "cv_21df0c56facf",
+ "note": "Real local browser test call, 2026-10-29 05:52 UTC, workflow v22, gpt-6-luna. The customer rejected the registered address, gave the new one with conversational filler, booked the visit for tomorrow. Before the fix the structured summary showed every analyst field null and the readback repeated the filler as the address.",
+ "started_at": "2026-10-29T05:51:59.320072+00:00",
+ "turns": [
+  {
+   "role": "bot",
+   "text": "हेलो, क्या मेरी बात Rahul जी से हो रही है?"
+  },
+  {
+   "role": "user",
+   "text": "हाँ जी।"
+  },
+  {
+   "role": "bot",
+   "text": "धन्यवाद। हम आपके address Sector 62, Noida वाले Airtel Broadband connection के संबंध में कॉल कर रहे हैं। Rahul जी, आपका broadband connection disconnect हो चुका है। इसलिए device के uninstallation और pickup के लिए engineer की visit schedule करनी है। क्या अभी बात करने का सही समय है?"
+  },
+  {
+   "role": "user",
+   "text": "हाँ बोलिए।"
+  },
+  {
+   "role": "bot",
+   "text": "धन्यवाद Rahul जी। जैसा कि मैंने आपको बताया, आपका broadband connection disconnect हो चुका है। अब बस आपके घर से device का uninstallation और pickup करवाना बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+  },
+  {
+   "role": "user",
+   "text": "नहीं नहीं, मैं लोकेशन चेंज कर दिया हूँ।"
+  },
+  {
+   "role": "bot",
+   "text": "कोई बात नहीं। आप please अपना सही address pincode के साथ बताइए, जहाँ से device का uninstallation और pickup होना है।"
+  },
+  {
+   "role": "user",
+   "text": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041."
+  },
+  {
+   "role": "bot",
+   "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+  },
+  {
+   "role": "user",
+   "text": "कल कर दो।"
+  },
+  {
+   "role": "bot",
+   "text": "हमारे इंजीनियर कल आपके नए पते, मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041, पर Airtel Broadband डिवाइस हटाने और लेने आएँगे। आने का सही समय इंजीनियर आपको कॉल करके बताएँगे। क्या ये आपके लिए ठीक रहेगा?"
+  },
+  {
+   "role": "user",
+   "text": "हाँ ठीक रहेगा।"
+  },
+  {
+   "role": "bot",
+   "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+  }
+ ],
+ "slots_recorded": {
+  "locality": "Sector 62, Noida",
+  "visit_day": "कल",
+  "new_address": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041.",
+  "visit_status": "booked",
+  "visit_date_iso": "2026-10-30",
+  "identity_answer": "yes",
+  "address_verified": "changed",
+  "visit_day_spoken_en": "tomorrow",
+  "visit_day_spoken_hi": "कल"
+ },
+ "slots_after_fix": {
+  "locality": "Sector 62, Noida",
+  "visit_day": "कल",
+  "new_address": "थाने सेक्टर 16, 404041",
+  "new_address_raw": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041.",
+  "visit_status": "booked",
+  "visit_date_iso": "2026-10-30",
+  "identity_answer": "yes",
+  "address_verified": "changed",
+  "visit_day_spoken_en": "tomorrow",
+  "visit_day_spoken_hi": "कल"
+ },
+ "address_turn_spans": [
+  "थाने सेक्टर 16",
+  "404041"
+ ],
+ "expected": {
+  "address_changed": "Yes",
+  "updated_address": "थाने सेक्टर 16, 404041",
+  "appointment_booked": "Yes",
+  "appointment_date": "2026-10-30",
+  "appointment_time": null,
+  "call_result": "booked",
+  "already_picked_up": null,
+  "refund_status": null,
+  "refund_requested": null,
+  "callback_date": null,
+  "callback_time": null,
+  "callback_preference": null
+ }
+}

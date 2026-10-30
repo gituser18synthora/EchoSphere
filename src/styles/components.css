@@ -86,14 +86,12 @@
   box-shadow: 0 0 0 3px var(--brand-100);
   outline: none;
 }
-:root[data-theme="dark"] .input:focus,
-:root[data-theme="dark"] .select:focus,
-:root[data-theme="dark"] .textarea:focus {
-  box-shadow: 0 0 0 3px rgba(138, 114, 230, 0.25);
-}
 .input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] {
   border-color: var(--status-critical);
 }
+/* Controls that sit in a toolbar or page header rather than a form field:
+   the 100% above would eat the whole row and force the header to wrap. */
+.select-inline { width: auto; min-width: 104px; }
 .field {
   display: flex;
   flex-direction: column;
@@ -259,7 +257,7 @@
 .chip-info { background: var(--status-info-bg); color: var(--status-info); }
 .chip-neutral { background: var(--status-neutral-bg); color: var(--status-neutral); }
 .chip-brand { background: var(--brand-100); color: var(--brand-700); }
-:root[data-theme="dark"] .chip-brand { background: rgba(138, 114, 230, 0.2); color: var(--brand-300); }
+:root[data-theme="dark"] .chip-brand { background: var(--brand-50); color: var(--brand-300); }
 .chip-dot {
   width: 6px;
   height: 6px;
@@ -383,11 +381,14 @@
   border: 1px solid var(--hairline);
   border-radius: var(--r-md);
   background: var(--surface-2);
+  /* Row width follows the hosting column, so field layout responds to the
+     CARD's width (container query below), not the viewport. */
+  container-type: inline-size;
 }
 .lang-voice-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px 10px;
   flex-wrap: wrap;
 }
 .lang-voice-lang {
@@ -397,16 +398,51 @@
   min-width: 0;
   margin-right: auto;
 }
+/* Status chip + action buttons form ONE unit: on a wide card it sits right
+   of the name; on a narrow card the whole unit wraps together below the
+   name — never a chip stranded on one line with buttons on the next. */
+.lang-voice-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  min-width: 0;
+}
 .lang-voice-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
+/* Provider | Model | Voice on one aligned line, stepping down with the
+   CARD's own width (container query): 3 columns → 2 columns with Voice
+   spanning the full second row → 1 column. Never auto-fit's lopsided 2+1. */
 .lang-voice-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-items: start;
+}
+@container (max-width: 560px) {
+  .lang-voice-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lang-voice-fields > :last-child { grid-column: 1 / -1; }
+}
+@container (max-width: 360px) {
+  .lang-voice-fields { grid-template-columns: minmax(0, 1fr); }
+  .lang-voice-fields > :last-child { grid-column: auto; }
+}
+/* Fallback for engines without container queries. */
+@supports not (container-type: inline-size) {
+  @media (max-width: 900px) {
+    .lang-voice-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lang-voice-fields > :last-child { grid-column: 1 / -1; }
+  }
+  @media (max-width: 560px) {
+    .lang-voice-fields { grid-template-columns: minmax(0, 1fr); }
+    .lang-voice-fields > :last-child { grid-column: auto; }
+  }
 }
 .lang-voice-fields .field-label,
 .lang-voice-fields .mselect-opt-label,
@@ -415,23 +451,35 @@
 /* ============ Tabs ============ */
 .tabs {
   display: flex;
+  flex-wrap: nowrap;
+  /* Compact single row: each tab is its label plus moderate padding with a
+     small gap between tabs. The old strip (14px side padding + 2px gaps,
+     overflow-x:auto with a HIDDEN scrollbar) was wider than the content
+     column, so its trailing tabs scrolled out of view with no affordance that
+     more existed. Horizontal scrolling remains only as a fallback for
+     genuinely narrow columns, and the scrollbar is then visible.
+     The hairline is an inset shadow rather than a border: `overflow-x:auto`
+     forces overflow-y to auto as well, and the old `border-bottom` +
+     `.tab { margin-bottom:-1px }` overlap made the tabs 1px taller than the
+     strip's content box, which produced a spurious VERTICAL scrollbar. */
   gap: 2px;
-  border-bottom: 1px solid var(--hairline);
+  box-shadow: inset 0 -1px 0 var(--hairline);
+  min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
-.tabs::-webkit-scrollbar { display: none; }
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-2);
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   white-space: nowrap;
+  flex: 0 0 auto;
   transition: color 0.12s;
 }
 .tab:hover { color: var(--ink); }
@@ -567,7 +615,7 @@
 .timeline-icon.critical { background: var(--status-critical-bg); color: var(--status-critical); }
 .timeline-icon.warning { background: var(--status-warning-bg); color: var(--status-warning); }
 .timeline-icon.brand { background: var(--brand-100); color: var(--brand-600); }
-:root[data-theme="dark"] .timeline-icon.brand { background: rgba(138, 114, 230, 0.2); color: var(--brand-300); }
+:root[data-theme="dark"] .timeline-icon.brand { background: var(--brand-50); color: var(--brand-300); }
 
 /* ============ Skeleton / loading ============ */
 .skeleton {
@@ -671,7 +719,7 @@
   color: var(--ink-3);
 }
 .wizard-step.active { background: var(--brand-50); color: var(--brand-700); }
-:root[data-theme="dark"] .wizard-step.active { background: rgba(138, 114, 230, 0.14); color: var(--brand-300); }
+:root[data-theme="dark"] .wizard-step.active { background: var(--brand-50); color: var(--brand-300); }
 .wizard-step.done { color: var(--ink-2); }
 .wizard-step-num {
   width: 22px;
@@ -758,7 +806,7 @@
   flex-shrink: 0;
 }
 .icon-tile.brand { background: var(--brand-100); color: var(--brand-600); }
-:root[data-theme="dark"] .icon-tile.brand { background: rgba(138, 114, 230, 0.18); color: var(--brand-300); }
+:root[data-theme="dark"] .icon-tile.brand { background: var(--brand-50); color: var(--brand-300); }
 .icon-tile.good { background: var(--status-good-bg); color: var(--status-good); }
 .icon-tile.warning { background: var(--status-warning-bg); color: var(--status-warning); }
 .icon-tile.critical { background: var(--status-critical-bg); color: var(--status-critical); }
@@ -793,6 +841,143 @@
 .menu-item.danger { color: var(--status-critical); }
 .menu-item.danger:hover { background: var(--status-critical-bg); }
 .menu-sep { height: 1px; background: var(--hairline); margin: 5px 4px; }
+/* Text + chevron of a labelled MenuButton trigger; pages may hide it on narrow
+   screens to leave an icon-only button (the aria-label still names it). */
+.menu-button-label { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---------- Date-range picker ---------- */
+/* The trigger reads like the neighbouring .select controls; the popover is
+   portalled + fixed (like .menu) so it can never be clipped by a table header,
+   sticky bar or overflow container. */
+.drp-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 11px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.drp-trigger:hover { border-color: var(--brand-300); }
+.drp-trigger:focus-visible {
+  border-color: var(--brand-400);
+  box-shadow: 0 0 0 3px var(--brand-100);
+  outline: none;
+}
+.drp-trigger.has-value { color: var(--ink); }
+.drp-trigger.has-value .drp-trigger-value { font-weight: 550; }
+.drp-trigger-value { font-variant-numeric: tabular-nums; }
+.drp-pop {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: calc(100vw - 16px);
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.12s ease-out;
+}
+.drp-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 108px;
+  padding-right: 12px;
+  border-right: 1px solid var(--hairline);
+}
+.drp-preset {
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ink-2);
+  text-align: left;
+  white-space: nowrap;
+}
+.drp-preset:hover { background: var(--surface-3); color: var(--ink); }
+.drp-cal { width: 240px; }
+.drp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.drp-month { font-size: 13px; font-weight: 650; }
+.drp-nav {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+}
+.drp-nav:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.drp-nav:disabled { opacity: 0.35; cursor: default; }
+.drp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.drp-dow {
+  padding: 3px 0;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: center;
+  text-transform: uppercase;
+}
+.drp-day {
+  display: grid;
+  place-items: center;
+  height: 29px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.drp-day:hover:not(:disabled) { background: var(--brand-100); }
+.drp-day:disabled { opacity: 0.3; cursor: default; }
+.drp-day.outside { color: var(--ink-3); }
+.drp-day.in-range { background: var(--brand-50); }
+.drp-day.edge { background: var(--brand-500); color: #fff; font-weight: 650; }
+.drp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.drp-clear {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-600);
+  white-space: nowrap;
+}
+.drp-clear:hover { text-decoration: underline; }
+@media (max-width: 480px) {
+  .drp-presets {
+    flex-direction: row;
+    flex-wrap: wrap;
+    min-width: 0;
+    width: 100%;
+    padding-right: 0;
+    padding-bottom: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+}
 
 /* Add-knowledge dropzone & file rows (KnowledgeTab) */
 .dropzone {
@@ -875,7 +1060,7 @@
 }
 :root[data-theme="dark"] .mselect-control:focus-visible,
 :root[data-theme="dark"] .mselect-control.open {
-  box-shadow: 0 0 0 3px rgba(138, 114, 230, 0.25);
+  box-shadow: 0 0 0 3px rgba(106, 90, 249, 0.25);
 }
 .mselect-control[aria-invalid="true"] { border-color: var(--status-critical); }
 .mselect-control[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
@@ -961,3 +1146,256 @@
 }
 .mselect-clear:hover { text-decoration: underline; }
 :root[data-theme="dark"] .mselect-clear { color: var(--brand-300); }
+
+/* The language editor contains just one field. Keep its options in normal
+   flow so the modal grows with the list instead of clipping the popover. */
+.edit-languages-selector { width: 100%; }
+.edit-languages-selector .mselect-control { min-height: 46px; padding: 8px 12px; }
+.edit-languages-selector .mselect-pop { position: static; margin-top: 8px; }
+.edit-languages-selector .mselect-search { padding: 10px; }
+.edit-languages-selector .mselect-search > svg { left: 20px; }
+.edit-languages-selector .mselect-search .input { height: 40px; font-size: 14px; }
+.edit-languages-selector .mselect-list { max-height: min(320px, 40vh); padding: 6px; }
+.edit-languages-selector .mselect-option { min-height: 48px; gap: 12px; padding: 10px; }
+.edit-languages-selector .mselect-box { width: 20px; height: 20px; }
+.edit-languages-selector .mselect-opt-label { font-size: 14px; }
+.edit-languages-selector .mselect-opt-sub { font-size: 12px; }
+
+/* ---------- Schema-driven provider parameters ---------- */
+/* A parameter whose value differs from its schema default gets an inline
+   reset affordance, anchored to the field's label row. */
+.param-resettable { position: relative; }
+.param-reset {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--brand-600);
+  line-height: 1.4;
+}
+.param-reset:hover { text-decoration: underline; }
+:root[data-theme="dark"] .param-reset { color: var(--brand-300); }
+
+/* Inline "Use automatic" link next to the STT auto-detect source line — same
+   look as .param-reset but flows with the text (that class is absolutely
+   positioned for the per-parameter reset affordance and would float the
+   button to the page corner, under the sticky top bar). */
+.stt-auto-detect-reset {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--brand-600);
+  line-height: 1.4;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.stt-auto-detect-reset:hover { text-decoration: underline; }
+:root[data-theme="dark"] .stt-auto-detect-reset { color: var(--brand-300); }
+
+/* Voice-settings block inside the preview modal — visually separated from the
+   engine selection above it so draft tuning reads as its own section. */
+.preview-settings {
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-2, transparent);
+}
+
+/* ---------- Pronunciation dictionary manager ---------- */
+.dict-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.dict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.dict-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.dict-grid-head { margin-bottom: -4px; }
+@media (max-width: 640px) {
+  .dict-grid { grid-template-columns: minmax(0, 1fr) auto; }
+  .dict-grid-head { display: none; }
+}
+
+/* Responsive two-column grid inside the voice preview modal — labels,
+   sliders and selects align per column; collapses to one column on small
+   widths without overlap or horizontal overflow. */
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+@media (max-width: 640px) {
+  .preview-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ============ Phone call view (bot testing) ============ */
+/* Deliberately a single dark look in both themes — it reads as a real
+   in-progress phone call, not as a dashboard card. */
+.phonecall-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 12px;
+}
+.phonecall {
+  width: 380px;
+  max-width: 100%;
+  min-height: 540px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border-radius: 30px;
+  padding: 22px 24px 26px;
+  background: linear-gradient(168deg, #241c62 0%, #131a3f 52%, #040917 100%);
+  color: #fefefe;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: var(--shadow-3);
+}
+.phonecall-carrier {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+.phonecall-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 44px;
+  text-align: center;
+}
+.phonecall-avatar {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, #6a5af9 0%, #8c52ff 100%);
+  box-shadow: 0 8px 28px rgba(106, 90, 249, 0.45);
+}
+.phonecall-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(143, 132, 247, 0.55);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Call-state animation — transform/opacity only (compositor-friendly, no
+   layout work, no JS): ringing pulse while dialing, a gentle avatar breath +
+   slow outgoing wave for the whole live call, a faster wave while the bot
+   speaks. */
+.phonecall.connecting .phonecall-ring { animation: phonecall-pulse 1.2s ease-out infinite; }
+.phonecall.connecting .phonecall-ring.delayed { animation-delay: 0.6s; }
+.phonecall.on-call .phonecall-avatar { animation: phonecall-breathe 2.8s ease-in-out infinite; }
+.phonecall.on-call .phonecall-ring { animation: phonecall-pulse 2.8s ease-out infinite; }
+.phonecall.on-call .phonecall-ring.delayed { animation-delay: 1.4s; }
+.phonecall.speaking .phonecall-ring { animation-duration: 1.5s; }
+.phonecall.speaking .phonecall-ring.delayed { animation-delay: 0.5s; }
+@keyframes phonecall-pulse {
+  0% { transform: scale(1); opacity: 0.75; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes phonecall-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phonecall-avatar, .phonecall-ring, .phonecall-live-dot { animation: none !important; }
+}
+.phonecall-name {
+  font-size: 21px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.phonecall-number {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.82);
+}
+.phonecall-provider {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.phonecall-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  min-height: 22px;
+  font-size: 14px;
+  font-weight: 550;
+  color: rgba(255, 255, 255, 0.85);
+}
+.phonecall-status .spinner { border-color: rgba(255, 255, 255, 0.35); border-top-color: #fff; }
+.phonecall-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #35c76a;
+  box-shadow: 0 0 0 0 rgba(53, 199, 106, 0.55);
+  animation: phonecall-dot 1.6s ease-out infinite;
+}
+.phonecall-live-dot.speaking { background: #8f84f7; box-shadow: 0 0 0 0 rgba(143, 132, 247, 0.55); }
+@keyframes phonecall-dot {
+  0% { box-shadow: 0 0 0 0 currentColor; }
+  70% { box-shadow: 0 0 0 7px rgba(0, 0, 0, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
+}
+.phonecall-controls {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  margin-top: auto;
+  padding-top: 18px;
+}
+.phonecall-btn {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  transition: background 0.15s, transform 0.08s;
+}
+.phonecall-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.24); }
+.phonecall-btn:active:not(:disabled) { transform: scale(0.94); }
+.phonecall-btn:disabled { opacity: 0.35; cursor: default; }
+.phonecall-btn.is-muted { background: #fefefe; color: #1b1b1b; }
+.phonecall-btn.main { width: 66px; height: 66px; }
+.phonecall-btn.call { background: #1faf58; box-shadow: 0 6px 20px rgba(31, 175, 88, 0.4); }
+.phonecall-btn.call:hover:not(:disabled) { background: #25c463; }
+.phonecall-btn.hangup { background: #e02d2d; box-shadow: 0 6px 20px rgba(224, 45, 45, 0.4); }
+.phonecall-btn.hangup:hover:not(:disabled) { background: #ef3d3d; }
+.phonecall-btn.spacer { visibility: hidden; pointer-events: none; }
+.phonecall-hint {
+  margin-top: 16px;
+  font-size: 11.5px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+}

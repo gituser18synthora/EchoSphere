@@ -6,8 +6,17 @@ Populates:
 - voice_profiles: ElevenLabs voices and Sarvam bulbul:v3 speakers.
 
 Language codes inside PROVIDER_MODELS use the provider's wire form (Sarvam:
-``od-IN``; ElevenLabs: bare ISO 639-1). ``shared.providers.languages`` maps
-them to platform locale codes. Voice rows use platform locale codes.
+``od-IN``; ElevenLabs v2.5 family: bare ISO 639-1). ``shared.providers.
+languages`` maps them to platform locale codes. Voice rows use platform
+locale codes.
+
+Exception: ``eleven_v3`` stores PLATFORM locale codes (en-US, en-IN, hi-IN …)
+derived from the ``supported_languages`` catalog — the languages table is the
+source of truth for what tenants may pick, so the model row only ever lists
+locales that exist as catalog records AND are officially supported by the
+model. Enable/disable state is applied at read time (model_platform_languages
+serves enabled rows only). Locale codes are never sent to ElevenLabs for v3 —
+the model takes no language_code parameter.
 
 No API keys anywhere — providers reference credentials via ``env:`` secret
 references on provider_defs.
@@ -15,8 +24,19 @@ references on provider_defs.
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from shared.providers.tts.sarvam_voices import (
+    V4_DOCUMENTED_GENDERS,
+    V4_TAG_LABELS,
+    V4_TAG_LOCALES,
+    persona_parts,
+    v4_catalog_personas,
+    v4_roster_personas,
+)
 
 from shared.ids import new_id
 from shared.models import (
@@ -24,12 +44,75 @@ from shared.models import (
     ApprovedModel,
     ProviderDef,
     ProviderModel,
+    SupportedLanguage,
     VoiceProfile,
 )
 
 # ── Parameter schemas ────────────────────────────────────────────────────────
-# {"field": {"type": number|integer|boolean|enum|string|int_list,
+# {"field": {"type": number|integer|boolean|enum|string|int_list|string_list,
 #            "min","max","step","default","values","label","help","advanced"}}
+
+# Deepgram Flux (conversational STT, /v2/listen): only the parameters the
+# voice-agent runtime actually consumes are exposed — encoding/sample-rate are
+# decided by the call transport, and the raw API surface stays out of the UI.
+_DEEPGRAM_FLUX_SCHEMA = {
+    "eot_threshold": {
+        "type": "number", "min": 0.5, "max": 0.9, "default": 0.7, "step": 0.05,
+        "label": "End-of-turn threshold",
+        "help": "Confidence Flux needs before ending the caller's turn. "
+                "Lower answers sooner but may cut into natural pauses.",
+    },
+    "eager_eot_threshold": {
+        "type": "number", "min": 0.3, "max": 0.9, "default": 0.6, "step": 0.05,
+        "label": "Eager end-of-turn threshold", "advanced": True,
+        "help": "Enables EagerEndOfTurn: orchestration starts speculatively "
+                "before the turn is confirmed (lower = faster responses, more "
+                "speculative decision calls).",
+    },
+    "eot_timeout_ms": {
+        "type": "integer", "min": 500, "max": 60000, "default": 3000,
+        "label": "End-of-turn timeout (ms)", "advanced": True,
+        "help": "Silence after speech that force-ends the turn regardless of "
+                "end-of-turn confidence.",
+    },
+    "language_hints": {
+        # Languages flux-general-multi supports (pipecat wire codes).
+        "type": "string_list", "max_items": 8, "max_length": 8,
+        "values": ["de", "en", "es", "fr", "hi", "it", "ja", "nl", "pt", "ru"],
+        "label": "Language hints", "advanced": True,
+        "help": "Bias multilingual detection toward these languages. Defaults "
+                "to the bot's configured languages (e.g. hi, en).",
+    },
+}
+
+# Deepgram TTS (Aura / Aura-2, /v1/speak). Deepgram's own surface is almost
+# entirely output formatting — encoding, sample rate and container are decided
+# by the call transport, not by an operator — so only the two knobs that are
+# genuinely a choice are exposed. ``speed`` is here for the catalog's
+# speed-range contract; Delivery tuning owns it and strips it from stored
+# settings (shared/providers/tts/delivery.py).
+_DEEPGRAM_TTS_SCHEMA = {
+    "speed": {
+        "type": "number", "min": 0.7, "max": 1.5, "default": 1.0, "step": 0.05,
+        "label": "Speed", "help": "Playback speed multiplier.",
+    },
+    "region": {
+        # Data residency only. Every region runs the same models with the
+        # same API key; it adds no languages (see shared/providers/languages).
+        "type": "enum", "values": ["default", "global", "in", "eu", "au"],
+        "default": "default", "label": "Region", "advanced": True,
+        "help": "Deepgram endpoint to synthesize on: 'in' keeps inference and "
+                "storage inside India (api.in.deepgram.com), 'default' follows "
+                "the platform's DEEPGRAM_REGION setting. This is a data-"
+                "residency choice and does not change which languages the "
+                "voices speak.",
+    },
+    "mip_opt_out": {
+        "type": "boolean", "default": False, "label": "Opt out of model "
+        "improvement", "advanced": True,
+        "help": "Ask Deepgram not to retain this audio for model improvement.",
+    },
+}
 
 _SARVAM_STT_COMMON = {
     "vad_signals": {
@@ -41,11 +124,26 @@ _SARVAM_STT_COMMON = {
         "help": "Finalize segments after ~0.5s of silence instead of ~1s (faster endpointing).",
     },
     "input_encoding": {
-        # "wav" is the only encoding the pinned sarvamai SDK (0.1.28) accepts
-        # on the streaming socket — "pcm_s16le" fails per-chunk validation.
-        "type": "enum", "values": ["pcm_s16le", "wav"], "default": "wav",
+        # The runtime sends headerless signed 16-bit Pipecat frames.  Its
+        # Sarvam adapter bypasses the generated SDK's WAV-only message model
+        # and sends the endpoint's documented raw-PCM envelope directly.
+        "type": "enum", "values": ["pcm_s16le"], "default": "pcm_s16le",
         "label": "Input encoding", "advanced": True,
         "help": "Wire encoding for microphone/telephony audio sent to Sarvam.",
+    },
+    "auto_detect_language": {
+        # Tri-state on disk (absent / true / false). No schema default on
+        # purpose: the Voice tab renders this with a dedicated control
+        # (widget) and only persists the key when the user sets it, so an
+        # unset value follows the platform rule — more than one bot language
+        # → detect, a single language → pin to the bot's default language
+        # (shared.providers.stt_language_policy).
+        "type": "boolean", "widget": "auto_detect_language",
+        "label": "Auto-detect language",
+        "help": "Let the recognizer detect the spoken language on every utterance "
+                "so the bot can follow the caller between its configured languages. "
+                "When off, recognition is pinned to the bot's default language "
+                "(more reliable for short phone replies).",
     },
     "timeout_seconds": {
         "type": "number", "min": 5, "max": 120, "default": 30, "step": 1,
@@ -83,30 +181,88 @@ _SAARAS_V3_SCHEMA = {
     },
 }
 
+# Sarvam saaras:v4 — same modes, languages and VAD controls as v3, plus
+# key-term biasing. ``keyterms`` has no default on purpose: an absent key
+# means "no biasing", so existing bots and a fresh v4 selection behave
+# identically until an operator enters terms. Limits are Sarvam's documented
+# contract (50 terms × 64 characters, one term or phrase per entry); the
+# shared rule set in shared/providers/stt/sarvam_keyterms.py enforces them
+# for the API and the runtime. The key is NOT part of the v3 schema, which
+# is what makes the UI hide it and the API reject it for v3.
+_SAARAS_V4_SCHEMA = {
+    **_SAARAS_V3_SCHEMA,
+    "mode": {
+        **_SAARAS_V3_SCHEMA["mode"],
+        "help": "Output mode. 'transcribe' is standard; 'translate' returns English.",
+    },
+    "keyterms": {
+        "type": "string_list", "max_items": 50, "max_length": 64,
+        "optional": True, "multiline": True,
+        "label": "Key terms (saaras:v4)",
+        "help": "Up to 50 names, places, brands or technical terms (64 characters "
+                "each) that recognition is biased toward — one term or phrase per "
+                "line, e.g. Zepto / New Delhi. Biasing only: a term is not "
+                "guaranteed to appear in the transcript. Left empty, the bot's own "
+                "vocabulary is used automatically (see the two switches below).",
+    },
+    # Automatic key terms when the list above is empty: the bot's workflow
+    # option labels, entity synonyms, slot names and intent samples
+    # (shared.bot_config._derived_stt_keyterms). The yes/no words are opt-in:
+    # biasing toward them produced false "haan"/"yes" finals on replayed calls.
+    "keyterms_auto": {
+        "type": "boolean", "default": True, "advanced": True,
+        "label": "Automatic key terms",
+        "help": "With no key terms entered, bias recognition toward the bot's own "
+                "vocabulary (workflow options, synonyms, slot names, intent samples).",
+    },
+    "keyterms_auto_yes_no": {
+        "type": "boolean", "default": False, "advanced": True,
+        "label": "Include yes/no words in automatic key terms",
+        "help": "Off by default: biasing toward 'haan'/'yes' turned hums and noise "
+                "into false yes transcripts on replayed calls.",
+    },
+}
+
 _SARVAM_TTS_V3_SCHEMA = {
     "pace": {
         "type": "number", "min": 0.5, "max": 2.0, "default": 1.0, "step": 0.05,
         "label": "Pace", "help": "Speech speed multiplier (bulbul:v3 range 0.5–2.0).",
+    },
+    # Sarvam's API reference calls loudness v2-only; measured 2026-10-26, v3
+    # (and v4-flash) apply it, REST and WebSocket alike, and reject anything
+    # outside 0.1–2.5 with 400. Never sent at the 1.0 default
+    # (shared.providers.tts.delivery). Placed right after pace.
+    "loudness": {
+        "type": "number", "min": 0.1, "max": 2.5, "default": 1.0, "step": 0.1,
+        "label": "Loudness", "help": "Volume multiplier (bulbul:v3 range 0.1–2.5).",
     },
     "temperature": {
         "type": "number", "min": 0.01, "max": 1.0, "default": 0.6, "step": 0.01,
         "label": "Temperature",
         "help": "Synthesis randomness — lower is more deterministic (bulbul:v3 only).",
     },
+    # Documented Sarvam WebSocket streaming bounds (2026-08): 30–200, default 50.
     "min_buffer_size": {
-        "type": "integer", "min": 10, "max": 500, "default": 40,
+        "type": "integer", "min": 30, "max": 200, "default": 50,
         "label": "Min buffer size",
-        "help": "Characters buffered before audio generation starts. 30–40 recommended for realtime.",
+        "help": "Minimum characters buffered before Sarvam starts synthesis. "
+                "Lower values reduce initial buffering but may reduce sentence "
+                "context. Sarvam accepts 30–200 (WebSocket streaming only).",
     },
     "max_chunk_length": {
         "type": "integer", "min": 50, "max": 500, "default": 150,
         "label": "Max chunk length",
         "help": "Maximum characters per synthesis chunk. 120–150 recommended for realtime.",
     },
+    # Rendered as a dictionary selector (widget) in its own Pronunciation
+    # section — tenants pick a named dictionary; the Sarvam dict_id stays
+    # internal. bulbul:v3 only.
     "dict_id": {
         "type": "string", "default": None, "optional": True, "max_length": 100,
-        "label": "Pronunciation dictionary ID", "advanced": True,
-        "help": "Optional Sarvam pronunciation dictionary applied during synthesis.",
+        "label": "Pronunciation dictionary",
+        "widget": "dictionary", "section": "pronunciation",
+        "help": "Fixes how specific words (brands, acronyms, names) are spoken. "
+                "Supported by bulbul:v3 only.",
     },
     "send_completion_event": {
         "type": "boolean", "default": True, "label": "Completion event", "advanced": True,
@@ -116,7 +272,8 @@ _SARVAM_TTS_V3_SCHEMA = {
     # the UI can say so without offering a dead toggle.
     "enable_preprocessing": {
         "type": "boolean", "default": True, "fixed": True, "label": "Preprocessing",
-        "help": "Text normalization before synthesis. Always enabled for bulbul:v3.",
+        "help": "Text normalization (numbers, dates, currencies, mixed-language "
+                "text) before synthesis. Always enabled for bulbul:v3.",
     },
 }
 
@@ -131,27 +288,84 @@ _SARVAM_TTS_V2_SCHEMA = {
     },
     "loudness": {
         "type": "number", "min": 0.3, "max": 3.0, "default": 1.0, "step": 0.1,
-        "label": "Loudness", "help": "Volume multiplier (bulbul:v2 only).",
+        "label": "Loudness", "help": "Volume multiplier (bulbul:v2 range 0.3–3.0).",
     },
     "enable_preprocessing": {
         "type": "boolean", "default": False, "label": "Preprocessing",
-        "help": "Enable text normalization before synthesis.",
+        "help": "Normalizes numbers, dates, currencies and mixed-language text "
+                "before synthesis.",
     },
     "min_buffer_size": _SARVAM_TTS_V3_SCHEMA["min_buffer_size"],
     "max_chunk_length": _SARVAM_TTS_V3_SCHEMA["max_chunk_length"],
     "send_completion_event": _SARVAM_TTS_V3_SCHEMA["send_completion_event"],
 }
 
-_ELEVENLABS_TTS_SCHEMA = {
+# Eleven v3 (alpha) exposes only the documented v3 voice settings: discrete
+# stability presets plus similarity/style. speed, use_speaker_boost and the
+# realtime WebSocket knobs (auto_mode, chunk_length_schedule, …) are not
+# supported by the model and are never offered nor sent.
+_ELEVENLABS_V3_TTS_SCHEMA = {
     "stability": {
-        "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
+        "type": "enum", "values": [0.0, 0.5, 1.0], "default": 0.5,
+        # Keys use the JS String() form of the parsed numbers (0.0 → "0").
+        "labels": {"0": "Creative", "0.5": "Natural", "1": "Robust"},
         "label": "Stability",
-        "help": "Lower values give more expressive, varied delivery; higher values are steadier.",
+        "help": "Eleven v3 accepts three presets: Creative (expressive, may "
+                "hallucinate), Natural (balanced) or Robust (very stable).",
     },
     "similarity_boost": {
-        "type": "number", "min": 0.0, "max": 1.0, "default": 1.0, "step": 0.05,
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.75, "step": 0.05,
         "label": "Similarity boost",
-        "help": "How closely synthesis adheres to the original voice timbre.",
+        "help": "How closely synthesis adheres to the original voice timbre. "
+                "ElevenLabs' default is 0.75; values near 1.0 can reproduce "
+                "artifacts from the voice's source recording.",
+    },
+    "style": {
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
+        "label": "Style", "advanced": True,
+        "help": "Style exaggeration. 0 is fastest and most stable.",
+    },
+}
+
+# Eleven v3 CONVERSATIONAL over the Text-to-Dialogue WebSocket accepts
+# ``stability`` and nothing else (ttd-multi-websocket docs; probed 2026-09-22:
+# all three presets accepted, no other voice setting is read). Advertising
+# similarity_boost/style here would let an operator configure fields the
+# adapter must then silently drop.
+_ELEVENLABS_V3_DIALOGUE_SCHEMA = {
+    "stability": dict(_ELEVENLABS_V3_TTS_SCHEMA["stability"]),
+    # ElevenLabs' OWN breathing, produced inside the generated speech via an
+    # audio tag. Independent of the Natural Conversation "Breathing" control,
+    # which owns our pre-rendered breath clips and is unaffected by this.
+    # Default OFF: it changes how every reply on this model begins.
+    "native_breathing": {
+        "type": "boolean", "default": False, "advanced": True,
+        "label": "ElevenLabs native breathing",
+        "help": "Let ElevenLabs generate an occasional soft breath inside its "
+                "own speech (Eleven v3 audio tag). Independent of the "
+                "Breathing setting, which controls EchoSphere's own breath "
+                "clips. Off by default.",
+    },
+}
+
+# Defaults follow the ElevenLabs API defaults (stability 0.5, similarity 0.75,
+# style 0, speaker boost on, speed 1.0). Stability 0 with similarity 1.0 — the
+# platform's earlier seed — produces erratic, wobbly delivery and carries source
+# artifacts, which is how "ElevenLabs sounds wrong" reached the Voice tab.
+_ELEVENLABS_TTS_SCHEMA = {
+    "stability": {
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.05,
+        "label": "Stability",
+        "help": "Lower values give more expressive, varied delivery; higher values "
+                "are steadier. ElevenLabs' default is 0.5; below ~0.3 delivery "
+                "becomes erratic, especially in Hindi and other non-English text.",
+    },
+    "similarity_boost": {
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.75, "step": 0.05,
+        "label": "Similarity boost",
+        "help": "How closely synthesis adheres to the original voice timbre. "
+                "ElevenLabs' default is 0.75; values near 1.0 can reproduce "
+                "artifacts from the voice's source recording.",
     },
     "style": {
         "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
@@ -218,16 +432,50 @@ _OPENAI_LLM_SCHEMA = {
     },
 }
 
+# bulbul:v4-flash keeps the v3 request contract (docs.sarvam.ai v4-flash best
+# practice guide, 2026-10-23): same pace range, dict_id, preprocessing and
+# streaming buffer knobs. Sarvam's guide calls temperature "silently ignored"
+# while its API reference still lists it; it stays in the schema so v3
+# settings carry over unchanged when a bot moves model.
+_SARVAM_TTS_V4_FLASH_SCHEMA = {
+    key: dict(spec) for key, spec in _SARVAM_TTS_V3_SCHEMA.items()
+}
+_SARVAM_TTS_V4_FLASH_SCHEMA["pace"]["help"] = "Speech speed multiplier (range 0.5–2.0)."
+# Same 0.1–2.5 loudness as v3: the Sarvam playground's range for v4-flash.
+_SARVAM_TTS_V4_FLASH_SCHEMA["loudness"]["help"] = (
+    "Volume multiplier (bulbul:v4-flash range 0.1–2.5)."
+)
+_SARVAM_TTS_V4_FLASH_SCHEMA["temperature"]["help"] = (
+    "Synthesis randomness. Sarvam documents bulbul:v4-flash as ignoring it; "
+    "kept so bulbul:v3 settings carry over."
+)
+_SARVAM_TTS_V4_FLASH_SCHEMA["dict_id"]["help"] = (
+    "Fixes how specific words (brands, acronyms, names) are spoken."
+)
+_SARVAM_TTS_V4_FLASH_SCHEMA["enable_preprocessing"]["help"] = (
+    "Text normalization (numbers, dates, currencies, mixed-language text) "
+    "before synthesis. Always enabled."
+)
+
 # Sarvam wire language codes (bulbul:v3 supported set — note od-IN for Odia).
 _SARVAM_TTS_LANGS = [
     "hi-IN", "en-IN", "bn-IN", "mr-IN", "gu-IN", "ta-IN",
     "te-IN", "kn-IN", "ml-IN", "pa-IN", "od-IN",
+]
+# bulbul:v4-flash: ml-IN / od-IN are valid wire codes but the persona roster
+# has no ml/od speakers yet (Sarvam: keep those languages on v3).
+_SARVAM_TTS_V4_FLASH_LANGS = [
+    code for code in _SARVAM_TTS_LANGS if code not in ("ml-IN", "od-IN")
 ]
 _SAARIKA_LANGS = ["unknown"] + _SARVAM_TTS_LANGS
 _SAARAS_V3_LANGS = _SAARIKA_LANGS + [
     "as-IN", "ur-IN", "ne-IN", "kok-IN", "ks-IN", "sd-IN",
     "sa-IN", "sat-IN", "mni-IN", "brx-IN", "mai-IN", "doi-IN",
 ]
+# saaras:v4 accepts the same streaming ``language_code`` set as v3 (sarvamai
+# 0.1.35 literal, verified 2026-10-01); its added "global English" coverage
+# arrives through the same en-IN/unknown codes, not a new locale.
+_SAARAS_V4_LANGS = list(_SAARAS_V3_LANGS)
 
 # ElevenLabs Flash/Turbo v2.5 languages (bare ISO 639-1, 32 languages).
 _ELEVEN_V2_5_LANGS = [
@@ -235,6 +483,208 @@ _ELEVEN_V2_5_LANGS = [
     "nl", "tr", "fil", "pl", "sv", "bg", "ro", "ar", "cs", "el", "fi", "hr",
     "ms", "sk", "da", "uk", "ru", "hu", "no", "vi",
 ]
+
+# Official Eleven v3 supported languages as base ISO codes (639-1 where one
+# exists; "fil"/"ceb" have no two-letter form) — verified against
+# elevenlabs.io/docs models page 2026-07-30. Note: no Odia. This is the
+# PROVIDER capability matrix only; what tenants can actually pick is derived
+# below by intersecting it with the platform language catalog
+# (supported_languages), which stays the source of truth.
+ELEVEN_V3_ISO_CODES = frozenset({
+    "af", "ar", "hy", "as", "az", "be", "bn", "bs", "bg", "ca", "ceb", "ny",
+    "hr", "cs", "da", "nl", "en", "et", "fil", "fi", "fr", "gl", "ka", "de",
+    "el", "gu", "ha", "he", "hi", "hu", "is", "id", "ga", "it", "ja", "jv",
+    "kn", "kk", "ky", "ko", "lv", "ln", "lt", "lb", "mk", "ms", "ml", "zh",
+    "cmn", "mr", "ne", "no", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sr",
+    "sd", "sk", "sl", "so", "es", "sw", "sv", "ta", "te", "th", "tr", "uk",
+    "ur", "vi", "cy",
+})
+
+
+def eleven_v3_platform_locales(languages: Iterable[tuple[str, str | None]]) -> list[str]:
+    """Platform locale codes Eleven v3 may offer, from (code, iso_code) pairs.
+
+    A locale qualifies when its canonical base code (``iso_code``, falling
+    back to the code's own prefix) is officially supported by the model.
+    Locales without a catalog record never qualify — the languages table is
+    the source of truth. Order-preserving, duplicate-free.
+    """
+    locales: list[str] = []
+    for code, iso in languages:
+        code = (code or "").strip()
+        if not code or code in locales:
+            continue
+        base = (iso or code.split("-")[0]).strip().lower()
+        if base in ELEVEN_V3_ISO_CODES:
+            locales.append(code)
+    return locales
+
+
+def _eleven_v3_locales_from_db(db: Session) -> list[str]:
+    """Derive the offered v3 locales from the live supported_languages table.
+
+    Includes disabled rows on purpose: enable/disable is an availability
+    toggle applied at read time (model_platform_languages), not a removal —
+    re-enabling a language must not require touching the model row.
+    """
+    rows = db.execute(
+        select(SupportedLanguage.code, SupportedLanguage.iso_code)
+        .order_by(SupportedLanguage.sort_order, SupportedLanguage.code)
+    ).all()
+    return eleven_v3_platform_locales((code, iso) for code, iso in rows)
+
+
+def _base_seed_language_pairs() -> list[tuple[str, str | None]]:
+    # Lazy import: base_seed imports this module inside run_base_seed, so a
+    # module-level import back would be circular during that call path.
+    from backend.seeds.base_seed import LANGUAGES
+
+    return [(code, iso) for code, _, _, iso, _, _, _ in LANGUAGES]
+
+
+# Legacy shape of the eleven_v3 row before it became catalog-derived (bare ISO
+# codes). Rows still exactly matching it are provably unedited and safe to
+# convert; anything else is operator-managed and left alone.
+_LEGACY_ELEVEN_V3_BARE_CODES = [
+    "af", "ar", "hy", "as", "az", "be", "bn", "bs", "bg", "ca", "ceb", "ny",
+    "hr", "cs", "da", "nl", "en", "et", "fil", "fi", "fr", "gl", "ka", "de",
+    "el", "gu", "ha", "he", "hi", "hu", "is", "id", "ga", "it", "ja", "jv",
+    "kn", "kk", "ky", "ko", "lv", "ln", "lt", "lb", "mk", "ms", "ml", "zh",
+    "mr", "ne", "no", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sr", "sd",
+    "sk", "sl", "so", "es", "sw", "sv", "ta", "te", "th", "tr", "uk", "ur",
+    "vi", "cy",
+]
+
+# Catalog-derived platform locales for fresh inserts (seed data mirrors the
+# freshly seeded table; live databases are re-derived from the table itself
+# in seed_provider_catalog). Includes en-US and en-IN as separate records.
+_ELEVEN_V3_LANGS = eleven_v3_platform_locales(_base_seed_language_pairs())
+
+# Why the whole GPT-5 generation is catalogued inactive: the OpenAI LLM
+# provider calls chat.completions with `max_tokens` and temperature 0.3, both
+# of which that generation rejects (it takes `max_completion_tokens` and the
+# default temperature only). The rows exist so usage of these models can be
+# priced and validated; activating one before the provider sends the right
+# parameters would hand operators a model that fails on every turn.
+_GPT5_NOTE = (
+    "{summary}. Catalogued for pricing but inactive: the OpenAI LLM provider "
+    "still sends `max_tokens`/temperature, which the GPT-5 family rejects. "
+    "Activate only after the provider is updated."
+)
+
+# Concise operator-facing model summaries. Applied on insert and backfilled
+# onto existing rows only while their description is empty (operator text is
+# never overwritten).
+MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
+    ("sarvam", "tts", "bulbul:v4-flash"): (
+        "Sarvam's low-latency Bulbul generation: same streaming contract as "
+        "Bulbul v3 with persona voices (a v3 voice maps to its own persona). "
+        "Nine languages — Malayalam and Odia stay on Bulbul v3."
+    ),
+    ("elevenlabs", "tts", "eleven_v3"): (
+        "Most expressive ElevenLabs model (alpha): emotional range, audio tags, "
+        "70+ languages. High latency, 5,000-character limit, no realtime "
+        "streaming — synthesized per reply over REST; previews and non-realtime "
+        "use recommended."
+    ),
+    ("elevenlabs", "tts", "eleven_v3_conversational"): (
+        "Expressive Eleven v3 tuned for realtime conversation (~280 ms "
+        "claimed; 250-625 ms measured to first audio). Streams over the "
+        "Text-to-Dialogue WebSocket, so it works for live calls, per-language "
+        "overrides and fallback. Speaks all nine platform languages, unlike "
+        "Flash v2.5. Stability is the only voice setting; no speed control."
+    ),
+    ("elevenlabs", "tts", "eleven_flash_v2_5"): (
+        "Ultra-low-latency model (~75 ms) for realtime conversation over the "
+        "streaming WebSocket. 32 languages, 40,000-character limit. "
+        "Recommended for live calls."
+    ),
+    ("elevenlabs", "tts", "eleven_turbo_v2_5"): (
+        "Deprecated quality/latency-balance model (32 languages). Superseded "
+        "by Eleven Flash v2.5."
+    ),
+    ("openai", "llm", "gpt-6-luna"): (
+        "Default Goal Engine decision model, run on OpenAI's fast tier with "
+        "reasoning effort none (2026-10-23 bench: routing 69 % vs 54 % for "
+        "gpt-4o-mini, harmful mislabels 5 vs 36, same ~1.3 s latency). "
+        "OpenAI's replacement for gpt-4o-mini / gpt-4.1 / gpt-4.1-mini "
+        "(shutdown 2027-01-14). As a reply model it runs at its default "
+        "reasoning effort — measure latency before choosing it for replies."
+    ),
+    ("openai", "llm", "gpt-4.1"): (
+        "Full GPT-4.1: strongest of the 4.1 family for instruction following "
+        "and long context. Higher cost/latency than 4.1 mini — prefer it for "
+        "complex reasoning turns rather than every realtime reply."
+    ),
+    ("openai", "llm", "gpt-4.1-nano"): (
+        "Cheapest GPT-4.1 variant and the lowest-latency OpenAI chat model. "
+        "Suited to classification, routing and short scripted replies."
+    ),
+    ("openai", "llm", "gpt-5.6-sol"): _GPT5_NOTE.format(
+        summary="Flagship GPT-5.6 model: highest quality of the generation, "
+                "priced accordingly"),
+    ("openai", "llm", "gpt-5.6-terra"): _GPT5_NOTE.format(
+        summary="Mid-tier GPT-5.6 model balancing quality and cost"),
+    ("openai", "llm", "gpt-5.6-luna"): _GPT5_NOTE.format(
+        summary="Smallest, cheapest GPT-5.6 model for high-volume turns"),
+    ("openai", "llm", "gpt-5.1"): _GPT5_NOTE.format(
+        summary="GPT-5.1 general-purpose model"),
+    ("openai", "llm", "gpt-5"): _GPT5_NOTE.format(
+        summary="GPT-5 general-purpose model"),
+    ("openai", "llm", "gpt-5-mini"): _GPT5_NOTE.format(
+        summary="Cost-reduced GPT-5 variant"),
+    ("openai", "llm", "gpt-5-nano"): _GPT5_NOTE.format(
+        summary="Smallest and cheapest GPT-5 variant"),
+    ("openai", "stt", "gpt-transcribe"): (
+        "Current OpenAI batch transcription model and the cheapest of the "
+        "family. Inactive under platform governance: STT is Sarvam-only."
+    ),
+    ("openai", "stt", "gpt-4o-transcribe"): (
+        "GPT-4o transcription (batch/REST). Inactive under platform "
+        "governance: STT is Sarvam-only."
+    ),
+    ("openai", "stt", "gpt-4o-mini-transcribe"): (
+        "Cheaper GPT-4o mini transcription (batch/REST). Inactive under "
+        "platform governance: STT is Sarvam-only."
+    ),
+    ("sarvam", "stt", "saaras:v3"): (
+        "Sarvam Saaras v3 realtime STT: 22 Indic languages + Indian English, "
+        "auto-detect, output modes (transcribe/verbatim/translit/codemix/"
+        "translate). Selectable per bot."
+    ),
+    ("sarvam", "stt", "saaras:v4"): (
+        "Sarvam Saaras v4 realtime STT: v3 coverage plus global English, "
+        "better noise/accent robustness, and key-term biasing (up to 50 "
+        "names/brands/terms; the bot's own vocabulary automatically when none "
+        "are entered). Platform default."
+    ),
+    ("deepgram", "tts", "aura-2"): (
+        "Deepgram Aura-2 low-latency neural voices over /v1/speak (REST and "
+        "realtime WebSocket). Speaks English, Spanish, German, Dutch, French, "
+        "Italian and Japanese only \u2014 NO Indian language. Its English "
+        "voices carry American, British, Australian, Irish and Filipino "
+        "accents; there is no Indian-English voice."
+    ),
+    ("deepgram", "tts", "aura"): (
+        "Deepgram Aura (v1) voices \u2014 English only, cheaper than Aura-2 and "
+        "superseded by it. Same /v1/speak endpoint and streaming support."
+    ),
+    ("deepgram", "stt", "flux-general-multi"): (
+        "Deepgram Flux multilingual conversational STT (/v2/listen): "
+        "model-integrated turn detection (EndOfTurn / EagerEndOfTurn / "
+        "TurnResumed), per-turn language detection. Recommended for "
+        "Hindi/Hinglish/English voice agents."
+    ),
+    ("deepgram", "stt", "flux-general-en"): (
+        "Deepgram Flux English-only conversational STT (/v2/listen) with "
+        "model-integrated turn detection. Use flux-general-multi for "
+        "Hindi/Hinglish callers."
+    ),
+    ("deepgram", "stt", "nova-3"): (
+        "Legacy Deepgram streaming transcription (v1). Superseded for voice "
+        "agents by Flux; inactive."
+    ),
+}
 
 # (provider, capability, code, display, languages, codecs, rates, streaming,
 #  schema, is_default, status, sort)
@@ -245,34 +695,94 @@ PROVIDER_MODELS = [
      _SARVAM_STT_COMMON, False, "active", 1),
     ("sarvam", "stt", "saaras:v3", "Saaras v3 (streaming)",
      _SAARAS_V3_LANGS, ["linear16"], [8000, 16000], True,
-     _SAARAS_V3_SCHEMA, True, "active", 0),
+     _SAARAS_V3_SCHEMA, False, "active", 1),
+    # saaras:v4 is the platform default since 2026-10-23 (Phase 3): with the
+    # automatic content key terms (shared.bot_config._derived_stt_keyterms) it
+    # beat v3 on replayed live calls; v3 stays selectable per bot.
+    ("sarvam", "stt", "saaras:v4", "Saaras v4 (streaming)",
+     _SAARAS_V4_LANGS, ["linear16"], [8000, 16000], True,
+     _SAARAS_V4_SCHEMA, True, "active", 0),
     ("mock", "stt", "mock", "Mock STT", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # ── TTS ──────────────────────────────────────────────────────────────
+    # bulbul:v3 stays the default: nothing changes for existing or new bots
+    # unless an operator picks bulbul:v4-flash (persona voices below).
     ("sarvam", "tts", "bulbul:v3", "Bulbul v3 (streaming)",
      _SARVAM_TTS_LANGS, ["linear16", "mulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _SARVAM_TTS_V3_SCHEMA, True, "active", 0),
+    # Same contract as v3; speakers are personas (shared.providers.tts.
+    # sarvam_voices). Selectable, never the default.
+    ("sarvam", "tts", "bulbul:v4-flash", "Bulbul v4 Flash (streaming)",
+     _SARVAM_TTS_V4_FLASH_LANGS, ["linear16"], [8000, 16000, 22050, 24000], True,
+     _SARVAM_TTS_V4_FLASH_SCHEMA, False, "active", 1),
     ("sarvam", "tts", "bulbul:v2", "Bulbul v2 (legacy)",
      _SARVAM_TTS_LANGS, ["linear16", "mulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _SARVAM_TTS_V2_SCHEMA, False, "inactive", 1),
     ("elevenlabs", "tts", "eleven_flash_v2_5", "Eleven Flash v2.5",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _ELEVENLABS_TTS_SCHEMA, True, "active", 0),
+    # Eleven v3 is not supported on the ElevenLabs realtime WebSocket
+    # (streaming=False) — live calls synthesize it segment-by-segment over
+    # REST; fallback/per-language engines require a streaming model instead.
+    ("elevenlabs", "tts", "eleven_v3", "Eleven v3 (expressive)",
+     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], False,
+     _ELEVENLABS_V3_TTS_SCHEMA, False, "active", 1),
+    # Eleven v3 Conversational streams in realtime, but over the
+    # Text-to-Dialogue WebSocket rather than the text-to-speech one
+    # (shared/providers/tts/elevenlabs_v3_ws.py). streaming=True, so it is
+    # selectable as a default engine, a per-language override AND a fallback.
+    # Formats all probed on that endpoint (2026-09-22): ulaw_8000, pcm_8000,
+    # pcm_16000, pcm_22050 and pcm_24000 every one returned audio, so the row
+    # matches the rates the streaming router is willing to request.
+    ("elevenlabs", "tts", "eleven_v3_conversational", "Eleven v3 Conversational",
+     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
+     _ELEVENLABS_V3_DIALOGUE_SCHEMA, False, "active", 2),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "Eleven Turbo v2.5 (deprecated)",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
-     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 1),
+     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 3),
+    # Deepgram Aura / Aura-2 \u2014 the model code is the Aura GENERATION; the
+    # individual voice (aura-2-thalia-en) is the wire ``model`` parameter and
+    # lives on the voice row. ``languages`` is Deepgram's own wire form: bare
+    # language tags, which is what a voice id's suffix carries. Both
+    # generations stream over the /v1/speak WebSocket.
+    ("deepgram", "tts", "aura-2", "Aura-2 (streaming)",
+     ["en", "es", "de", "nl", "fr", "it", "ja"], ["linear16", "mulaw", "alaw"],
+     [8000, 16000, 24000, 32000, 48000], True,
+     _DEEPGRAM_TTS_SCHEMA, True, "active", 0),
+    ("deepgram", "tts", "aura", "Aura v1 (English, legacy)",
+     ["en"], ["linear16", "mulaw", "alaw"],
+     [8000, 16000, 24000, 32000, 48000], True,
+     _DEEPGRAM_TTS_SCHEMA, False, "active", 1),
     ("mock", "tts", "mock", "Mock TTS", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # OpenAI Whisper — REST/segmented (non-streaming), language auto-detect.
     # Inactive under platform governance: STT is Sarvam-only.
     ("openai", "stt", "whisper-1", "Whisper (whisper-1)",
      [], ["linear16"], [8000, 16000, 24000], False, {}, True, "inactive", 0),
-    # Deepgram — streaming STT; inactive under the same governance. Catalogued
-    # so provider-model pricing can be configured/validated ahead of rollout.
+    # Current OpenAI transcription models — same governance as whisper-1
+    # (STT is Sarvam-only); catalogued so their usage can be priced.
+    ("openai", "stt", "gpt-transcribe", "GPT Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 1),
+    ("openai", "stt", "gpt-4o-transcribe", "GPT-4o Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 2),
+    ("openai", "stt", "gpt-4o-mini-transcribe", "GPT-4o mini Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 3),
+    # Deepgram Flux — conversational realtime STT (/v2/listen) with
+    # model-integrated turn detection; the platform's second active STT
+    # vendor. flux-general-multi is the default for Hindi/Hinglish/English
+    # calling; flux-general-en is English-only.
+    ("deepgram", "stt", "flux-general-multi", "Flux (multilingual)",
+     [], ["linear16"], [8000, 16000, 24000, 44100, 48000], True,
+     _DEEPGRAM_FLUX_SCHEMA, True, "active", 0),
+    ("deepgram", "stt", "flux-general-en", "Flux (English)",
+     ["en"], ["linear16"], [8000, 16000, 24000, 44100, 48000], True,
+     _DEEPGRAM_FLUX_SCHEMA, False, "active", 1),
+    # Legacy Deepgram batch/streaming models — inactive; catalogued so their
+    # pricing can be configured/validated.
     ("deepgram", "stt", "nova-3", "Nova-3 (streaming)",
-     [], ["linear16"], [8000, 16000, 24000], True, {}, True, "inactive", 0),
+     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 2),
     ("deepgram", "stt", "nova-2", "Nova-2 (legacy)",
-     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 1),
+     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 3),
     # OpenAI TTS — inactive under platform governance: TTS is Sarvam/ElevenLabs.
     ("openai", "tts", "tts-1", "TTS-1", [], ["linear16"], [24000], False,
      {}, True, "inactive", 0),
@@ -285,6 +795,30 @@ PROVIDER_MODELS = [
      _OPENAI_LLM_SCHEMA, False, "active", 1),
     ("openai", "llm", "gpt-4.1-mini", "GPT-4.1 mini", [], None, None, True,
      _OPENAI_LLM_SCHEMA, False, "active", 2),
+    ("openai", "llm", "gpt-4.1", "GPT-4.1", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 3),
+    ("openai", "llm", "gpt-4.1-nano", "GPT-4.1 nano", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 4),
+    # Platform default Goal Engine decision model (shared.config
+    # orchestration_model). The provider sends max_completion_tokens and
+    # reasoning_effort "none" (+ temperature) for it.
+    ("openai", "llm", "gpt-6-luna", "GPT-6 Luna", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 5),
+    # GPT-5 generation — inactive by design, see _GPT5_NOTE above.
+    ("openai", "llm", "gpt-5.6-sol", "GPT-5.6 Sol", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 5),
+    ("openai", "llm", "gpt-5.6-terra", "GPT-5.6 Terra", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 6),
+    ("openai", "llm", "gpt-5.6-luna", "GPT-5.6 Luna", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 7),
+    ("openai", "llm", "gpt-5.1", "GPT-5.1", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 8),
+    ("openai", "llm", "gpt-5", "GPT-5", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 9),
+    ("openai", "llm", "gpt-5-mini", "GPT-5 mini", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 10),
+    ("openai", "llm", "gpt-5-nano", "GPT-5 nano", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 11),
     ("mock", "llm", "mock", "Mock LLM", [], None, None, True, {}, True, "active", 99),
     # ── Embedding ────────────────────────────────────────────────────────
     ("openai", "embedding", "text-embedding-3-small", "text-embedding-3-small (1536d)",
@@ -301,22 +835,82 @@ _SARVAM_VOICE_LOCALES = [
     "te-IN", "kn-IN", "ml-IN", "pa-IN", "or-IN",
 ]
 
+# ElevenLabs API defaults (see _ELEVENLABS_TTS_SCHEMA).
 _ELEVEN_DEFAULT_VOICE_SETTINGS = {
-    "stability": 0.0, "similarity_boost": 1.0, "style": 0.0,
+    "stability": 0.5, "similarity_boost": 0.75, "style": 0.0,
     "use_speaker_boost": True, "speed": 1.0,
 }
 
 # (id, name, gender, provider_voice_id)
+# Voices synthesized successfully on the Text-to-Dialogue endpoint (probed
+# 2026-09-22, Hindi and Malayalam, every one returned audio). Only these
+# advertise eleven_v3_conversational, so the dropdown never offers an
+# untested voice/model pair.
+ELEVEN_V3_DIALOGUE_VERIFIED_VOICES = (
+    "vp-el-monika", "vp-el-raju", "vp-el-niraj", "vp-el-leo", "vp-el-viraj",
+    "vp-el-shardul", "vp-el-anvi", "vp-el-shivank",
+)
+
+# (id, name, gender, provider_voice_id, accent)
+#
+# gender and accent are taken from ElevenLabs' own voice labels
+# (GET /v1/voices, verified 2026-09-22) — never inferred from the name. Two
+# corrections came out of that check:
+#   * Shivank is MALE (was seeded female). Gender is not cosmetic: it selects
+#     the synthesized breath/filler clips, so a wrong value makes the bot
+#     breathe in the wrong voice.
+#   * Leo is an AMERICAN English narrator, not an Indian voice. The seed used
+#     to hardcode accent="Indian" for every ElevenLabs voice.
+#
+# Accent describes how the voice SOUNDS; it is not a claim about which
+# languages the selected model can speak (that lives on the model row).
 ELEVENLABS_VOICES = [
-    ("vp-el-monika", "Monika", "female", "f1abxvIEijusskcPWE5x"),
-    ("vp-el-raju", "Raju", "male", "WQAp2s6GVJHv6IkTFqO0"),
-    ("vp-el-niraj", "Niraj", "male", "yD3f554gXhA5NxImkyqU"),
-    ("vp-el-leo", "Leo", "male", "TLC61WvtioR7PrhxZ1RH"),
-    ("vp-el-viraj", "Viraj", "male", "3AMU7jXQuQa3oRvRqUmb"),
-    ("vp-el-shardul", "Shardul", "male", "6EphsklDopDQ6eRkwNHT"),
-    ("vp-el-anvi", "Anvi", "female", "VG7gYikNQ71LJ52W9fAD"),
-    ("vp-el-shivank", "Shivank", "female", "Vf2PzaME4dMzjUBlO0w0"),
+    ("vp-el-monika", "Monika", "female", "f1abxvIEijusskcPWE5x", "Indian"),
+    ("vp-el-raju", "Raju", "male", "WQAp2s6GVJHv6IkTFqO0", "Indian"),
+    ("vp-el-niraj", "Niraj", "male", "yD3f554gXhA5NxImkyqU", "Indian"),
+    ("vp-el-leo", "Leo", "male", "TLC61WvtioR7PrhxZ1RH", "American"),
+    ("vp-el-viraj", "Viraj", "male", "3AMU7jXQuQa3oRvRqUmb", "Indian"),
+    ("vp-el-shardul", "Shardul", "male", "6EphsklDopDQ6eRkwNHT", "Indian"),
+    ("vp-el-anvi", "Anvi", "female", "VG7gYikNQ71LJ52W9fAD", "Indian"),
+    ("vp-el-shivank", "Shivank", "male", "Vf2PzaME4dMzjUBlO0w0", "Indian"),
 ]
+
+# Deepgram Aura voices. The wire ``model`` parameter IS the voice id, and its
+# suffix is the language it speaks, so a voice row is scoped to the platform
+# English locales only \u2014 Deepgram has no Indian-language voice at all
+# (developers.deepgram.com/docs/tts-models, verified 2026-09-21).
+#
+# The accent column is real: these are American, British and Australian
+# voices. None of them is Indian English, which is why they carry accent
+# labels instead of the "Indian" label the Sarvam/ElevenLabs rows use.
+#
+# (id, name, gender, wire voice id, accent)
+DEEPGRAM_AURA2_VOICES = [
+    ("vp-dg-thalia", "Thalia", "female", "aura-2-thalia-en", "American"),
+    ("vp-dg-andromeda", "Andromeda", "female", "aura-2-andromeda-en", "American"),
+    ("vp-dg-asteria", "Asteria", "female", "aura-2-asteria-en", "American"),
+    ("vp-dg-luna", "Luna", "female", "aura-2-luna-en", "American"),
+    ("vp-dg-pandora", "Pandora", "female", "aura-2-pandora-en", "British"),
+    ("vp-dg-theia", "Theia", "female", "aura-2-theia-en", "Australian"),
+    ("vp-dg-apollo", "Apollo", "male", "aura-2-apollo-en", "American"),
+    ("vp-dg-arcas", "Arcas", "male", "aura-2-arcas-en", "American"),
+    ("vp-dg-zeus", "Zeus", "male", "aura-2-zeus-en", "American"),
+    ("vp-dg-draco", "Draco", "male", "aura-2-draco-en", "British"),
+    ("vp-dg-hyperion", "Hyperion", "male", "aura-2-hyperion-en", "Australian"),
+]
+
+DEEPGRAM_AURA1_VOICES = [
+    ("vp-dg-v1-asteria", "Asteria (v1)", "female", "aura-asteria-en", "American"),
+    ("vp-dg-v1-luna", "Luna (v1)", "female", "aura-luna-en", "American"),
+    ("vp-dg-v1-stella", "Stella (v1)", "female", "aura-stella-en", "American"),
+    ("vp-dg-v1-orion", "Orion (v1)", "male", "aura-orion-en", "American"),
+    ("vp-dg-v1-arcas", "Arcas (v1)", "male", "aura-arcas-en", "American"),
+    ("vp-dg-v1-angus", "Angus (v1)", "male", "aura-angus-en", "Irish"),
+]
+
+#: Platform English locales a Deepgram voice may be selected for. Deliberately
+#: NOT the Indic list: no Aura voice speaks any Indian language.
+_DEEPGRAM_VOICE_LOCALES = ["en-IN", "en-US", "en-GB"]
 
 # Sarvam bulbul:v3 speakers — wire codes are lowercase; display names Title case.
 # Gender labels are catalog data (editable in master data), best-effort here.
@@ -338,13 +932,92 @@ SARVAM_SPEAKERS = [
 
 _SAMPLE_TEXT = "Hello! I can help you book your next appointment in just a minute."
 
+# bulbul:v4-flash persona voices: the Hindi and English personas of the reviewed
+# v3 -> v4 mapping (shared.providers.tts.sarvam_voices.v4_catalog_personas), as
+# their own catalog voices for that model only. Offered for every language
+# v4-flash speaks; Malayalam and Odia have no personas and are never listed.
+_SARVAM_V4_VOICE_LOCALES = [
+    code for code in _SARVAM_VOICE_LOCALES if code not in ("ml-IN", "or-IN")
+]
+_PERSONA_TAG_LOCALE = {"hi": "hi-IN", "enhi": "hi-IN", "en": "en-IN"}
 
-def seed_provider_catalog(db: Session) -> dict:
-    """Idempotent catalog seed; never overwrites operator edits."""
+
+def sarvam_v4_persona_voices() -> list[dict]:
+    """Catalog rows (id, name, gender, locale, style, wire id) of the
+    bulbul:v4-flash persona voices. Shared with the catalog migration
+    c2e4a6b8d0f1, which inserts the same rows on existing databases."""
+    voices = []
+    for persona in v4_catalog_personas():
+        speaker, tag, style = persona_parts(persona)
+        style_label = style.replace("_", " ").capitalize()
+        voices.append({
+            "id": f"vp-sv4-{persona}",
+            "name": f"{speaker.title()} · {V4_TAG_LABELS[tag]} · {style_label}",
+            "gender": "female" if speaker in _SARVAM_FEMALE else "male",
+            "locale": _PERSONA_TAG_LOCALE[tag],
+            "style": style_label,
+            "provider_voice_id": persona,
+        })
+    return voices
+
+
+def sarvam_v4_roster_voices() -> list[dict]:
+    """Catalog rows of the rest of Sarvam's bulbul:v4-flash roster.
+
+    Every persona the reviewed mapping above does not cover
+    (``sarvam_voices.v4_roster_personas``), offered only for the language(s)
+    of its tag — Sarvam's roster is organised by language. A speaker that
+    also has a bulbul:v3 voice keeps that voice's catalog gender; a new
+    speaker takes the gender Sarvam publishes, else "neutral" (unpublished —
+    an operator sets it after listening). Shared with the catalog migration
+    f5b7d9e1a3c5, which inserts the same rows on existing databases.
+    """
+    voices = []
+    for persona in v4_roster_personas():
+        speaker, tag, style = persona_parts(persona)
+        style_label = style.replace("_", " ").capitalize()
+        if speaker in SARVAM_SPEAKERS:
+            gender = "female" if speaker in _SARVAM_FEMALE else "male"
+        else:
+            gender = V4_DOCUMENTED_GENDERS.get(speaker, "neutral")
+        locales = list(V4_TAG_LOCALES[tag])
+        voices.append({
+            "id": f"vp-sv4-{persona}",
+            "name": f"{speaker.title()} · {V4_TAG_LABELS[tag]} · {style_label}",
+            "gender": gender,
+            "locale": locales[0],
+            "languages": locales,
+            "style": style_label,
+            "provider_voice_id": persona,
+        })
+    return voices
+
+
+def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) -> dict:
+    """Idempotent catalog seed; never overwrites operator edits.
+
+    ``include_dev_providers=False`` (production) leaves out the ``mock``
+    pseudo-provider's model rows entirely instead of relying on governance to
+    deactivate them later.
+    """
     created = {"provider_models": 0, "provider_voices": 0}
 
     for (provider, capability, code, display, langs, codecs, rates, streaming,
          schema, is_default, status, sort) in PROVIDER_MODELS:
+        if not include_dev_providers and provider in _DEV_PSEUDO_PROVIDERS:
+            continue
+        description = MODEL_DESCRIPTIONS.get((provider, capability, code))
+        # Both v3 rows carry the same 74-language coverage, so both derive
+        # their offered locales from the languages table.
+        is_eleven_v3 = (
+            (provider, capability) == ("elevenlabs", "tts")
+            and code in ("eleven_v3", "eleven_v3_conversational")
+        )
+        if is_eleven_v3:
+            # The languages table is the source of truth: derive the offered
+            # locales from it (fresh installs fall back to the seed-derived
+            # constant while the table is still empty).
+            langs = _eleven_v3_locales_from_db(db) or list(_ELEVEN_V3_LANGS)
         exists = db.scalar(
             select(ProviderModel).where(
                 ProviderModel.provider_code == provider,
@@ -353,26 +1026,90 @@ def seed_provider_catalog(db: Session) -> dict:
             )
         )
         if exists is None:
+            # A new row is created as the default only while its capability
+            # has none: on a long-lived database the seed must never add a
+            # SECOND default next to the operator's (683187650 created
+            # bulbul:v4-flash as a second TTS default on startup-seeded DBs).
+            make_default = bool(is_default) and db.scalar(
+                select(ProviderModel.id).where(
+                    ProviderModel.provider_code == provider,
+                    ProviderModel.capability == capability,
+                    ProviderModel.is_default.is_(True),
+                    ProviderModel.is_deleted.is_(False),
+                ).limit(1)
+            ) is None
             db.add(ProviderModel(
                 id=new_id("pm"), provider_code=provider, capability=capability,
-                code=code, display_name=display, languages=langs, codecs=codecs,
+                code=code, display_name=display, description=description,
+                languages=langs, codecs=codecs,
                 sample_rates=rates, streaming=streaming, params_schema=schema,
-                is_default=is_default, status=status, sort_order=sort,
+                is_default=make_default, status=status, sort_order=sort,
             ))
             created["provider_models"] += 1
+        else:
+            if description and not exists.description:
+                # Safe-metadata backfill only: fills an empty description,
+                # never replaces operator-entered text or any other field.
+                exists.description = description
+            if is_default and not exists.is_default and exists.status == "active":
+                # Fills a MISSING default only. On a fresh install the catalog
+                # migrations (saaras:v4, bulbul:v4-flash) insert their model
+                # non-default before this seed runs, which left the capability
+                # with no default at all; an operator's chosen default is
+                # never replaced.
+                has_default = db.scalar(
+                    select(ProviderModel.id).where(
+                        ProviderModel.provider_code == provider,
+                        ProviderModel.capability == capability,
+                        ProviderModel.is_default.is_(True),
+                        ProviderModel.is_deleted.is_(False),
+                    ).limit(1)
+                )
+                if has_default is None:
+                    exists.is_default = True
+            if is_eleven_v3 and exists.languages == _LEGACY_ELEVEN_V3_BARE_CODES and langs:
+                # One-time conversion of the pre-catalog bare-ISO list to the
+                # table-derived locale list. Only a row still exactly equal to
+                # the legacy constant is converted — anything else has been
+                # operator-managed (master data) and is left untouched.
+                exists.languages = langs
 
-    for vid, name, gender, provider_voice_id in ELEVENLABS_VOICES:
+    for vid, name, gender, provider_voice_id, accent in ELEVENLABS_VOICES:
         if db.get(VoiceProfile, vid) is None:
             db.add(VoiceProfile(
                 id=vid, name=name, gender=gender,
                 # Empty languages list = usable for any language the selected
                 # ElevenLabs model supports (the model does the language work).
                 languages=[],
-                accent="Indian", styles=["Natural"], latency_ms=180, premium=True,
+                accent=accent, styles=["Natural"], latency_ms=180, premium=True,
                 sample_text=_SAMPLE_TEXT, provider="elevenlabs",
                 provider_voice_id=provider_voice_id,
-                model_codes=["eleven_flash_v2_5", "eleven_turbo_v2_5"],
+                model_codes=[
+                    "eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3",
+                    *(["eleven_v3_conversational"]
+                      if vid in ELEVEN_V3_DIALOGUE_VERIFIED_VOICES else []),
+                ],
                 provider_settings=dict(_ELEVEN_DEFAULT_VOICE_SETTINGS),
+            ))
+            created["provider_voices"] += 1
+
+    for i, (vid, name, gender, wire_id, accent) in enumerate(
+            [*DEEPGRAM_AURA2_VOICES, *DEEPGRAM_AURA1_VOICES]):
+        if db.get(VoiceProfile, vid) is None:
+            family = "aura-2" if wire_id.startswith("aura-2-") else "aura"
+            db.add(VoiceProfile(
+                id=vid, name=name, gender=gender,
+                # Scoped to English: the voice id itself decides the language,
+                # so a voice must never be offered for a locale it cannot say.
+                languages=list(_DEEPGRAM_VOICE_LOCALES),
+                accent=accent, styles=["Natural"], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="deepgram",
+                # Sent to Deepgram as the ``model`` query parameter.
+                provider_voice_id=wire_id,
+                model_codes=[family],
+                provider_settings={},
+                is_default=(vid == "vp-dg-thalia"),
+                sort_order=i,
             ))
             created["provider_voices"] += 1
 
@@ -394,6 +1131,38 @@ def seed_provider_catalog(db: Session) -> dict:
             ))
             created["provider_voices"] += 1
 
+    for i, voice in enumerate(sarvam_v4_persona_voices()):
+        if db.get(VoiceProfile, voice["id"]) is None:
+            db.add(VoiceProfile(
+                id=voice["id"], name=voice["name"], gender=voice["gender"],
+                languages=list(_SARVAM_V4_VOICE_LOCALES), locale=voice["locale"],
+                accent="Indian", styles=[voice["style"]], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="sarvam",
+                # The persona id IS the wire speaker for bulbul:v4-flash.
+                provider_voice_id=voice["provider_voice_id"],
+                model_codes=["bulbul:v4-flash"],
+                provider_settings={"pace": 1.0},
+                is_default=False,
+                sort_order=len(SARVAM_SPEAKERS) + i,
+            ))
+            created["provider_voices"] += 1
+
+    roster_start = len(SARVAM_SPEAKERS) + len(v4_catalog_personas())
+    for i, voice in enumerate(sarvam_v4_roster_voices()):
+        if db.get(VoiceProfile, voice["id"]) is None:
+            db.add(VoiceProfile(
+                id=voice["id"], name=voice["name"], gender=voice["gender"],
+                languages=list(voice["languages"]), locale=voice["locale"],
+                accent="Indian", styles=[voice["style"]], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="sarvam",
+                provider_voice_id=voice["provider_voice_id"],
+                model_codes=["bulbul:v4-flash"],
+                provider_settings={"pace": 1.0},
+                is_default=False,
+                sort_order=roster_start + i,
+            ))
+            created["provider_voices"] += 1
+
     return created
 
 
@@ -408,8 +1177,8 @@ def seed_provider_catalog(db: Session) -> dict:
 ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
     "llm": {"openai"},
     "embedding": {"openai"},
-    "stt": {"sarvam"},
-    "tts": {"sarvam", "elevenlabs"},
+    "stt": {"sarvam", "deepgram"},
+    "tts": {"sarvam", "elevenlabs", "deepgram"},
     # Voice catalogs follow their TTS vendor's governance.
     "voice": {"platform", "elevenlabs"},
 }
@@ -417,7 +1186,7 @@ ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
 _DEV_PSEUDO_PROVIDERS = {"mock"}
 
 # Approved-model registry vendors allowed on the AI Governance page.
-_ALLOWED_REGISTRY_VENDORS = {"openai", "sarvam", "elevenlabs"}
+_ALLOWED_REGISTRY_VENDORS = {"openai", "sarvam", "elevenlabs", "deepgram"}
 
 # Platform-seeded AI profiles are re-pointed inside the matrix when they
 # reference a now-inactive provider. Operator-created profiles are left
@@ -426,7 +1195,7 @@ _SEEDED_PROFILE_CODES = {
     "low_cost", "balanced", "high_accuracy", "low_latency", "enterprise", "custom",
 }
 _PROFILE_REMAP: dict[str, tuple[str, str]] = {
-    "stt": ("sarvam", "saaras:v3"),
+    "stt": ("sarvam", "saaras:v4"),
     "tts": ("sarvam", "bulbul:v3"),
     "llm": ("openai", "gpt-4o-mini"),
     "embedding": ("openai", "text-embedding-3-small"),

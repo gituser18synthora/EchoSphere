@@ -33,12 +33,17 @@ async def create_voice_session(
     caller: str | None = None,
     call_id: str | None = None,
     variables: dict[str, str] | None = None,
+    customer_context_id: str | None = None,
+    variables_dropped: list[str] | None = None,
 ) -> dict:
     """Issue a session token (called from the authenticated API process).
 
     ``call_id`` is the telephony provider's own call identifier (log/trace
     correlation only); ``variables`` are dialer-supplied per-call values that
     arrived on a SIGNED webhook — already sanitized by the caller.
+    ``customer_context_id`` pins the call to a specific customer_contexts row
+    — the issuing API validated it belongs to this tenant/bot, and the worker
+    re-validates on load.
     """
     settings = get_settings()
     session_id = f"vs_{secrets.token_urlsafe(18)}"
@@ -51,9 +56,14 @@ async def create_voice_session(
         "caller": caller,
         "call_id": call_id,
         "variables": variables or {},
+        "customer_context_id": customer_context_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "issued",
     }
+    if variables_dropped:
+        # Names of dialer variables the webhook rejected or could not keep;
+        # surfaced on the call's trace so a missing field is explainable.
+        payload["variables_dropped"] = list(variables_dropped)
     await get_redis().set(
         _session_key(session_id), json.dumps(payload), ex=settings.voice_session_timeout
     )

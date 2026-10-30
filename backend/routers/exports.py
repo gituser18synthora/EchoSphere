@@ -1,6 +1,7 @@
 """Authorized operational exports and non-tabular billing downloads."""
 
 import io
+from dataclasses import replace
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -9,11 +10,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.date_filters import parse_date_range
+from backend.core.transcripts import find_transcript_doc, ui_turns
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     has_permission,
     is_super_admin,
     require_permission,
+)
+from backend.reports.conversation_document import (
+    PDF_CONTENT_TYPE,
+    TEXT_CONTENT_TYPE,
+    build_conversation_document,
+    render_conversation_pdf,
+    render_conversation_text,
+    resolve_viewer_zone,
 )
 from backend.reports.exporter import (
     CSV_CONTENT_TYPE,
@@ -33,7 +45,7 @@ from backend.reports.operational import (
     build_subscriptions_export,
     build_transcript_export,
 )
-from shared.db.mongo import Mongo
+from backend.routers.conversations import _ai_summary
 from shared.db.mysql import get_db
 from shared.errors import ApiError, ForbiddenError, NotFoundError
 from shared.models import ConversationSession, Invoice, Plan, Tenant, User, VoiceBot
@@ -47,6 +59,19 @@ def _validate_format(export_format: str) -> None:
             f"Unsupported export format '{export_format}'.",
             422,
             errors=[{"field": "format", "message": "Choose csv or xlsx."}],
+        )
+
+
+# Readable documents meant to be forwarded, next to the csv/xlsx turn tables.
+_DOCUMENT_FORMATS = {"pdf": PDF_CONTENT_TYPE, "txt": TEXT_CONTENT_TYPE}
+
+
+def _validate_transcript_format(export_format: str) -> None:
+    if export_format not in {"csv", "xlsx", *_DOCUMENT_FORMATS}:
+        raise ApiError(
+            f"Unsupported export format '{export_format}'.",
+            422,
+            errors=[{"field": "format", "message": "Choose csv, xlsx, pdf or txt."}],
         )
 
 
@@ -67,6 +92,20 @@ def _validate_choice(
                 }
             ],
         )
+
+
+def _without_cost_columns(report, user: User):
+    """Strip financial columns from a generated export for roles without
+    costs.view. The CSV/XLSX renderers emit only the columns present in the
+    definition, so removing the column removes the data from the file — the
+    export itself is the enforcement point, not the frontend."""
+    if can_view_costs(user):
+        return report
+    definition = replace(
+        report.definition,
+        columns=tuple(c for c in report.definition.columns if c.key != "cost_usd"),
+    )
+    return type(report)(definition=definition, rows=report.rows)
 
 
 def _reject_filter(export_type: str, field: str, value: object) -> None:
@@ -138,6 +177,8 @@ def export_operational_data(
     sentiment: str | None = Query(None, max_length=20),
     contained: bool | None = Query(None),
     flagged: bool | None = Query(None),
+    date_from: str | None = Query(None, alias="dateFrom", max_length=40),
+    date_to: str | None = Query(None, alias="dateTo", max_length=40),
     user: User = Depends(require_permission("billing.manage", "conversations.view")),
     db: Session = Depends(get_db),
 ):
@@ -165,6 +206,8 @@ def export_operational_data(
             ("sentiment", sentiment),
             ("contained", contained),
             ("flagged", flagged),
+            ("dateFrom", date_from),
+            ("dateTo", date_to),
         ):
             _reject_filter(export_type, field, value)
         if plan:
@@ -198,6 +241,8 @@ def export_operational_data(
             ("sentiment", sentiment),
             ("contained", contained),
             ("flagged", flagged),
+            ("dateFrom", date_from),
+            ("dateTo", date_to),
         ):
             _reject_filter(export_type, field, value)
         report = build_invoices_export(
@@ -227,14 +272,20 @@ def export_operational_data(
             )
             if bot is None:
                 raise NotFoundError("VoiceBot")
-        report = build_conversations_export(
-            db,
-            tenant_id=effective_tenant_id,
-            search=canonical_search,
-            bot_id=bot_id,
-            sentiment=sentiment,
-            contained=contained,
-            flagged=flagged,
+        started_from, started_to = parse_date_range(date_from, date_to)
+        report = _without_cost_columns(
+            build_conversations_export(
+                db,
+                tenant_id=effective_tenant_id,
+                search=canonical_search,
+                bot_id=bot_id,
+                sentiment=sentiment,
+                contained=contained,
+                flagged=flagged,
+                started_from=started_from,
+                started_to=started_to,
+            ),
+            user,
         )
         audit_filters.update(
             {
@@ -242,6 +293,8 @@ def export_operational_data(
                 "sentiment": sentiment,
                 "contained": contained,
                 "flagged": flagged,
+                "dateFrom": date_from,
+                "dateTo": date_to,
             }
         )
 
@@ -275,10 +328,16 @@ async def export_conversation_transcript(
     conversation_id: str,
     request: Request,
     export_format: str = Query("csv", alias="format", max_length=8),
+    tz: str | None = Query(
+        None,
+        max_length=64,
+        description="IANA timezone for the clock times in pdf/txt documents "
+        "(the viewer's own); UTC when absent or unknown.",
+    ),
     user: User = Depends(require_permission("conversations.view")),
     db: Session = Depends(get_db),
 ):
-    _validate_format(export_format)
+    _validate_transcript_format(export_format)
     # Outer join, and no bot-deletion filter: archiving a bot must not make
     # its past conversations un-exportable (the conversations list keeps
     # showing them; the bot name here is only a label).
@@ -295,13 +354,29 @@ async def export_conversation_transcript(
     conversation, bot_name = row
     bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
-    transcript_doc = await Mongo.transcripts().find_one(
-        {
-            "session_id": conversation.id,
-            "tenant_id": conversation.tenant_id,
-        }
-    )
-    report = build_transcript_export((transcript_doc or {}).get("turns", []))
+    transcript_doc = await find_transcript_doc(conversation)
+    turns = ui_turns((transcript_doc or {}).get("turns"))
+    if export_format in _DOCUMENT_FORMATS:
+        # Never carries costs, so no costs.view stripping is needed. Rendered
+        # before the audit row so a failed render is not logged as exported,
+        # and on the event loop rather than a worker thread: PyMuPDF is not
+        # thread-safe (a 30-minute call renders in ~0.2 s).
+        document = build_conversation_document(
+            conversation,
+            bot_name=bot_name,
+            turns=turns,
+            summary=_ai_summary(db, conversation),
+            zone=resolve_viewer_zone(tz),
+        )
+        content = (
+            render_conversation_pdf(document)
+            if export_format == "pdf"
+            else render_conversation_text(document)
+        )
+        row_count = len(document.turns)
+    else:
+        report = _without_cost_columns(build_transcript_export(turns), user)
+        row_count = len(report.rows)
     record_audit(
         db,
         user=user,
@@ -312,15 +387,29 @@ async def export_conversation_transcript(
         tenant_id=conversation.tenant_id,
         new_value={
             "format": export_format,
-            "rowCount": len(report.rows),
+            "rowCount": row_count,
         },
         request=request,
     )
     db.commit()
-    return _file_response(
-        report,
-        export_format,
-        f"echosphere-transcript-{conversation.id}-{date.today().isoformat()}",
+    if export_format not in _DOCUMENT_FORMATS:
+        return _file_response(
+            report,
+            export_format,
+            f"echosphere-transcript-{conversation.id}-{date.today().isoformat()}",
+        )
+    filename = (
+        safe_filename(f"echosphere-conversation-{conversation.id}-{date.today().isoformat()}")
+        + f".{export_format}"
+    )
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_DOCUMENT_FORMATS[export_format],
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

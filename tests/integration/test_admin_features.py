@@ -264,6 +264,35 @@ class TestTenantProfile:
         client.patch(f"{API}/tenants/tn-001", headers=super_admin,
                      json={"region": before["region"] or "in"})
 
+    def test_super_admin_can_edit_tenant_language_assignment(self, client, super_admin):
+        before = _data(client.get(f"{API}/tenants/tn-001", headers=super_admin))
+        original = before["defaultLanguages"]
+        assert original, "the seeded tenant must retain at least one language"
+        active = _data(client.get(f"{API}/languages", headers=super_admin))
+        candidate = next(row["code"] for row in active if row["code"] not in original)
+        updated_codes = [*original, candidate]
+
+        try:
+            updated = _data(client.patch(
+                f"{API}/tenants/tn-001",
+                headers=super_admin,
+                json={"defaultLanguages": updated_codes},
+            ))
+            assert updated["defaultLanguages"] == updated_codes
+
+            scoped = _data(client.get(
+                f"{API}/languages?tenantId=tn-001", headers=super_admin
+            ))
+            assert candidate in {row["code"] for row in scoped}
+            assert {row["code"] for row in scoped} <= set(updated_codes)
+        finally:
+            restored = client.patch(
+                f"{API}/tenants/tn-001",
+                headers=super_admin,
+                json={"defaultLanguages": original},
+            )
+            assert restored.status_code == 200, restored.text
+
     def test_audit_written_for_profile_update(self, client, tenant_admin):
         from sqlalchemy import select
 
@@ -521,6 +550,89 @@ class TestAdminChosenPasswordReset:
         assert response.status_code == 400
 
 
+class TestTenantAdminTeamPasswordReset:
+    """Team page: a tenant admin changes a member's password
+    (POST /users/{id}/reset-password with newPassword/confirmPassword).
+    Same-tenant only — cross-tenant and platform targets must 404, never 403,
+    so foreign accounts stay undiscoverable."""
+
+    @pytest.fixture(scope="class")
+    def member(self, client, tenant_admin):
+        """A tenant_user in the tenant admin's own tenant (tn-001), created
+        through the same API the Team page uses."""
+        email = f"team-member-{_SUFFIX}@example.com"
+        created = _data(client.post(f"{API}/users", headers=tenant_admin, json={
+            "name": "Team Member", "email": email, "roleCode": "tenant_user",
+            "password": "Original2026pw",
+        }))
+        _created.append(("users", created["id"]))
+        return {"id": created["id"], "email": email, "password": "Original2026pw"}
+
+    @pytest.fixture(scope="class")
+    def outsider(self, client, super_admin):
+        """A tenant_user in ANOTHER tenant (tn-002)."""
+        email = f"outsider-{_SUFFIX}@example.com"
+        created = _data(client.post(f"{API}/users", headers=super_admin, json={
+            "name": "Other Tenant Member", "email": email, "roleCode": "tenant_user",
+            "tenantId": "tn-002", "password": "Outsider2026pw",
+        }))
+        _created.append(("users", created["id"]))
+        return {"id": created["id"], "email": email, "password": "Outsider2026pw"}
+
+    def _login(self, client, email, password):
+        return client.post(f"{API}/auth/login", json={"email": email, "password": password})
+
+    def _reset(self, client, headers, user_id, new, confirm):
+        return client.post(f"{API}/users/{user_id}/reset-password", headers=headers,
+                           json={"newPassword": new, "confirmPassword": confirm})
+
+    def test_tenant_admin_resets_member_password(self, client, tenant_admin, member):
+        result = _data(self._reset(client, tenant_admin, member["id"],
+                                   "Rotated2026pw", "Rotated2026pw"))
+        assert result["reset"] is True and result["sessionsInvalidated"] is True
+        assert "temporaryPassword" not in result
+        # The old password is dead; the new one signs in.
+        assert self._login(client, member["email"], member["password"]).status_code == 401
+        assert self._login(client, member["email"], "Rotated2026pw").status_code == 200
+        member["password"] = "Rotated2026pw"
+
+    def test_cross_tenant_reset_rejected(self, client, tenant_admin, outsider):
+        response = self._reset(client, tenant_admin, outsider["id"],
+                               "Hijack2026pw", "Hijack2026pw")
+        assert response.status_code == 404
+        # The target's password is untouched.
+        assert self._login(client, outsider["email"], outsider["password"]).status_code == 200
+        assert self._login(client, outsider["email"], "Hijack2026pw").status_code == 401
+
+    def test_platform_account_not_reachable(self, client, tenant_admin):
+        from sqlalchemy import select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.models import User
+
+        session = get_sessionmaker()()
+        try:
+            platform_admin = session.execute(
+                select(User).where(User.email == "admin@aurexion.com")).scalar_one()
+        finally:
+            session.close()
+        response = self._reset(client, tenant_admin, platform_admin.id,
+                               "Hijack2026pw", "Hijack2026pw")
+        assert response.status_code == 404
+
+    def test_own_account_rejected(self, client, tenant_admin):
+        me = _data(client.get(f"{API}/auth/me", headers=tenant_admin))
+        response = self._reset(client, tenant_admin, me["id"],
+                               "Selfie2026pw", "Selfie2026pw")
+        assert response.status_code == 400
+
+    def test_tenant_user_forbidden(self, client, tenant_user, member):
+        response = self._reset(client, tenant_user, member["id"],
+                               "Sneaky2026pw", "Sneaky2026pw")
+        assert response.status_code == 403
+        assert self._login(client, member["email"], member["password"]).status_code == 200
+
+
 class TestPasswordMinimumLength:
     """The password minimum is 8 characters; composition (upper/lower/digit)
     is unchanged. Verifies the boundary on both the self-service change and the
@@ -663,10 +775,18 @@ class TestKnowledgeCreation:
         assert duplicate.status_code == 409
         assert "already exists" in duplicate.json()["message"]
 
-    def test_tenant_user_cannot_create_kb(self, client, tenant_user):
+    def test_tenant_user_manages_shared_tenant_kb(self, client, tenant_user):
+        # Tenant Users hold manage_knowledge: they create/edit the tenant's
+        # SHARED knowledge bases (same records the Tenant Admin sees).
+        import uuid as _uuid
+
+        name = f"tu-kb-{_uuid.uuid4().hex[:8]}"
         response = client.post(f"{API}/knowledge", headers=tenant_user,
-                               json={"name": "nope", "type": "document", "scope": "tenant"})
-        assert response.status_code == 403
+                               json={"name": name, "type": "document", "scope": "tenant"})
+        assert response.status_code == 201, response.text
+        kb_id = response.json()["data"]["id"]
+        deleted = client.delete(f"{API}/knowledge/{kb_id}", headers=tenant_user)
+        assert deleted.status_code == 200, deleted.text
 
 
 # ── Prompts: structured builder + lifecycle + test ────────────────────────────
@@ -933,7 +1053,15 @@ class TestApiConnections:
         _created.append(("api_connections", created["id"]))
         return created
 
-    def test_ssrf_private_target_blocked(self, client, tenant_admin):
+    def test_ssrf_private_target_blocked(self, client, tenant_admin, monkeypatch):
+        from shared.config import get_settings
+
+        # The dev .env allow-lists 127.0.0.1/localhost (for the local test
+        # server below); this test checks the policy itself, so run it with
+        # an empty allowlist — otherwise it only passed while nothing was
+        # listening on localhost:9001.
+        monkeypatch.setattr(get_settings(), "api_connect_allowed_hosts", "")
+        monkeypatch.setattr(get_settings(), "api_connect_allow_private", False)
         created = _data(client.post(f"{API}/api-connections", headers=tenant_admin, json={
             "name": f"SSRF {_SUFFIX}", "url": "http://169.254.169.254/latest/meta-data/",
         }))

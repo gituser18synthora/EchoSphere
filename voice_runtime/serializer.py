@@ -8,7 +8,9 @@ can render live transcripts and call events without decoding audio:
   client → server: {"type": "event", "name": "..."} (reserved)
 """
 
+import base64
 import json
+import time
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -23,6 +25,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.serializers.base_serializer import FrameSerializer
+from voice_runtime.frames import FillerAudioRawFrame, FillerClearFrame
 
 
 class RawPCMSerializer(FrameSerializer):
@@ -35,16 +38,37 @@ class RawPCMSerializer(FrameSerializer):
     def __init__(self, *, input_sample_rate: int = 16000, **kwargs) -> None:
         super().__init__(**kwargs)
         self._input_sample_rate = input_sample_rate
+        # Monotonic time of the last inbound audio message; the session host
+        # uses it to distinguish a live call from an abandoned socket when
+        # the absolute session timer fires.
+        self.last_media_at = 0.0
 
     async def setup(self, frame: StartFrame):
         pass
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        from pipecat.frames.frames import OutputTransportMessageFrame
+        from pipecat.frames.frames import (
+            OutputTransportMessageFrame,
+            OutputTransportMessageUrgentFrame,
+        )
 
+        if isinstance(frame, FillerClearFrame):
+            return json.dumps({"type": "filler_clear", "owner": frame.owner.token})
+        if isinstance(frame, FillerAudioRawFrame):
+            if frame.owner is None or frame.owner.cancelled:
+                return None
+            return json.dumps({
+                "type": "filler_audio", "owner": frame.owner.token,
+                "audio": base64.b64encode(frame.audio).decode("ascii"),
+            })
         if isinstance(frame, OutputAudioRawFrame):
             return frame.audio
-        if isinstance(frame, OutputTransportMessageFrame):
+        # The urgent variant is a SystemFrame, NOT a subclass of the plain
+        # message frame, so it needs its own branch or the brain's live
+        # transcript events would be silently dropped.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
             return json.dumps(frame.message)
         if isinstance(frame, TranscriptionFrame):
             return json.dumps({"type": "transcript", "text": frame.text})
@@ -65,6 +89,7 @@ class RawPCMSerializer(FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)):
+            self.last_media_at = time.monotonic()
             return InputAudioRawFrame(
                 audio=bytes(data), sample_rate=self._input_sample_rate, num_channels=1
             )

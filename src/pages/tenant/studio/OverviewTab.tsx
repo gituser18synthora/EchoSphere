@@ -5,7 +5,10 @@ import { Icon } from "@/components/Icon";
 import { Button, Field, KpiCard, Modal, MultiSelect, Progress, Timeline } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
 import { useAsync } from "@/hooks/useAsync";
-import { listAudit, listLanguages, updateBot } from "@/services/api";
+import {
+  getBotEffectiveGuardrails, listAudit, listGuardrailProfiles, listLanguages,
+  setBotGuardrailProfile, updateBot,
+} from "@/services/api";
 import { useApp } from "@/state/AppContext";
 
 const tabIcons: Record<string, "play" | "edit" | "refresh" | "mic" | "target" | "workflow" | "phone"> = {
@@ -15,6 +18,9 @@ const tabIcons: Record<string, "play" | "edit" | "refresh" | "mic" | "target" | 
 
 export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdated?: () => void }) {
   const navigate = useNavigate();
+  const { hasPermission } = useApp();
+  // Server-enforced: avgCostPerCall is null without costs.view.
+  const showCosts = hasPermission("costs.view") && bot.avgCostPerCall != null;
   const [editLangs, setEditLangs] = useState(false);
   const done = bot.readiness.filter((r) => r.done).length;
   const pct = (done / bot.readiness.length) * 100;
@@ -40,11 +46,13 @@ export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdat
         </div>
 
         {bot.status === "published" && (
-          <div className="grid grid-4" style={{ gap: 12 }}>
+          <div className={showCosts ? "grid grid-4" : "grid grid-3"} style={{ gap: 12 }}>
             <KpiCard label="Calls today" value={fmtNum(bot.callsToday)} icon="phone" />
             <KpiCard label="Containment" value={`${bot.containment}%`} icon="check-circle" />
             <KpiCard label="CSAT" value={`${bot.csat.toFixed(1)} / 5`} icon="star" />
-            <KpiCard label="Cost / call" value={`$${bot.avgCostPerCall.toFixed(2)}`} icon="dollar" />
+            {showCosts && (
+              <KpiCard label="Cost / call" value={`$${bot.avgCostPerCall!.toFixed(2)}`} icon="dollar" />
+            )}
           </div>
         )}
 
@@ -100,6 +108,8 @@ export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdat
           </div>
         </div>
 
+        <BotGuardrailsPanel bot={bot} onUpdated={onUpdated} />
+
         <div className="card card-pad col gap-10">
           <span className="card-title">Suggested next steps</span>
           {nextSteps.length === 0 ? (
@@ -122,6 +132,105 @@ export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdat
           onClose={() => setEditLangs(false)}
           onSaved={() => { setEditLangs(false); onUpdated?.(); }}
         />
+      )}
+    </div>
+  );
+}
+
+/** The bot's guardrail posture: which profile is in force (inherited tenant
+    default vs explicit assignment), the effective rules, and the active
+    compliance-policy versions — all live API data. Assignment is a platform
+    governance action (Super Admin); everyone else sees a read-only view. */
+function BotGuardrailsPanel({ bot, onUpdated }: { bot: VoiceBot; onUpdated?: () => void }) {
+  const { toast, hasPermission } = useApp();
+  const canAssign = hasPermission("governance.manage") || hasPermission("tenants.manage");
+  const effQ = useAsync(() => getBotEffectiveGuardrails(bot.id), [bot.id, bot.guardrailProfileId]);
+  const profilesQ = useAsync(
+    () => (canAssign ? listGuardrailProfiles() : Promise.resolve([])),
+    [canAssign],
+  );
+  const [busy, setBusy] = useState(false);
+  const eff = effQ.data;
+
+  const assign = async (profileId: string) => {
+    setBusy(true);
+    try {
+      await setBotGuardrailProfile(bot.id, profileId);
+      toast(profileId
+        ? "Bot guardrail profile assigned — audit entry created"
+        : "Bot now inherits the tenant default profile — audit entry created");
+      effQ.reload();
+      onUpdated?.();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Assignment failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card card-pad col gap-10" aria-label="Guardrails">
+      <div className="row-between">
+        <span className="card-title">Guardrails</span>
+        {eff && (
+          <span className={`chip ${eff.inherited ? "chip-neutral" : "chip-brand"}`}>
+            {eff.inherited ? "Inherited" : "Explicit"}
+          </span>
+        )}
+      </div>
+      {effQ.loading && <span className="t-sub">Loading…</span>}
+      {effQ.error && <span className="t-sub">{effQ.error}</span>}
+      {eff && (
+        <>
+          <div className="t-sub" style={{ fontSize: 12.5 }}>
+            {eff.inherited
+              ? <>Inherits the tenant default{eff.tenantDefaultProfile ? <> — <b>{eff.tenantDefaultProfile.name}</b> v{eff.tenantDefaultProfile.version}</> : " (mandatory rules only)"}.</>
+              : <>Explicitly assigned: <b>{eff.profile?.name ?? "—"}</b>{eff.profile ? ` v${eff.profile.version}` : ""}{eff.profile && eff.profile.status !== "active" ? ` (${eff.profile.status})` : ""}. Tenant-default changes do not affect this bot.</>}
+          </div>
+          {canAssign && (
+            <Field label="Guardrail profile" plain>
+              <select
+                className="select"
+                disabled={busy || profilesQ.loading}
+                value={eff.inherited ? "" : (eff.profile?.id ?? "")}
+                aria-label="Guardrail profile"
+                onChange={(e) => void assign(e.target.value)}
+              >
+                <option value="">
+                  Inherit tenant default{eff.tenantDefaultProfile ? ` — ${eff.tenantDefaultProfile.name}` : " (mandatory rules only)"}
+                </option>
+                {!eff.inherited && eff.profile
+                  && !(profilesQ.data ?? []).some((p) => p.id === eff.profile!.id) && (
+                    <option value={eff.profile.id}>{eff.profile.name} ({eff.profile.status})</option>
+                  )}
+                {(profilesQ.data ?? []).filter((p) => p.status === "active").map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <div className="col gap-2">
+            {eff.rules.map((r) => (
+              <div key={r.code} className="row-between" style={{ padding: "4px 0" }}>
+                <span style={{ fontSize: 12.5 }}>
+                  {r.name}
+                  {r.mandatory && <span className="tag" style={{ marginLeft: 6 }}>Mandatory</span>}
+                </span>
+                <span className="t-micro" style={{ textTransform: "capitalize" }}>{r.action}</span>
+              </div>
+            ))}
+          </div>
+          {eff.compliancePolicies.length > 0 && (
+            <div className="col gap-2" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 8 }}>
+              <span className="t-label">Active compliance policies</span>
+              {eff.compliancePolicies.map((p) => (
+                <span key={p.code} className="t-micro">
+                  {p.name} — {p.regulator || "internal"} · {p.code} v{p.version}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -159,20 +268,22 @@ function EditLanguagesModal({ bot, onClose, onSaved }: { bot: VoiceBot; onClose:
         </>
       }
     >
-      <Field label="Languages" required plain error={err}>
-        <MultiSelect
-          options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
-            value: l.code,
-            label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
-            sub: l.code,
-          }))}
-          selected={langs}
-          onChange={(next) => { setLangs(next); setErr(""); }}
-          placeholder="Select supported languages"
-          searchPlaceholder="Search languages…"
-          invalid={!!err}
-        />
-      </Field>
+      <div className="edit-languages-selector">
+        <Field label="Languages" required plain error={err}>
+          <MultiSelect
+            options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
+              value: l.code,
+              label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
+              sub: l.code,
+            }))}
+            selected={langs}
+            onChange={(next) => { setLangs(next); setErr(""); }}
+            placeholder="Select supported languages"
+            searchPlaceholder="Search languages…"
+            invalid={!!err}
+          />
+        </Field>
+      </div>
     </Modal>
   );
 }

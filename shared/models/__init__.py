@@ -8,17 +8,20 @@ from shared.models.tenancy_models import (
     Subscription,
     SystemSetting,
     Tenant,
+    TenantApiKey,
     TenantSetting,
 )
 from shared.models.bot_models import (
     BotLanguage,
     ChannelConfig,
     PhoneNumber,
+    PronunciationDictionary,
     SipTrunk,
     SupportedLanguage,
     VoiceBot,
     VoiceBotReadiness,
     VoiceBotSetting,
+    VoiceCloneAudio,
     VoiceProfile,
 )
 from shared.models.content_models import (
@@ -33,6 +36,7 @@ from shared.models.content_models import (
     Release,
     TestScenario,
     Workflow,
+    WorkflowRevision,
 )
 from shared.models.master_models import (
     AiConfigProfile,
@@ -59,17 +63,33 @@ from shared.models.billing_models import (
     ProviderPricing,
     UsageEvent,
 )
+from shared.models.guardrail_models import (
+    GuardrailProfile,
+    GuardrailProfileRule,
+    GuardrailTrigger,
+)
+from shared.models.compliance_models import CompliancePolicy, ComplianceWording
+from shared.models.collections_models import CustomerCollectionContext
+from shared.models.context_models import RuntimeContextRecord, RuntimeContextSchema
+from shared.models.memory_models import ConversationMemory
 
 __all__ = [
     "Base",
     "Role", "Permission", "RolePermission", "User",
-    "Tenant", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
-    "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "SupportedLanguage", "BotLanguage",
+    "Tenant", "TenantApiKey", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
+    "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "VoiceCloneAudio",
+    "PronunciationDictionary",
+    "SupportedLanguage", "BotLanguage",
     "VoiceBotSetting", "ChannelConfig", "PhoneNumber", "SipTrunk",
     "KnowledgeSource", "KnowledgeGap", "Prompt", "PromptVersion", "Intent", "EntityDef",
-    "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
+    "ApiConnection", "Workflow", "WorkflowRevision", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
+    "GuardrailProfile", "GuardrailProfileRule", "GuardrailTrigger",
+    "CompliancePolicy", "ComplianceWording",
     "Industry", "Country", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
     "Currency", "ExchangeRate", "ProviderPricing", "UsageEvent",
+    "CustomerCollectionContext",
+    "RuntimeContextSchema", "RuntimeContextRecord",
+    "ConversationMemory",
 ]

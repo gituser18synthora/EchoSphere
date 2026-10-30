@@ -1,12 +1,16 @@
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { getBot } from "@/services/api";
-import { Button, CardSkeleton, EmptyState, ErrorState, Health, StatusChip, Tabs } from "@/components/ui";
+import { getBot, restoreBot } from "@/services/api";
+import { Button, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Health, StatusChip, Tabs } from "@/components/ui";
 import { Icon } from "@/components/Icon";
+import { useApp } from "@/state/AppContext";
 import OverviewTab from "./studio/OverviewTab";
 import KnowledgeTab from "./studio/KnowledgeTab";
 import PromptsTab from "./studio/PromptsTab";
 import VoiceTab from "./studio/VoiceTab";
+import NaturalConversationTab from "./studio/NaturalConversationTab";
+import TurnDetectionTab from "./studio/TurnDetectionTab";
 import IntentsTab from "./studio/IntentsTab";
 import ApisTab from "./studio/ApisTab";
 import WorkflowsTab from "./studio/WorkflowsTab";
@@ -14,25 +18,44 @@ import ChannelsTab from "./studio/ChannelsTab";
 import TestingTab from "./studio/TestingTab";
 import AnalyticsTab from "./studio/AnalyticsTab";
 import PublishTab from "./studio/PublishTab";
+import type { Role } from "@/types/domain";
 
-const tabs = [
+/** Tabs can be permission- or role-gated (UI affordance only; APIs enforce the
+ *  same rule). Turn Detection is intentionally Tenant Admin-only. */
+const allTabs: { id: string; label: string; perms?: string[]; roles?: Role[] }[] = [
   { id: "overview", label: "Overview" },
   { id: "knowledge", label: "Knowledge" },
   { id: "prompts", label: "Prompts" },
   { id: "voice", label: "Voice" },
-  { id: "intents", label: "Intents & Entities" },
-  { id: "apis", label: "APIs" },
+  { id: "natural-conversation", label: "Natural Conversation" },
+  { id: "turn-detection", label: "Turn Detection", roles: ["tenant_admin"] },
+  { id: "intents", label: "Intents & Entities", perms: ["manage_intents", "manage_entities", "bots.manage"] },
+  { id: "apis", label: "APIs", perms: ["manage_api_connections", "test_api_connections", "integrations.manage"] },
   { id: "workflows", label: "Workflows" },
-  { id: "channels", label: "Channels" },
+  { id: "channels", label: "Channels", perms: ["manage_channels"] },
   { id: "testing", label: "Testing" },
-  { id: "analytics", label: "Analytics" },
-  { id: "publish", label: "Publish" },
+  { id: "analytics", label: "Analytics", perms: ["bots.manage"] },
+  { id: "publish", label: "Publish", perms: ["bots.publish", "bots.manage"] },
 ];
+
+export function visibleStudioTabs(
+  hasPermission: (code: string) => boolean,
+  role: Role = "tenant_admin",
+) {
+  return allTabs
+    .filter((t) => (!t.roles || t.roles.includes(role)) && (!t.perms || t.perms.some(hasPermission)))
+    .map(({ id, label }) => ({ id, label }));
+}
 
 export default function Studio() {
   const { botId, tab = "overview" } = useParams();
   const navigate = useNavigate();
+  const { hasPermission, user, toast } = useApp();
   const botQ = useAsync(() => getBot(botId!), [botId]);
+  const [naturalDirty, setNaturalDirty] = useState(false);
+  const [naturalSaving, setNaturalSaving] = useState(false);
+  const [pendingTab, setPendingTab] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
 
   if (botQ.error) return <ErrorState message={botQ.error} onRetry={botQ.reload} />;
   if (botQ.loading) return <div className="col gap-16"><CardSkeleton rows={2} /><CardSkeleton rows={8} /></div>;
@@ -42,8 +65,44 @@ export default function Studio() {
       action={<Button onClick={() => navigate("/t/bots")}>Back to My VoiceBots</Button>} />;
   }
 
+  const tabs = visibleStudioTabs(hasPermission, user?.role ?? "tenant_user");
+  // A deep link to a hidden tab falls back to Overview — same treatment as an
+  // unknown tab segment. The backing APIs reject the calls regardless.
+  const activeTab = tabs.some((t) => t.id === tab) ? tab : "overview";
+  const canPublish = hasPermission("bots.publish") || hasPermission("bots.manage");
+  const canManage = hasPermission("bots.manage");
+  const archived = bot.status === "archived";
+
+  /* Archived bots stay fully inspectable here but take no traffic and cannot be
+     tested or published until restored (the APIs refuse with 409 regardless). */
+  const restore = async () => {
+    if (restoring) return;
+    setRestoring(true);
+    try {
+      await restoreBot(bot.id);
+      toast(`${bot.name} restored as a draft — publish it again before it takes calls`);
+      botQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to restore bot", "error");
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const readinessDone = bot.readiness.filter((r) => r.done).length;
   const ready = readinessDone === bot.readiness.length;
+  const navigateToTab = (next: string) => {
+    if (next === activeTab) return;
+    if (activeTab === "natural-conversation" && naturalSaving) {
+      toast("Wait for natural conversation settings to finish saving.", "info");
+      return;
+    }
+    if (activeTab === "natural-conversation" && naturalDirty) {
+      setPendingTab(next);
+      return;
+    }
+    navigate(`/t/bots/${bot.id}/${next}`);
+  };
 
   return (
     <>
@@ -60,39 +119,80 @@ export default function Studio() {
           </div>
         </div>
         <Health level={bot.health} />
-        <span className="row gap-6 t-micro" title="All edits save as draft automatically">
-          <Icon name="check-circle" size={13} style={{ color: "var(--status-good)" }} />
-          Draft saved
-        </span>
+        {activeTab !== "voice" && activeTab !== "natural-conversation" && (
+          <span className="row gap-6 t-micro" title="All edits save as draft automatically">
+            <Icon name="check-circle" size={13} style={{ color: "var(--status-good)" }} />
+            Draft saved
+          </span>
+        )}
         <div className="row gap-6">
-          <Button icon="play" onClick={() => navigate(`/t/bots/${bot.id}/testing`)}>Test</Button>
-          <Button
-            variant="primary"
-            icon="rocket"
-            title={ready ? "Open Publish Center" : `${bot.readiness.length - readinessDone} readiness checks remaining`}
-            onClick={() => navigate(`/t/bots/${bot.id}/publish`)}
-          >
-            {bot.status === "in_review" ? "In review" : "Publish"}
-          </Button>
+          <Button icon="play" disabled={archived} title={archived ? "Restore the bot to run tests" : undefined} onClick={() => navigateToTab("testing")}>Test</Button>
+          {canPublish && (
+            <Button
+              variant="primary"
+              icon="rocket"
+              disabled={archived}
+              title={archived ? "Restore the bot before publishing" : ready ? "Open Publish Center" : `${bot.readiness.length - readinessDone} readiness checks remaining`}
+              onClick={() => navigateToTab("publish")}
+            >
+              {bot.status === "in_review" ? "In review" : "Publish"}
+            </Button>
+          )}
         </div>
       </div>
 
+      {archived && (
+        <div className="card card-pad row gap-12" role="status" style={{ alignItems: "center", borderColor: "var(--status-warning)" }}>
+          <Icon name="pause" size={18} style={{ color: "var(--status-warning)", flexShrink: 0 }} />
+          <div className="grow">
+            <div className="t-strong">This bot is archived</div>
+            <div className="t-sub" style={{ fontSize: 13 }}>
+              It takes no calls, messages or test sessions and cannot be published. Its configuration is kept and can be
+              inspected here; its phone number stays reserved. Restore it to continue working on it.
+            </div>
+          </div>
+          {canManage && (
+            <Button icon="undo" busy={restoring} onClick={restore}>Restore to draft</Button>
+          )}
+        </div>
+      )}
+
       <div className="studio-tabs-wrap">
-        <Tabs tabs={tabs} active={tab} onChange={(t) => navigate(`/t/bots/${bot.id}/${t}`)} />
+        <Tabs tabs={tabs} active={activeTab} onChange={navigateToTab} />
         <div className="studio-panel">
-          {tab === "overview" && <OverviewTab bot={bot} onUpdated={botQ.reload} />}
-          {tab === "knowledge" && <KnowledgeTab bot={bot} />}
-          {tab === "prompts" && <PromptsTab bot={bot} />}
-          {tab === "voice" && <VoiceTab bot={bot} />}
-          {tab === "intents" && <IntentsTab bot={bot} />}
-          {tab === "apis" && <ApisTab bot={bot} />}
-          {tab === "workflows" && <WorkflowsTab bot={bot} />}
-          {tab === "channels" && <ChannelsTab bot={bot} />}
-          {tab === "testing" && <TestingTab bot={bot} />}
-          {tab === "analytics" && <AnalyticsTab bot={bot} />}
-          {tab === "publish" && <PublishTab bot={bot} />}
+          {activeTab === "overview" && <OverviewTab bot={bot} onUpdated={botQ.reload} />}
+          {activeTab === "knowledge" && <KnowledgeTab bot={bot} />}
+          {activeTab === "prompts" && <PromptsTab bot={bot} />}
+          {activeTab === "voice" && (
+            <VoiceTab bot={bot} onOpenNaturalConversation={() => navigateToTab("natural-conversation")} />
+          )}
+          {activeTab === "natural-conversation" && (
+            <NaturalConversationTab
+              key={bot.id} bot={bot} onDirtyChange={setNaturalDirty}
+              onSavingChange={setNaturalSaving} onNavigate={navigateToTab}
+            />
+          )}
+          {activeTab === "turn-detection" && <TurnDetectionTab />}
+          {activeTab === "intents" && <IntentsTab bot={bot} />}
+          {activeTab === "apis" && <ApisTab bot={bot} />}
+          {activeTab === "workflows" && <WorkflowsTab bot={bot} />}
+          {activeTab === "channels" && <ChannelsTab bot={bot} />}
+          {activeTab === "testing" && <TestingTab bot={bot} />}
+          {activeTab === "analytics" && <AnalyticsTab bot={bot} />}
+          {activeTab === "publish" && <PublishTab bot={bot} />}
         </div>
       </div>
+      <ConfirmModal
+        open={pendingTab !== null}
+        onClose={() => setPendingTab(null)}
+        title="Discard unsaved changes?"
+        body="Your Natural Conversation changes have not been saved. Leaving this tab will discard them."
+        confirmLabel="Discard and leave"
+        onConfirm={() => {
+          if (pendingTab) navigate(`/t/bots/${bot.id}/${pendingTab}`);
+          setPendingTab(null);
+        }}
+      />
     </>
   );
 }

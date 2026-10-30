@@ -49,7 +49,8 @@ Minimum to fill in (`shared/config.py` documents every knob):
 | `TELEPHONY_WEBHOOK_SECRET` | required before any telephony webhook is accepted |
 | `FREESWITCH_PASSWORD` | only for FreeSWITCH ESL call control |
 
-Secrets are referenced as `env:VAR_NAME` (e.g. `STT_API_KEY_REFERENCE=env:OPENAI_API_KEY`)
+Secrets are referenced as `env:VAR_NAME` (for example the current default
+`STT_API_KEY_REFERENCE=env:SARVAM_API_KEY`)
 and resolved at runtime — raw keys never go into DB rows.
 
 **One `.env`, every process.** The API, voice worker, ingestion worker and MCP
@@ -72,6 +73,38 @@ env/bin/python -m backend.cli seed          # idempotent base records
 env/bin/python -m backend.cli seed --demo   # optional demo dataset + logins
 ```
 
+The CLI wraps Alembic; the raw equivalents are
+`env/bin/alembic -c backend/alembic.ini upgrade head` (MySQL) and
+`env/bin/alembic -c backend/alembic_pg.ini upgrade head` (PostgreSQL).
+With `AUTO_RUN_MIGRATIONS=true` the API applies the **MySQL** migrations at
+startup (default `false`; the PostgreSQL knowledge plane still needs
+`pg-migrate`). While `ENABLE_DATABASE_SEED=true` (the default) the API also
+runs the idempotent base seed at startup — **outside production only**.
+
+#### Production initialisation (`APP_ENV=production`)
+
+Production never seeds at startup and never loads the demo dataset
+(`seed --demo` is refused). The base seed switches to its production profile:
+genuine master data only — no sample plans, no engine-less "platform" voices,
+no approved-model registry figures, no integration catalog, no platform
+templates and no `mock` provider rows. Real plans and voices are added by the
+Super Admin through the master-data pages.
+
+Initialise an empty production database once, explicitly:
+
+```bash
+APP_ENV=production env/bin/python -m backend.cli init-production
+```
+
+It runs `migrate`, `pg-migrate`, the production base seed, creates the single
+initial super admin (`SUPERADMIN_EMAIL`) and prints a row summary plus any
+development/demo rows found (exit code 1 if there are any). The initial
+password is read from `SUPERADMIN_PASSWORD` when set, otherwise from the
+prompt or `--password-stdin`; it is only needed while no super admin exists,
+so it does not have to stay in the environment. Re-running is a no-op.
+`verify-production` repeats the read-only check at any time. Later catalog
+updates are applied with a manual `seed` in a deploy window.
+
 ### 1.6 Run the services
 
 ```bash
@@ -79,14 +112,73 @@ env/bin/python -m backend.main                             # Platform API (API_P
 env/bin/python -m voice_runtime.app                        # Voice runtime (VOICE_WORKER_PORT)
 env/bin/python -m backend.workers.ingestion                # Ingestion worker (optional; embedded in API by default)
 env/bin/python -m backend.mcp_server.server                # MCP server (optional; MCP_PORT)
+env/bin/python -m voice_runtime.gateway                    # Telephony gateway (optional; TELEPHONY_GATEWAY_PORT)
 npm run dev                                                # Frontend → http://localhost:5199
 ```
+
+`./scripts/dev.sh [start|stop|restart|status|logs]` orchestrates all six
+services (PID files under `.devrun/`), reading every port from `.env`
+(see [ENVIRONMENT.md](ENVIRONMENT.md)). Default ports: API 9001, voice worker
+9002, MCP 9003, telephony gateway 9011, frontend 5199 (FreeSWITCH ESL control
+socket: 9004).
 
 Verify: `curl -s localhost:9001/api/health/ready` — all four checks (`mysql`,
 `postgres`, `redis`, `mongodb`) must report `ok: true`. Voice worker:
 `curl -s localhost:9002/health`; MCP: `curl -s localhost:9003/health`.
 
-### 1.7 Scaling voice workers
+### 1.7 Serving over HTTPS (browser test calls)
+
+A page loaded over HTTPS may **not** open a `ws://` socket: the browser
+rejects it in the `WebSocket` constructor, before any connection is tried —
+
+```
+Failed to construct 'WebSocket': An insecure WebSocket connection may not be
+initiated from a page loaded over HTTPS.
+```
+
+The worker (`VOICE_WORKER_PORT`, 9002) speaks plain WebSocket and terminates
+no TLS, so it cannot be addressed directly from an HTTPS page. Route
+`/ws/voice/*` through the same TLS vhost that serves the app:
+
+```nginx
+location /ws/voice/ {
+    proxy_pass http://127.0.0.1:9002;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_read_timeout 3600s;   # default 60s would cut calls mid-conversation
+    proxy_send_timeout 3600s;
+    proxy_buffering off;        # buffered audio chunks arrive in bursts
+}
+```
+
+Both timeout lines and `proxy_buffering off` are required, not tuning: the
+60 s default drops long calls, and buffering makes streamed audio choppy.
+
+Apache (`mod_proxy_wstunnel` + `mod_rewrite` enabled):
+
+```apache
+    # Voice runtime WebSocket. This MUST come before any catch-all websocket
+    # rewrite (e.g. one sending every Upgrade to the frontend dev server) —
+    # mod_rewrite stops at the first matching [L] rule.
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/ws/voice/(.*)$ ws://127.0.0.1:9002/ws/voice/$1 [P,L]
+
+    # A call is idle between turns; the 300 s default hangs up mid-conversation.
+    <Proxy ws://127.0.0.1:9002/>
+        ProxySet timeout=3600
+    </Proxy>
+```
+
+With that in place the client's default is already correct — it derives
+`wss://<page origin>/ws/voice/<session>`. Set `VOICE_PUBLIC_WS_BASE` only if
+the worker is exposed on a *different* TLS host (e.g.
+`wss://voice.example.com`), in which case that host needs the same block.
+
+### 1.8 Scaling voice workers
 
 The voice runtime is stateless between calls — all trusted state lives in
 Redis (`voice:session:{id}`, `botcfg:*`), MongoDB and MySQL — so capacity is
@@ -106,8 +198,11 @@ VOICE_WORKER_PORT=9013 env/bin/python -m voice_runtime.app
   up in shared Redis, so no sticky routing is required *for connection
   establishment*; a single call stays on the worker that accepted it for its
   lifetime.
-- For browser test calls the API returns `VOICE_WORKER_PORT` to the client,
-  so in a load-balanced setup set `VOICE_WORKER_PORT` to the balancer's port.
+- For browser test calls over plain HTTP the client connects to
+  `ws://<page host>:VOICE_WORKER_PORT`, so in a load-balanced setup set
+  `VOICE_WORKER_PORT` to the balancer's port. Over HTTPS it instead uses the
+  page's own origin (`wss://<origin>/ws/voice/…`) — see 1.7. Either default is
+  overridden by `VOICE_PUBLIC_WS_BASE`.
   For telephony, `public_ws_base` in the webhook connect instructions must
   point at the balancer.
 - In-progress LangGraph workflows checkpoint to PostgreSQL, so a worker
@@ -124,7 +219,7 @@ VOICE_WORKER_PORT=9013 env/bin/python -m voice_runtime.app
 ```bash
 TOKEN=$(curl -s -X POST localhost:9001/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"priya.sharma@meridianhealth.com","password":"Demo@2026!"}' \
+  -d '{"email":"<EMAIL>","password":"<PASSWORD>"}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 
 KB=$(curl -s -X POST localhost:9001/api/v1/knowledge \
@@ -166,11 +261,11 @@ MCP client to `http://localhost:9003/mcp` with the same bearer token.
 
 ### 2.5 Browser voice test
 
-1. Sign in at `http://localhost:5199` (demo logins in the README).
+1. Sign in at `http://localhost:5199` with a locally configured/seeded account.
 2. Open **Studio** for a bot → **Testing** tab → switch to **Voice** mode.
 3. Grant microphone access; the page creates a session via
    `POST /api/v1/voice-sessions` and connects to
-   `ws://localhost:9002/ws/voice/{sessionId}`. Live transcripts and bot events
+   `ws://localhost:9002/ws/voice/{session_id}`. Live transcripts and bot events
    render from the JSON side-channel; `mock` providers work without any keys.
 
 ## 3. docker-compose sketch
@@ -276,8 +371,12 @@ backend.cli migrate` (then `pg-migrate` and `seed` the same way).
 
 ## 4. FreeSWITCH ESL notes
 
-- Media: a dialplan attaches `mod_audio_fork` to
-  `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` (raw L16 @ 8 kHz).
+- Media: a dialplan attaches `mod_audio_stream` (default; stereo L16 @ 8 kHz
+  inbound, `streamAudio` JSON out) or `mod_audio_fork`
+  (`?transport=audio_fork`; mono L16 @ 8 kHz inbound — native telephony rate,
+  no resampling before STT — `playAudio` JSON out at 8 kHz) to
+  `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` — details in
+  [TELEPHONY.md](TELEPHONY.md#freeswitch).
 - Call control: enable `mod_event_socket` at `127.0.0.1:9004`, set its
   password, configure `FREESWITCH_HOST`/`FREESWITCH_PORT` and
   `FREESWITCH_PASSWORD` (via `FREESWITCH_PASSWORD_REFERENCE=env:FREESWITCH_PASSWORD`).

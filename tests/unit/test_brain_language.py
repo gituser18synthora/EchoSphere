@@ -28,6 +28,10 @@ class _RecorderStub:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
 
 def make_brain(language="hi-IN", languages=("en-IN", "hi-IN")) -> ConversationBrain:
     config = ResolvedBotConfig(
@@ -61,6 +65,11 @@ class TestScriptHeuristics:
     def test_pure_english_is_english(self):
         assert script_supports_language("Please tell me my account status", "en-IN")
 
+    def test_each_indic_language_requires_its_own_script(self):
+        assert script_supports_language("ஒரு கேள்வி உள்ளது", "ta-IN")
+        assert script_supports_language("ഒരു ചോദ്യം ഉണ്ട്", "ml-IN")
+        assert not script_supports_language("ஒரு கேள்வி உள்ளது", "ml-IN")
+
     def test_english_words_inside_hindi_do_not_read_as_english(self):
         # Borrowed words ("account status") must not flip the language.
         assert not script_supports_language("मेरा account status क्या है", "en-IN")
@@ -76,35 +85,60 @@ class TestScriptHeuristics:
 
 
 class TestLanguageSwitching:
-    async def test_hindi_to_english_switch(self):
+    async def test_hindi_to_english_switch_is_immediate(self):
+        # The caller's FIRST meaningful English utterance flips the very next
+        # reply to English — a Hindi greeting is only the starting point.
         brain = make_brain(language="hi-IN")
         brain._history.append({"role": "user", "content": "पहला सवाल"})
-        await brain._maybe_switch_language("Actually, can you tell me when it was created?", "en-IN")
+        await brain._maybe_switch_language("Yes, I am speaking.", "en-IN")
         assert brain._conversation_language == "en-IN"
         assert any(getattr(f, "language", None) == "en-IN" for f in brain._pushed)
         assert {"type": "language", "language": "en-IN"} in brain._notified
         # Conversation state untouched by the switch.
         assert brain._history == [{"role": "user", "content": "पहला सवाल"}]
 
-    async def test_switch_back_to_hindi(self):
+    async def test_switch_back_to_hindi_is_immediate(self):
         brain = make_brain(language="hi-IN")
         await brain._maybe_switch_language("Can you help me in English?", "en-IN")
-        await brain._maybe_switch_language("अच्छा, और ये कैंसल कैसे होगा?", "hi-IN")
+        assert brain._conversation_language == "en-IN"
+        await brain._maybe_switch_language("नहीं मैं नहीं करूँगा", "hi-IN")
         assert brain._conversation_language == "hi-IN"
+
+    async def test_english_stays_english_across_turns(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("Yes, I am speaking.", "en-IN")
+        await brain._maybe_switch_language("No, I don't have money.", "en-IN")
+        assert brain._conversation_language == "en-IN"
 
     async def test_unsupported_language_keeps_current_and_notifies(self):
         brain = make_brain(language="hi-IN")
+        spoken = []
+
+        async def _say(text, **kwargs):
+            spoken.append(text)
+
+        brain._say = _say
         await brain._maybe_switch_language("ஒரு கேள்வி உள்ளது", "ta-IN")
+        assert brain._notified == []  # do not warn on one noisy detection
+        assert spoken == []
+        await brain._maybe_switch_language("தயவுசெய்து எனக்கு உதவுங்கள்", "ta-IN")
         assert brain._conversation_language == "hi-IN"
         assert brain._pushed == []  # no voice switch
         assert any(
             n.get("name") == "language_unsupported" for n in brain._notified
         )
+        # The caller is TOLD, once, which languages the bot speaks — a phone
+        # caller has no UI for the event (live vs_fWRbAKI1UBg7Usl0B-5GS6Pk).
+        assert len(spoken) == 1 and "हिंदी" in spoken[0] and "अंग्रेज़ी" in spoken[0]
+        await brain._maybe_switch_language("மீண்டும் தமிழில்", "ta-IN")
+        assert len(spoken) == 1
 
     async def test_single_word_never_switches(self):
         brain = make_brain(language="hi-IN")
         await brain._maybe_switch_language("Okay.", "en-IN")
+        await brain._maybe_switch_language("Sure.", "en-IN")
         assert brain._conversation_language == "hi-IN"
+        assert brain._notified == []
 
     async def test_script_disagreement_blocks_switch(self):
         brain = make_brain(language="hi-IN")
@@ -115,6 +149,7 @@ class TestLanguageSwitching:
     async def test_base_code_maps_to_configured_locale(self):
         brain = make_brain(language="hi-IN")
         await brain._maybe_switch_language("Please talk in English now", "en")
+        await brain._maybe_switch_language("Please keep answering in English", "en")
         assert brain._conversation_language == "en-IN"
 
     async def test_missing_language_metadata_is_ignored(self):
@@ -122,17 +157,40 @@ class TestLanguageSwitching:
         await brain._maybe_switch_language("hello there my friend", None)
         assert brain._conversation_language == "hi-IN"
 
+    async def test_alternating_unsupported_detections_never_notify(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("தயவுசெய்து இந்த கேள்விக்கு பதில் சொல்லுங்கள்", "ta-IN")
+        await brain._maybe_switch_language("मुझे हिंदी में बताइए ज़रा", "hi-IN")
+        await brain._maybe_switch_language("ஒரு கேள்வி உள்ளது இன்னும்", "ta-IN")
+        assert brain._conversation_language == "hi-IN"
+        assert brain._notified == []  # unsupported needs consecutive repeats
+
+    async def test_unsupported_warning_is_emitted_only_once_per_language(self):
+        brain = make_brain(language="hi-IN")
+        for text in (
+            "ஒரு கேள்வி உள்ளது",
+            "தயவுசெய்து எனக்கு உதவுங்கள்",
+            "எனக்கு இன்னொரு கேள்வி உள்ளது",
+            "தயவுசெய்து அதை விளக்குங்கள்",
+        ):
+            await brain._maybe_switch_language(text, "ta-IN")
+        warnings = [
+            notice for notice in brain._notified
+            if notice.get("name") == "language_unsupported"
+        ]
+        assert len(warnings) == 1
+
 
 class TestLanguageInstruction:
     def test_hindi_instruction(self):
         brain = make_brain(language="hi-IN")
         text = brain._language_instruction()
-        assert "Hindi" in text and "Reply ONLY in Hindi" in text
+        assert "Hindi" in text and "ENTIRE reply must be in Hindi" in text
 
     def test_follows_current_language_not_default(self):
         brain = make_brain(language="hi-IN")
         brain._conversation_language = "en-IN"
-        assert "Reply ONLY in English" in brain._language_instruction()
+        assert "ENTIRE reply must be in English" in brain._language_instruction()
 
 
 class TestSerializerSafety:
@@ -203,3 +261,105 @@ class TestHinglishFollowing:
         )
         assert brain._conversation_language == "en-IN"
         assert brain._recorder.language == "en-IN"
+
+    async def test_hindi_with_borrowed_payment_words_stays_hindi(self):
+        # "मैं अभी payment नहीं कर सकता" is Hindi with an English loan-word;
+        # even a mislabeled STT verdict of English must not flip the call.
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language(
+            "मैं अभी payment नहीं कर सकता", "en-IN"
+        )
+        assert brain._conversation_language == "hi-IN"
+
+    async def test_romanized_hinglish_mislabelled_english_stays_hindi(self):
+        # All-Latin Hinglish ("payment nahi kar sakta") labelled "en" by the
+        # STT: the utterance's dominant lexicon contradicts the label, so the
+        # conversation stays Hindi (no oscillation from borrowed words).
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("payment nahi kar sakta", "en-IN")
+        assert brain._conversation_language == "hi-IN"
+        assert any(
+            event == "language_switch_blocked"
+            for event, _ in brain._recorder.events
+        )
+
+    async def test_english_with_one_hindi_word_stays_english(self):
+        # "haan I can pay tomorrow" is dominantly English; an STT label of
+        # Hindi (triggered by the lone "haan") must not flip the call.
+        brain = make_brain(language="en-IN")
+        await brain._maybe_switch_language("haan I can pay tomorrow", "hi-IN")
+        assert brain._conversation_language == "en-IN"
+
+
+class TestShortAnswersInsideAWorkflow:
+    async def test_two_word_devanagari_answer_does_not_flip_an_english_call(self):
+        """cv_c98e4edcc350: the English caller answered the guard-name ask with
+        "रोहन जी।"; the call flipped to Hindi and the next question came in
+        Hindi. Inside a flow a one/two-word utterance is an answer, not a
+        language change."""
+        brain = make_brain()
+        await brain._maybe_switch_language("Yes, I am speaking.", "en-IN")
+        assert brain._conversation_language == "en-IN"
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("रोहन जी।", "hi-IN")
+        assert brain._conversation_language == "en-IN"
+        assert ("language_switch_blocked", {
+            "detected": "hi-IN", "reason": "short_answer_in_workflow", "current": "en-IN",
+        }) in brain._recorder.events
+
+    async def test_two_word_english_answer_does_not_flip_a_hindi_call(self):
+        brain = make_brain()
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("yes both", "en-IN")
+        assert brain._conversation_language == "hi-IN"
+
+    async def test_a_real_sentence_inside_a_workflow_still_switches(self):
+        brain = make_brain()
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("I called the customer myself", "en-IN")
+        assert brain._conversation_language == "en-IN"
+
+    async def test_outside_a_workflow_the_old_threshold_applies(self):
+        # "Yes please" is a recognizable reply: two content words plus the
+        # platform's own reply lexicon switch at once (unlike a hum such as
+        # "Hmm hmm try ya", which never switches by itself — see
+        # test_language_switch_guard).
+        brain = make_brain()
+        await brain._maybe_switch_language("Yes please", "en-IN")
+        assert brain._conversation_language == "en-IN"
+
+
+class TestSwitchGuardReasons:
+    async def test_one_word_answer_is_too_few_words_not_numeric(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("yes", "en-IN")
+        assert brain._conversation_language == "hi-IN"
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "too_few_words"
+        assert blocked[-1]["words"] == 1
+
+    async def test_digit_words_are_still_a_numeric_payload(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("nine nine zero", "en-IN")
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "numeric_or_technical_payload"
+
+    async def test_short_malayalam_answer_on_a_hindi_call_does_not_switch(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "ml-IN"])
+        await brain._maybe_switch_language("അതെ", "ml-IN")
+        assert brain._conversation_language == "hi-IN"
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "too_few_words"
+
+    async def test_full_malayalam_sentence_switches_when_malayalam_is_configured(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "ml-IN"])
+        await brain._maybe_switch_language("ഞാൻ അടുത്ത ആഴ്ച പണം അടയ്ക്കാം", "ml-IN")
+        assert brain._conversation_language == "ml-IN"
+
+    async def test_full_malayalam_sentence_is_unsupported_when_not_configured(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "en-IN"])
+        await brain._maybe_switch_language("ഞാൻ അടുത്ത ആഴ്ച പണം അടയ്ക്കാം", "ml-IN")
+        assert brain._conversation_language == "hi-IN"
+        kinds = [k for k, _ in brain._recorder.events]
+        assert "language_detected" not in kinds
+        assert "language_candidate" in kinds or "language_unsupported" in kinds

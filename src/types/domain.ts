@@ -52,8 +52,10 @@ export interface SipTrunk {
 }
 
 /* Provider-specific settings object, validated server-side against the model's paramsSchema. */
-export type ProviderSettingValue = string | number | boolean | number[];
-export type ProviderSettings = Record<string, ProviderSettingValue>;
+export type ProviderSettingValue = string | number | boolean | number[] | string[] | ProviderSettings;
+export interface ProviderSettings {
+  [key: string]: ProviderSettingValue;
+}
 
 /** Per-language voice override; legacy entries may still be plain voice-id strings. */
 export interface LanguageVoiceOverride {
@@ -73,6 +75,120 @@ export interface AudioSettings {
   telephony?: AudioTransportSettings;
 }
 
+/** Sparse platform -> tenant -> bot natural-conversation overrides. */
+export interface HumanSpeechSettings {
+  enabled?: boolean;
+  thinking_fillers?: boolean;
+  acknowledgements?: boolean;
+  backchannels?: boolean;
+  prosody_variation?: boolean;
+  gender_agreement?: boolean;
+  micro_pauses?: boolean;
+  self_correction?: boolean;
+  /** Master switch of the nonverbal breath family (pre-reply breath, in-reply sentence breath). Independent of filler_words. */
+  breathing?: boolean;
+  /** Master switch of the spoken filler-word family (acknowledgement, voiced/spoken wait cues, question beat, tool prefaces). Independent of breathing. */
+  filler_words?: boolean;
+  /** Pre-rendered, voice-gender-matched breath while a reply is still on its way (under breathing). */
+  latency_fillers?: boolean;
+  /** Rare soft breath before a long or verification sentence inside a reply (pause mode, under breathing). */
+  sentence_breaths?: boolean;
+  /** Breathing clip volume adjustment in dB; 0 preserves the original level. */
+  breath_gain_db?: number;
+  thinking_filler_probability?: number;
+  acknowledgement_probability?: number;
+  tool_ack_probability?: number;
+  backchannel_probability?: number;
+  micro_pause_probability?: number;
+  self_correction_probability?: number;
+  sentence_breath_probability?: number;
+  min_long_turn_for_backchannel_ms?: number;
+  min_gap_between_backchannels_ms?: number;
+  max_backchannels_per_call?: number;
+  /** Quiet after the caller stops (ms) before a latency filler may play. */
+  latency_filler_delay_ms?: number;
+  /** Long-wait escalation: voiced "hmm" then a spoken "one second" cue in the bot's voice (under filler_words). */
+  latency_filler_ladder?: boolean;
+  adaptive_latency_cues?: boolean;
+  /** Chance (0..1) that a long wait gets a voiced cue at all; below it the wait stays silent or a breath. */
+  latency_cue_probability?: number;
+  /** Time after the caller stops (ms) before the voiced "hmm" cue may play. */
+  latency_filler_hmm_ms?: number;
+  /** Time after the caller stops (ms) before the spoken "one second" cue may play. */
+  latency_filler_spoken_ms?: number;
+  /** Which pre-rendered sound covers the gap before a reply. */
+  latency_filler_kind?: FillerSoundKind;
+  /** Per kind and voice gender: which clips may play (primary first, then alternates). Empty = all rotate. */
+  filler_audio_selection?: FillerAudioSelection;
+  /** Per language: which voiced "hmm" cue texts the long-wait rung may use. Empty = language default. */
+  latency_filler_cue_selection?: CueSelection;
+  /** Quiet office / call-centre room sound under the whole call, pauses included (every TTS provider). Default off. */
+  background_ambience?: boolean;
+  /** Which room sound (stable preset id, never a file). Default "office". */
+  background_ambience_preset?: AmbiencePresetId;
+  /** Room sound volume 0–100 (0 mutes, 50 = standard level); the runtime maps it to dB below speech. */
+  background_ambience_volume?: number;
+}
+
+/** A background-sound preset id from the backend registry (shared/audio/ambience_presets.py). */
+export type AmbiencePresetId = string;
+
+/** One background sound as the backend registry lists it. Only
+ *  `productionEnabled` presets are offered for selection; the others are
+ *  listed so a value saved earlier can still be shown by name. */
+export interface AmbiencePresetOption {
+  id: AmbiencePresetId;
+  label: string;
+  description: string;
+  productionEnabled: boolean;
+}
+
+export type FillerSoundKind = "breath" | "inhale" | "exhale" | "inhale_exhale";
+export type FillerGender = "male" | "female" | "neutral";
+/** One selection: the preferred clip/cue plus optional alternates that rotate with it. */
+export interface AudioChoice {
+  primary?: string;
+  alternates?: string[];
+}
+export type FillerAudioSelection = Partial<Record<FillerSoundKind, Partial<Record<FillerGender, AudioChoice>>>>;
+export type CueSelection = Record<string, AudioChoice>;
+type HumanSpeechObjectKey = "latency_filler_kind" | "filler_audio_selection" | "latency_filler_cue_selection";
+export type HumanSpeechEffectiveSettings =
+  Required<Omit<HumanSpeechSettings, HumanSpeechObjectKey>> & Pick<HumanSpeechSettings, HumanSpeechObjectKey>;
+
+export interface FillerAudioClip {
+  id: string;
+  label: string;
+  source: "recording" | "synthesized";
+  kind: FillerSoundKind;
+  gender: FillerGender;
+  durationMs: number;
+  requiresSelection?: boolean;
+}
+export interface FillerCueOption { id: string; text: string; ready: boolean }
+export interface NaturalConversationAudio {
+  sampleRate: number;
+  kinds: { id: FillerSoundKind; label: string }[];
+  cueKinds: { id: "hmm" | "wait"; label: string }[];
+  genders: FillerGender[];
+  /** The voice the runtime speaks each bot language with — its gender decides which clips are eligible. */
+  voices: { language: string; voiceName: string; gender: FillerGender; provider: string; model: string; voice: string }[];
+  clips: Record<FillerSoundKind, Record<FillerGender, FillerAudioClip[]>>;
+  cues: Record<string, { language: string; options: Record<"hmm" | "wait", FillerCueOption[]>; defaultSelection: AudioChoice | null }>;
+  effective: { latencyFillerKind: FillerSoundKind; fillerAudioSelection: FillerAudioSelection; latencyFillerCueSelection: CueSelection };
+}
+export type HumanSpeechSettingKey = keyof HumanSpeechSettings;
+export type HumanSpeechSettingSource = "platform" | "tenant" | "bot";
+export type HumanSpeechSources = Record<HumanSpeechSettingKey, HumanSpeechSettingSource>;
+
+export interface SttAutoDetectLanguage {
+  value: boolean | null;
+  effective: boolean;
+  source: "explicit" | "derived";
+  derivedDefault: boolean;
+  languages: string[];
+}
+
 export interface VoiceSettings {
   botId: string;
   voiceId: string | null;
@@ -88,6 +204,10 @@ export interface VoiceSettings {
   /** Platform locale code, or "" for auto-detect. */
   sttLanguage: string | null;
   sttSettings: ProviderSettings;
+  /** Effective STT auto-detect state: the persisted tri-state value, the
+      effective boolean, whether it is explicit or derived, and the derived
+      (multilingual → on) default. Absent in older API responses. */
+  sttAutoDetectLanguage?: SttAutoDetectLanguage;
   ttsProvider: string | null;
   ttsModel: string | null;
   ttsVoice: string | null;
@@ -99,6 +219,36 @@ export interface VoiceSettings {
   fallbackModel: string | null;
   fallbackVoice: string | null;
   audioSettings: AudioSettings;
+  /**
+   * Goal Engine configuration (role, domain, goals, allowedTopics,
+   * restrictedTopics, identity, slots, outOfScope, …). Empty object means
+   * the runtime derives a safe default from the published prompt, intents
+   * and domain policy.
+   */
+  goalPolicy: Record<string, unknown> & { endCall?: GoalPolicyEndCall };
+  /** Sparse bot overrides; empty means inherit tenant/platform. */
+  humanSpeech: HumanSpeechSettings;
+  humanSpeechEffective: HumanSpeechEffectiveSettings;
+  humanSpeechSources: HumanSpeechSources;
+  humanSpeechInherited: HumanSpeechEffectiveSettings;
+  humanSpeechInheritedSources: HumanSpeechSources;
+  /** Background sounds from the backend registry (older API: absent). */
+  ambiencePresets?: AmbiencePresetOption[];
+}
+
+/** goal_policy.endCall — lets a generic bot hang up after its goodbye when a
+ *  confident Goal Engine decision says end_call (default wrong_person, ≥0.9).
+ *  Missing = OFF. The UI edits only `enabled`, through its own PATCH. */
+export interface GoalPolicyEndCall {
+  enabled?: boolean;
+  signals?: string[];
+  minConfidence?: number;
+}
+
+export interface EndCallToggleResult {
+  botId: string;
+  /** Effective switch after the save (an invalid stored config reads OFF). */
+  enabled: boolean;
 }
 
 /* ---------- Provider catalog (database-driven) ---------- */
@@ -117,12 +267,19 @@ export interface ProviderInfo {
 }
 
 export interface ParamSpec {
-  type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list";
+  type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list" | "string_list";
+  /** Specialized control ("dictionary") rendered outside the generic fields. */
+  widget?: string;
+  /** Display grouping hint (e.g. "pronunciation"). */
+  section?: string;
   min?: number;
   max?: number;
   step?: number;
   default?: ProviderSettingValue;
-  values?: string[];
+  /** Enum choices; numeric values stay numbers on the wire (e.g. Eleven v3 stability 0.0/0.5/1.0). */
+  values?: (string | number)[];
+  /** Optional display names per enum value, keyed by String(value) (e.g. {"0.5": "Natural"}). */
+  labels?: Record<string, string>;
   label: string;
   help?: string;
   advanced?: boolean;
@@ -130,11 +287,15 @@ export interface ParamSpec {
   optional?: boolean;
   max_items?: number;
   max_length?: number;
+  /** string_list only: render a multi-line editor (one entry per line) instead of a one-line comma list. */
+  multiline?: boolean;
 }
 
 export interface ProviderModelInfo {
   code: string;
   displayName: string;
+  /** Concise operator-facing summary (quality/latency/streaming traits). */
+  description?: string | null;
   provider: string;
   capability: VoiceCapability;
   /** Provider-native language codes; [] = language-agnostic. */
@@ -143,6 +304,10 @@ export interface ProviderModelInfo {
   sampleRates: number[];
   streaming: boolean;
   paramsSchema: Record<string, ParamSpec>;
+  /** TTS only: [min, max] of the model's own speed control (Sarvam `pace`,
+      ElevenLabs `speed`), which Delivery tuning's speaking speed maps onto.
+      null/absent means the model has no speed control (e.g. eleven_v3). */
+  speedRange?: [number, number] | null;
   isDefault: boolean;
 }
 
@@ -203,6 +368,8 @@ export interface VoiceSessionInfo {
   channel: string;
   wsPath: string;
   workerPort: number;
+  /** Public ws(s):// base from VOICE_PUBLIC_WS_BASE; empty = derive it. */
+  wsBase?: string;
   expiresInSeconds: number;
 }
 
@@ -227,6 +394,50 @@ export interface TenantSettings {
   notifications: { id: string; label: string; enabled: boolean }[];
   security: { sso?: boolean; mfa?: boolean };
   retentionDays: number;
+  /** Sparse tenant overrides; empty means inherit platform. */
+  humanSpeech: HumanSpeechSettings;
+  humanSpeechEffective: HumanSpeechEffectiveSettings;
+  humanSpeechSources: HumanSpeechSources;
+  humanSpeechInherited: HumanSpeechEffectiveSettings;
+  humanSpeechInheritedSources: HumanSpeechSources;
+  /** Background sounds from the backend registry (older API: absent). */
+  ambiencePresets?: AmbiencePresetOption[];
+}
+
+export type TurnDetectionMode = "system_default" | "recommended" | "custom";
+export type TurnDetectionTransport = "browser" | "telephony";
+export type TurnDetectionGroup = "turn_detection" | "noise_gate";
+export type TurnDetectionValues = Record<TurnDetectionGroup, Record<string, number>>;
+export type TurnDetectionOverrides = Partial<Record<
+  TurnDetectionTransport,
+  Partial<Record<TurnDetectionGroup, Record<string, number | boolean>>>
+>>;
+
+export interface TurnDetectionField {
+  group: TurnDetectionGroup;
+  key: string;
+  section: string;
+  label: string;
+  description: string;
+  input: "slider" | "number" | "toggle" | "select";
+  valueType: "number" | "integer" | "boolean";
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+  default: Record<TurnDetectionTransport, number>;
+  recommended: Record<TurnDetectionTransport, number>;
+}
+
+export interface TurnDetectionConfig {
+  schemaVersion: number;
+  mode: TurnDetectionMode;
+  overrides: TurnDetectionOverrides;
+  effective: Record<TurnDetectionTransport, TurnDetectionValues>;
+  transports: { id: TurnDetectionTransport; label: string; description: string }[];
+  sections: { id: string; label: string; description: string }[];
+  modes: { id: TurnDetectionMode; label: string; description: string }[];
+  fields: TurnDetectionField[];
 }
 
 export type Severity = "good" | "warning" | "serious" | "critical" | "neutral";
@@ -247,13 +458,33 @@ export interface Kpi {
   delta?: number; // percent vs previous period
   deltaLabel?: string;
   spark?: number[];
-  intent?: "up-good" | "down-good"; // which direction is good
+  intent?: "up-good" | "down-good" | "neutral"; // which direction is good; neutral = none
 }
 
 /* ---------- Tenancy ---------- */
 
 export type TenantStatus = "active" | "trial" | "suspended" | "provisioning";
 export type PlanTier = "starter" | "growth" | "enterprise";
+
+/** A tenant's long-lived, read-only integration credential. The plaintext
+    `token` is present only in the response that generated it (create tenant,
+    rotate); afterwards only the display `prefix` is known. */
+export interface TenantApiToken {
+  configured: boolean;
+  id?: string | null;
+  name?: string | null;
+  prefix?: string | null;
+  status?: "active" | "revoked" | null;
+  createdAt?: string | null;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+  serviceAccountEmail?: string | null;
+  role?: string | null;
+  readOnly?: boolean;
+  token?: string | null;
+  /** Revoke response only: how many tokens were revoked. */
+  revoked?: number;
+}
 
 export interface Tenant {
   id: string;
@@ -263,6 +494,11 @@ export interface Tenant {
   industry: string;
   region: string;
   aiProfileCode?: string;
+  /** Assigned guardrail profile id ("" → platform-mandatory rules only). */
+  guardrailProfileId: string;
+  /** Summary of the assigned profile — readable even after deactivation. */
+  guardrailProfile: GuardrailProfileSummary | null;
+  defaultLanguages: string[];
   plan: PlanTier;
   status: TenantStatus;
   createdAt: string;
@@ -274,6 +510,10 @@ export interface Tenant {
   aiCostMonth: number;
   health: Severity;
   adminEmail: string;
+  /** Generate the AI call summary / outcome / NBA after each call. */
+  callSummaryEnabled: boolean;
+  /** Inject the customer's previous call summary into new calls. */
+  usePreviousCallSummary: boolean;
   website?: string;
   contactName?: string;
   contactPhone?: string;
@@ -354,10 +594,13 @@ export interface VoiceBot {
   containment: number; // % resolved without human
   callsToday: number;
   callsMonth: number;
-  avgCostPerCall: number;
+  /** Null when the viewer's role lacks the costs.view permission. */
+  avgCostPerCall: number | null;
   csat: number;
   channels: ChannelType[];
   voiceId?: string;
+  /** Explicit bot-level guardrail profile id; "" → inherits the tenant default. */
+  guardrailProfileId: string;
   updatedAt: string;
   publishedAt?: string;
   readiness: ReadinessItem[];
@@ -717,7 +960,9 @@ export interface PromptVersion {
   editedAt: string;
   note: string;
   variants: PromptVariant[];
+  promptMode: "structured" | "full";
   structuredConfig?: StructuredPromptConfig | null;
+  fullPrompt?: string | null;
   compiledPrompt?: string | null;
   modelCompatibility?: string[];
 }
@@ -744,6 +989,19 @@ export interface PromptCompileResult {
   errors: { field: string; message: string }[];
   characterCount: number;
   tokenEstimate: number;
+  variables?: string[];
+  /** Present only when a testContext was sent and the compile was valid. */
+  render?: PromptRenderResult;
+}
+
+/* A compiled prompt rendered against sample runtime-context values. */
+export interface PromptRenderResult {
+  rendered: string;
+  variables: string[];
+  missing: string[];
+  unusedTestKeys: string[];
+  promptVersion?: number;
+  promptMode?: string;
 }
 
 export interface PromptTestResult {
@@ -761,11 +1019,157 @@ export interface PromptTestResult {
   error: string | null;
 }
 
+/* ---------- Runtime context (per-bot user details) ---------- */
+
+export type RuntimeContextFieldType =
+  "string" | "number" | "integer" | "boolean" | "date" | "object" | "array";
+
+export interface RuntimeContextField {
+  key: string;
+  label?: string;
+  type: RuntimeContextFieldType;
+  required?: boolean;
+  sensitive?: boolean;
+  /** Trailing characters left visible when a sensitive value is masked. */
+  maskKeep?: number;
+  /**
+   * The dialer may supply this field per call (telephony webhook `variables`).
+   * A non-blank value then wins over the API / test payload for this field;
+   * when every declared field is covered this way the User Details API is skipped.
+   */
+  sessionOverride?: boolean;
+  description?: string;
+  example?: string;
+}
+
+export interface RuntimeContextConfig {
+  id: string | null;
+  botId: string;
+  name: string;
+  sourceMode: "api" | "manual";
+  apiConnectionId: string | null;
+  responsePath: string | null;
+  fields: RuntimeContextField[];
+  allowAdditional: boolean;
+  testPayload: Record<string, unknown> | null;
+  missingValuePolicy: string | null;
+  domainPolicy: "generic" | "collections";
+  /** How a reply to the identity question counts; null = the domain
+   *  policy's default (strict for collections, standard otherwise). */
+  identityConfirmationMode?: IdentityConfirmationMode | null;
+  status: string;
+  configured: boolean;
+}
+
+export type IdentityConfirmationMode = "standard" | "strict";
+
+/** One effective context value with provenance — sensitive values arrive masked. */
+export interface RuntimeContextValue {
+  key: string;
+  value: unknown;
+  source: string;
+  sensitive: boolean;
+}
+
+export interface RuntimeContextValidateResult {
+  valid: boolean;
+  errors: { field: string; message: string }[];
+  effective: RuntimeContextValue[];
+  missingRequired: string[];
+  declaredMissing: string[];
+  promptSection: string;
+}
+
+export interface RuntimeContextRecord {
+  id: string;
+  botId: string;
+  customerRef: string | null;
+  phoneMasked: string | null;
+  data: Record<string, unknown>;
+  callState: Record<string, unknown>;
+  updatedAt: string | null;
+}
+
+/* One simulated runtime turn — the full trace the Testing Studio renders.
+   Loosely typed where the backend is loose (entities, tool payloads). */
+export interface SimulateTrace {
+  rawTranscript: string;
+  isFinal: boolean;
+  interrupted: boolean;
+  botVersion: string;
+  finalTranscript: string | null;
+  heldForFinal?: boolean;
+  note?: string;
+  runtimeContext?: {
+    values: RuntimeContextValue[];
+    errors: { field: string; message: string }[];
+    missingRequired: string[];
+    domainPolicy: string;
+  };
+  promptId?: string | null;
+  promptVersion?: number | null;
+  promptMode?: string | null;
+  promptState?: string | null;
+  voiceIdentity?: { name: string; gender: string };
+  renderedPrompt?: string;
+  route?: string | null;
+  action?: string | null;
+  intent?: {
+    intent: string | null;
+    signal: string | null;
+    confidence: number;
+    entities: Record<string, unknown>;
+    requires_tool: boolean;
+    tool: string | null;
+    interrupts_flow: boolean;
+    below_threshold: boolean;
+    source: string;
+    latency_ms: number;
+  };
+  signal?: string | null;
+  routerDecision?: { route: string; reason: string; confidence: number };
+  policy?: {
+    phase: string;
+    blockers: string[];
+    forceLlm: boolean;
+    handoff: boolean;
+    closeAfterReply: boolean;
+    disposition: string | null;
+  };
+  tool?: {
+    request: Record<string, unknown>;
+    response: unknown;
+    ok: boolean;
+    status: number | null;
+    error: string | null;
+    mocked: boolean;
+    latencyMs: number | null;
+  } | null;
+  workflow?: {
+    name: string;
+    status: string;
+    nodeTrace: string[];
+    slots: Record<string, unknown>;
+    offScript?: boolean;
+    done: boolean;
+  } | null;
+  response?: string | null;
+  language?: string;
+  sessionId?: string;
+  provider?: string;
+  latencyMs: number;
+  paymentVerification?: string | null;
+  dispositionAfterTurn?: string | null;
+}
+
 /* ---------- Voice ---------- */
 
 export interface VoiceCloneSampleMeta {
   fileName: string;
   sizeBytes: number;
+  sourceType?: "live_recording" | "file_upload";
+  durationSec?: number | null;
+  audioId?: string;
 }
 
 export interface VoiceCloneMetadata {
@@ -773,6 +1177,24 @@ export interface VoiceCloneMetadata {
   requiresVerification?: boolean;
   removeBackgroundNoise?: boolean;
   samples?: VoiceCloneSampleMeta[];
+}
+
+/** A stored source-audio sample a cloned voice was built from. */
+export interface VoiceCloneSourceAudio {
+  id: string;
+  voiceId: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationSec: number | null;
+  sourceType: "live_recording" | "file_upload";
+  provider: string;
+  providerVoiceId: string;
+  status: string;
+  createdBy?: string | null;
+  createdAt?: string | null;
+  /** Authenticated playback endpoint (fetch with the JWT, play as blob). */
+  url: string;
 }
 
 /** Provider-specific clone option rendered dynamically by the Clone Voice UI. */
@@ -796,6 +1218,13 @@ export interface VoiceCloneProviderInfo {
   reason: string | null;
 }
 
+export interface VoiceCloneRecordingConfig {
+  minSeconds: number;
+  recommendedMinSeconds: number;
+  recommendedMaxSeconds: number;
+  maxSeconds: number;
+}
+
 export interface VoiceCloneConfig {
   providers: VoiceCloneProviderInfo[];
   allowedExtensions: string[];
@@ -803,6 +1232,7 @@ export interface VoiceCloneConfig {
   maxFiles: number;
   maxFileMb: number;
   maxTotalMb: number;
+  recording?: VoiceCloneRecordingConfig;
 }
 
 export interface VoiceProfile {
@@ -830,6 +1260,9 @@ export interface VoiceProfile {
   providerSettings?: Record<string, unknown>;
   usageCount?: number;
   updatedAt?: string;
+  /** Stored source samples (cloned voices only; empty for clones created
+   *  before source-audio retention). */
+  sourceAudio?: VoiceCloneSourceAudio[];
 }
 
 export interface VoiceTuning {
@@ -837,6 +1270,25 @@ export interface VoiceTuning {
   pauseMs: number;
   empathy: number; // 0–100
   energy: number; // 0–100
+}
+
+/* ---------- Pronunciation dictionaries (Sarvam dict_id) ---------- */
+
+/** Word → "speak as" mappings keyed by platform locale code. */
+export type PronunciationMap = Record<string, Record<string, string>>;
+
+export interface PronunciationDictionary {
+  id: string;
+  provider: string;
+  /** Provider-assigned id (e.g. "p_5cb7faa6") — the value stored as dict_id. */
+  dictId: string;
+  name: string;
+  description: string | null;
+  languageWordCounts: Record<string, number>;
+  createdAt: string | null;
+  updatedAt: string | null;
+  /** Present on the detail endpoint only — live provider mappings. */
+  pronunciations?: PronunciationMap;
 }
 
 /* ---------- Intents & Entities ---------- */
@@ -982,6 +1434,8 @@ export interface IndustryMaster extends MasterCommon {
   description: string;
   icon: string;
   sortOrder: number;
+  /** Recommended default guardrail profile — a suggestion, never a lock. */
+  defaultGuardrailProfileId: string | null;
 }
 
 export interface CountryMaster extends MasterCommon {
@@ -1080,6 +1534,7 @@ export interface ProviderModelMaster extends MasterCommon {
   code: string;
   name: string;
   displayName: string;
+  description?: string | null;
   providerCode: string;
   capability: VoiceCapability;
   languages: string[];
@@ -1142,11 +1597,12 @@ export interface LanguageMaster {
 }
 
 export interface OnboardingOptions {
-  industries: { code: string; name: string; icon: string }[];
+  industries: { code: string; name: string; icon: string; defaultGuardrailProfileId: string }[];
   dataRegions: { code: string; name: string; infrastructureReady: boolean }[];
   plans: { code: string; name: string; description: string; priceMonthly: number; minutesIncluded: number; botLimit: number; seatsIncluded: number; isRecommended: boolean }[];
   aiProfiles: { code: string; name: string; description: string; costCategory: string }[];
   languages: { code: string; name: string; nativeName: string; direction: string }[];
+  guardrailProfiles: { id: string; code: string; name: string; description: string }[];
 }
 
 export interface UploadConfig {
@@ -1267,6 +1723,8 @@ export interface TraceStep {
   promptVersion?: string;
   latencyMs?: number;
   costUsd?: number;
+  /** Wall-clock time of the turn (ISO, up to microsecond precision). */
+  at?: string;
 }
 
 export interface TestScenario {
@@ -1307,6 +1765,9 @@ export type SentimentLabel = "positive" | "neutral" | "negative";
 
 export interface Conversation {
   id: string;
+  /** The telephony provider's own call id (webhook callId / CallSid); null for
+      browser sessions and for calls recorded before it was stored. */
+  callId?: string | null;
   botId: string;
   bot: string;
   channel: ChannelType;
@@ -1318,11 +1779,136 @@ export interface Conversation {
   contained: boolean;
   escalationReason?: string;
   csat?: number;
-  costUsd: number;
+  /** Authoritative metered total in the base currency (USD), computed by the
+      backend from this call's usage events. The same value backs the list row,
+      the recording row and the breakdown — clients never recompute it.
+      Null when the viewer's role lacks the costs.view permission. */
+  costUsd: number | null;
+  /** costUsd as a per-minute rate over the call's stored duration, derived by
+      the backend. Null when the call has no duration (never connected). */
+  costPerMinuteUsd?: number | null;
   language: string;
   qaScore?: number;
   flagged: boolean;
+  /** Call outcome captured by the runtime conversation policy
+      (promise_to_pay, payment_claimed, wrong_number, account_disputed,
+      callback_requested, complaint_recorded, escalated, no_commitment…). */
+  disposition?: string | null;
   transcript: TraceStep[];
+  /** Present (non-null) only when the call's audio file is available. */
+  recording?: ConversationRecording | null;
+  /** Auditable per-component costing; detail endpoint only. */
+  cost?: ConversationCost | null;
+  /** Post-call AI intelligence (summary / outcome / Next Best Action);
+      detail endpoint only, null while nothing has been generated. */
+  summary?: ConversationAiSummary | null;
+  /** Actual per-call STT/TTS character counters and ratio over call duration. */
+  characterUsage?: ConversationCharacterUsage | null;
+}
+
+export interface ConversationCharacterUsage {
+  sttInputCharacters: number;
+  ttsOutputCharacters: number;
+  sttInputCharactersPerMin: number | null;
+  ttsOutputCharactersPerMin: number | null;
+}
+
+export interface ConversationCommitment {
+  type?: string | null;
+  description?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  /** Absolute ISO date resolved from the customer's spoken expression. */
+  dueDate?: string | null;
+  status?: string | null;
+}
+
+export interface ConversationNextBestAction {
+  action?: string | null;
+  reason?: string | null;
+  priority?: string | null;
+  recommendedAt?: string | null;
+}
+
+export interface ConversationAiSummary {
+  /** queued | processing | completed | failed (failed carries a deterministic fallback). */
+  status: string;
+  callOutcome?: string | null;
+  summary?: string | null;
+  customerIntent?: string | null;
+  customerSentiment?: string | null;
+  customerCommitments: ConversationCommitment[];
+  objections: string[];
+  importantFacts: string[];
+  resolvedItems: string[];
+  unresolvedItems: string[];
+  missingSlots: string[];
+  /** Bot-configured structured summary (goal policy summaryFields): stable keys, null = not determined. */
+  structuredFields?: Record<string, string | null>;
+  /** Verbatim customer quotes supporting analyst-extracted fields. */
+  structuredFieldEvidence?: Record<string, string>;
+  /** Per-field provenance: "workflow" (guided-flow answer) or "analysis" (post-call analyst). */
+  structuredFieldSources?: Record<string, string>;
+  /** Display labels from goal policy summaryFields; keys without one are shown humanised. */
+  structuredFieldLabels?: Record<string, string>;
+  /** Display forms of normalized date/time fields ("20 Oct 2026", "05:00 PM IST"); the value stays machine-readable. */
+  structuredFieldDisplay?: Record<string, string>;
+  nextBestAction?: ConversationNextBestAction | null;
+  followUpRequired: boolean;
+  followUpAt?: string | null;
+  confidence?: number | null;
+  generatedAt?: string | null;
+  error?: string | null;
+}
+
+/** One priced component of one usage event, as the backend costed it. */
+export interface ConversationCostLine {
+  capability: string;
+  capabilityLabel: string;
+  provider: string;
+  model: string;
+  voice?: string | null;
+  component: string;
+  componentLabel: string;
+  /** Decimal strings — never parsed into a float for arithmetic. */
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  /** Currency the RATE is quoted in (Sarvam publishes INR rates). */
+  rateCurrency: string;
+  /** USD → rateCurrency rate applied when the cost was charged. */
+  fxRate?: string | null;
+  costUsd: string;
+  priced: boolean;
+  note?: string | null;
+}
+
+export interface ConversationCost {
+  sessionId?: string | null;
+  baseCurrency: string;
+  totalUsd: string;
+  displayCurrency: string;
+  displayTotal?: string | null;
+  /** Stored USD → displayCurrency rate used for the shown amount. */
+  displayRate?: string | null;
+  byCapability: Record<string, { label: string; costUsd: string }>;
+  lines: ConversationCostLine[];
+  /** "capability:provider:component" entries with usage but no configured price. */
+  unpriced: string[];
+  eventCount: number;
+  highCost: boolean;
+  highCostThresholdUsd: string;
+  /** Cached conversation total, for comparison against the recomputed sum. */
+  storedTotalUsd: string;
+  /** False when the cached total and the recomputed sum disagree. */
+  reconciled: boolean;
+}
+
+export interface ConversationRecording {
+  url: string;
+  mimeType: string;
+  durationSec: number;
+  sizeBytes: number;
 }
 
 /* ---------- Monitoring, security, misc ---------- */
@@ -1384,12 +1970,95 @@ export interface ApprovedModel {
 
 export interface Guardrail {
   id: string;
+  /** Stable machine key the runtime enforcement dispatches on. */
+  code: string;
   name: string;
   category: string;
   description: string;
   enforcement: "block" | "flag" | "redact";
   enabled: boolean;
+  /** Platform-mandatory: applies to every tenant, cannot be disabled. */
+  isMandatory: boolean;
   triggers30d: number;
+}
+
+export interface GuardrailProfileSummary {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  version: number;
+}
+
+export interface GuardrailProfile {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  status: string;
+  version: number;
+  usageCount: number;
+  guardrailIds: string[];
+  guardrails: Guardrail[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+export interface EffectiveGuardrailRule {
+  guardrailId: string;
+  code: string;
+  name: string;
+  category: string;
+  action: "block" | "flag" | "redact";
+  mandatory: boolean;
+}
+
+export interface EffectiveGuardrails {
+  tenantId: string;
+  profile: GuardrailProfileSummary | null;
+  rules: EffectiveGuardrailRule[];
+  degraded: boolean;
+}
+
+export interface CompliancePolicySummary {
+  code: string;
+  version: number;
+  name: string;
+  regulator: string;
+  jurisdiction: string;
+  timezone: string;
+  callingWindows: { days?: number[]; start: string; end: string }[];
+}
+
+export interface BotEffectiveGuardrails {
+  botId: string;
+  tenantId: string;
+  /** True when the bot has no explicit profile and follows the tenant default. */
+  inherited: boolean;
+  profile: GuardrailProfileSummary | null;
+  tenantDefaultProfile: GuardrailProfileSummary | null;
+  rules: EffectiveGuardrailRule[];
+  compliancePolicies: CompliancePolicySummary[];
+  degraded: boolean;
+}
+
+export interface GuardrailTrigger {
+  id: string;
+  tenantId: string;
+  botId: string;
+  sessionId: string;
+  guardrailId: string;
+  guardrailCode: string;
+  ruleName: string;
+  action: "block" | "flag" | "redact" | "escalate";
+  stage: "input" | "output" | "tool" | "transcript" | "log";
+  detail: string;
+  profileId: string;
+  profileVersion: number | null;
+  channel: string;
+  createdAt: string;
 }
 
 export interface PhoneNumber {
@@ -1399,7 +2068,10 @@ export interface PhoneNumber {
   tenant?: string;
   bot?: string;
   provider: string;
-  status: "assigned" | "available" | "porting" | "error";
+  /** `reserved` = held for an archived bot: not routable, not claimable by anyone else. */
+  status: "assigned" | "reserved" | "available" | "porting" | "error";
+  /** Admin gate: inactive numbers keep existing routing but reject new assignments. */
+  isActive: boolean;
   monthlyCost: number;
 }
 
@@ -1407,8 +2079,13 @@ export interface HealthMetric {
   name: string;
   status: Severity;
   value: string;
+  /** Host:port actually probed — surfaces a service bound somewhere else. */
   target: string;
   spark: number[];
+  /** Monitoring tab this service belongs to ("platform" | "ai" | "telephony"). */
+  group: string;
+  /** Probe outcome, e.g. "http://127.0.0.1:9002/health → 200". */
+  detail: string;
 }
 
 /* ---------- Analytics series ---------- */
@@ -1428,4 +2105,83 @@ export interface AnalyticsBundle {
   knowledgeUsage: { label: string; value: number }[];
   costSeries: SeriesPoint[]; // t, llm, tts, stt, telephony
   recommendations: { id: string; title: string; detail: string; impact: "high" | "medium" | "low"; link: string }[];
+  characterUsage: {
+    sttInputCharactersPerMin: number;
+    ttsOutputCharactersPerMin: number;
+    sttInputCharacters: number;
+    ttsOutputCharacters: number;
+    relevantCallMinutes: number;
+  };
+}
+
+/* ---------- Customer collection context ---------- */
+
+/** Per-customer account/collection data a collection bot runs against.
+    Always masked by the API: full phone / loan account numbers are
+    write-only and never round-trip. Null means UNKNOWN (distinct from
+    false/zero). */
+export interface CustomerContext {
+  id: string;
+  tenantId: string;
+  botId: string;
+  customerRef?: string | null;
+  phoneMasked?: string | null;
+  customerName?: string | null;
+  dcsName?: string | null;
+  lenderName?: string | null;
+  loanAccountMasked?: string | null;
+  preferredLanguage?: string | null;
+  overdueAmount?: number | null;
+  totalOutstanding?: number | null;
+  minimumPayable?: number | null;
+  penalCharges?: number | null;
+  daysOverdue?: number | null;
+  dueDate?: string | null;
+  previousPromiseDate?: string | null;
+  partialPaymentAllowed?: boolean | null;
+  paymentMethods?: string[] | null;
+  securePaymentLinkAvailable?: boolean | null;
+  activeOffers?: { label?: string; terms?: string }[] | null;
+  offerTerms?: string | null;
+  creditReportingStatus?: string | null;
+  callbackNumber?: string | null;
+  grievanceContact?: string | null;
+  paymentStatus: "pending" | "partial" | "completed" | "disputed" | "unknown";
+  customerVerified: boolean;
+  recordingNoticeRequired: boolean;
+  complaintPending: boolean;
+  accountDisputed: boolean;
+  callbackRequested: boolean;
+  callbackRequestedAt?: string | null;
+  lastCallId?: string | null;
+  lastDisposition?: string | null;
+  isFinalTranscript: boolean;
+  interruptionDetected: boolean;
+  updatedAt?: string | null;
+}
+
+/** Writable fields when creating/updating a customer context (full values
+    for phone/loan account are accepted on write, returned masked). */
+export type CustomerContextInput = Partial<
+  Omit<
+    CustomerContext,
+    | "id" | "tenantId" | "botId" | "phoneMasked" | "loanAccountMasked"
+    | "callbackRequested" | "callbackRequestedAt" | "lastCallId"
+    | "lastDisposition" | "isFinalTranscript" | "interruptionDetected"
+    | "updatedAt"
+  > & { phone: string; loanAccountNumber: string }
+>;
+
+/** Runtime-owned call-state flags updatable via the call-state endpoint. */
+export interface CustomerContextCallState {
+  customerVerified?: boolean;
+  accountDisputed?: boolean;
+  complaintPending?: boolean;
+  paymentStatus?: CustomerContext["paymentStatus"];
+  callbackRequested?: boolean;
+  callbackRequestedAt?: string;
+  lastCallId?: string;
+  lastDisposition?: string;
+  isFinalTranscript?: boolean;
+  interruptionDetected?: boolean;
 }

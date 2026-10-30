@@ -5,11 +5,16 @@ import { Button, CardSkeleton, ErrorState, Health, KpiCard, StatusChip } from "@
 import { ChartCard, Donut, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { isCostLabel } from "@/services/money";
 
 export default function TenantDashboard() {
   const navigate = useNavigate();
-  const { user } = useApp();
+  const { user, hasPermission } = useApp();
+  // The backend already omits financial KPIs for roles without costs.view;
+  // this filter guarantees a cost card can never render from a stale payload.
+  const showCosts = hasPermission("costs.view");
   const a = useAsync(() => getTenantAnalytics(30), []);
+  const kpis = (a.data?.kpis ?? []).filter((k) => showCosts || !isCostLabel(k.label));
   const botsQ = useAsync(listBots, []);
   const convQ = useAsync(listConversations, []);
 
@@ -42,8 +47,8 @@ export default function TenantDashboard() {
 
       <div className="grid grid-6">
         {a.loading
-          ? Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
-          : a.data!.kpis.map((k) => <KpiCard key={k.label} {...k} />)}
+          ? Array.from({ length: showCosts ? 8 : 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
+          : kpis.map((k) => <KpiCard key={k.label} {...k} />)}
       </div>
 
       <div className="grid grid-2 mt-16" style={{ gridTemplateColumns: "1.6fr 1fr" }}>
@@ -74,7 +79,7 @@ export default function TenantDashboard() {
           </div>
           <div className="col" style={{ padding: 14, gap: 8 }}>
             {botsQ.loading && <CardSkeleton rows={4} />}
-            {(botsQ.data ?? []).slice(0, 4).map((b) => (
+            {(botsQ.data ?? []).filter((b) => b.status !== "archived").slice(0, 4).map((b) => (
               <button key={b.id} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10, textAlign: "left" }} onClick={() => navigate(`/t/bots/${b.id}/overview`)}>
                 <span className="icon-tile brand" style={{ width: 32, height: 32 }}><Icon name="bot" size={15} /></span>
                 <span className="grow">

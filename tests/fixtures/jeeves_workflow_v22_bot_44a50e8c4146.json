@@ -1,0 +1,1564 @@
+{
+ "id": "wf_9685ed07e312",
+ "version": 22,
+ "name": "Airtel Broadband uninstallation (imported 2026-10-28)",
+ "nodes": [
+  {
+   "x": 40,
+   "y": 40,
+   "id": "n_start",
+   "kind": "start",
+   "label": "Call starts",
+   "config": {}
+  },
+  {
+   "x": 300,
+   "y": 40,
+   "id": "n_identity_gate",
+   "kind": "ask",
+   "label": "Greeting answer — wrong person? (silent)",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "synonymPatterns": {
+      "no": [
+       "^\\W*(?:(?:ji|jee)\\s+|जी\\s+)?(?:(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$))(?:[\\s,.!]+(?:ji\\b|jee\\b|sir\\b|madam\\b|mam\\b|जी|(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$)))*\\W*$",
+       "^\\W*(?:(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$))[\\s,.!]*(?:ji\\b|जी)?[\\s,.!]*(?:(?:main|mai|mein|i am|i'm|im|this is|it's|its|ye|yeh|wo|woh|vo)\\b|(?:मैं|मै|ये|यह|वो|वह)(?=[\\s,.!?।]|$))",
+       "wrong\\s*(?:number|person|no\\b)|galat\\s*(?:number|insaan|insan|aadmi|bande|vyakti)|(?:गलत|ग़लत)\\s*(?:नंबर|इंसान|आदमी|व्यक्ति)|(?:रॉन्ग|रोंग)\\s*(?:नंबर|पर्सन)",
+       "\\bnot\\s+me\\b|someone\\s+else|not\\s+(?:that|the\\s+same|the\\s+right)\\s+person|\\bi\\s*(?:am|'m)\\s+not\\b|\\bkoi\\s+aur\\b|कोई\\s+और",
+       "\\b(?:main|mai|mein)\\s+(?:\\S+\\s+){0,2}(?:nahi|nahin|nhi)\\s+(?:hoon|hun|hu|hai)\\b|(?:मैं|मै)\\s+(?:\\S+\\s+){0,2}(?:नहीं|नही)\\s+(?:हूँ|हूं|हु|है)",
+       "(?:ye|yeh|this|यह|ये)\\s+(?:mera|my|मेरा)\\s+(?:number|नंबर)\\s+(?:nahi|nahin|is\\s+not|isn't|नहीं)",
+       "\\b(?:his|her)\\s+(?:wife|husband|brother|sister|son|daughter|father|mother|friend)\\b|\\b(?:he|she)\\s+is\\s+not\\b|\\b(?:he|she)'s\\s+not\\b|\\bnot\\s+(?:available|at\\s+home)\\b|\\b(?:unka|unki|unke)\\s+(?:\\w+\\s+)?(?:bhai|behen|bahan|wife|biwi|beta|beti|papa|mummy|dost|pati)\\b|\\b(?:wo|woh|vo)\\s+(?:\\w+\\s+){0,2}(?:nahi|nahin)\\s+(?:hain|hai|he)\\b|(?:उनका|उनकी|उनके)\\s+(?:\\S+\\s+)?(?:भाई|बहन|पत्नी|wife|बेटा|बेटी|पिता|पापा|माँ|मम्मी|दोस्त|पति)|(?:वो|वह)\\s+(?:\\S+\\s+){0,2}(?:नहीं|नही)\\s+(?:हैं|है)"
+      ],
+      "yes": [
+       "\\S"
+      ]
+     }
+    },
+    "question": "May I speak with [customer_name]?",
+    "variable": "identity_answer",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "May I speak with [customer_name]?",
+     "hi": "क्या मेरी बात [customer_name] जी से हो रही है?"
+    },
+    "responseDirective": "Silent step: reads the caller's answer to the greeting (the answer that started the workflow). No / wrong number / not me is 'no', anything else is 'yes'. Spoken only if the workflow ever starts without a caller answer. Spoken as fixed text: Hindi or Hinglish callers hear textByLanguage.hi, English callers hear textByLanguage.en."
+   }
+  },
+  {
+   "x": 560,
+   "y": 40,
+   "id": "n_is_identity_denied",
+   "kind": "condition",
+   "label": "Wrong person?",
+   "config": {
+    "value": "no",
+    "operator": "equals",
+    "variable": "identity_answer"
+   }
+  },
+  {
+   "x": 820,
+   "y": 40,
+   "id": "n_end_wrong_person",
+   "kind": "end",
+   "label": "End call (wrong person)",
+   "config": {
+    "text": "I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.",
+     "hi": "हमें खेद है, यह कॉल गलती से आपसे connect हो गई। यह कॉल किसी अन्य व्यक्ति के लिए थी। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.\nHINDI: हमें खेद है, यह कॉल गलती से आपसे connect हो गई। यह कॉल किसी अन्य व्यक्ति के लिए थी। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 300,
+   "y": 200,
+   "id": "n_good_time",
+   "kind": "intent",
+   "label": "Call purpose — is this a good time?",
+   "config": {
+    "prompt": "Thank you. I'm calling regarding your Airtel Broadband connection at [locality]. Your broadband connection has already been disconnected, and an engineer visit needs to be scheduled for device uninstallation and pickup. I can help you schedule the visit now. Is this a good time?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you. I'm calling regarding your Airtel Broadband connection at {locality}. {customer_name}, your broadband connection has been disconnected, so we need to schedule an engineer visit for device uninstallation and pickup. Is this a good time to talk?",
+     "hi": "धन्यवाद। हम आपके address {locality} वाले Airtel Broadband connection के संबंध में कॉल कर रहे हैं। {customer_name} जी, आपका broadband connection disconnect हो चुका है। इसलिए device के uninstallation और pickup के लिए engineer की visit schedule करनी है। क्या अभी बात करने का सही समय है?"
+    },
+    "responseDirective": "ENGLISH: Thank you. I'm calling regarding your Airtel Broadband connection at {locality}. {customer_name}, your broadband connection has been disconnected, so we need to schedule an engineer visit for device uninstallation and pickup. Is this a good time to talk?\nHINDI: धन्यवाद। हम आपके {locality} वाले Airtel Broadband connection के संबंध में कॉल कर रहे हैं। {customer_name} जी, आपका broadband connection disconnect हो चुका है। इसलिए device के uninstallation और pickup के लिए engineer की visit schedule करनी है। क्या अभी बात करने का सही समय है?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 560,
+   "y": 200,
+   "id": "n_ask_callback",
+   "kind": "ask",
+   "label": "Busy — preferred callback date & time",
+   "config": {
+    "question": "No problem. When would you prefer us to call you back?",
+    "variable": "callback_preference",
+    "entityType": "text",
+    "validation": {
+     "type": "future_datetime",
+     "timezone": "Asia/Kolkata",
+     "dayVariables": [
+      "callback_date"
+     ],
+     "timeVariables": [
+      "callback_time"
+     ],
+     "replyByLanguage": {
+      "day_past": {
+       "en": "That date has already passed. Please tell me an upcoming date, for example tomorrow or the day after.",
+       "hi": "ये date निकल चुकी है। आप आने वाली कोई date बताइए, जैसे कल या परसों।"
+      },
+      "time_past": {
+       "en": "That time today has already passed. Please tell me a later time today, or another day.",
+       "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।"
+      },
+      "day_invalid": {
+       "en": "That does not seem to be a valid date. Please tell me the date again, for example tomorrow or the day after.",
+       "hi": "ये date सही नहीं लग रही। आप date फिर से बताइए, जैसे कल या परसों।"
+      },
+      "day_missing": {
+       "en": "Noted the time. And on which day would you like the callback, for example tomorrow or the day after?",
+       "hi": "समय note कर लिया। आप किस दिन call back चाहेंगे, जैसे कल या परसों?"
+      },
+      "day_unclear": {
+       "en": "I did not quite catch the date. Please tell me the day, for example tomorrow, the day after, or a specific date.",
+       "hi": "मुझे date ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+      },
+      "time_invalid": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_unclear": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_ambiguous": {
+       "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+       "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।"
+      }
+     },
+     "normalizedDayVariable": "callback_date_iso",
+     "normalizedTimeVariable": "callback_time_24h"
+    },
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "spoken_day"
+      },
+      "variable": "callback_date"
+     },
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "callback_time"
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. When would you prefer us to call you back?",
+     "hi": "कोई बात नहीं। आप बताइए, हम आपको किस दिन और किस समय call back करें?"
+    },
+    "responseDirective": "ENGLISH: No problem. When would you prefer us to call you back?\nHINDI: कोई बात नहीं। आप बताइए, हम आपको किस दिन और किस समय call back करें?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Please tell me the day and time we should call you back.",
+     "hi": "ज़रूर। आप बताइए, हम आपको किस दिन और किस समय call करें?"
+    }
+   }
+  },
+  {
+   "x": 820,
+   "y": 200,
+   "id": "n_end_callback",
+   "kind": "end",
+   "label": "End call (callback noted)",
+   "config": {
+    "text": "Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.",
+     "hi": "ठीक है, हम आपको आपके बताए समय पर call back करेंगे। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.\nHINDI: ठीक है, हम आपको आपके बताए समय पर call back करेंगे। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 430,
+   "y": 360,
+   "id": "n_read_locality",
+   "kind": "ask",
+   "label": "Read locality from call data (silent)",
+   "config": {
+    "variable": "locality",
+    "prefillOnly": true,
+    "prefillFromContext": "locality"
+   }
+  },
+  {
+   "x": 820,
+   "y": 360,
+   "id": "n_confirm_disconnected",
+   "kind": "message",
+   "label": "Connection disconnected — pending uninstallation",
+   "config": {
+    "text": "Thank you. I can confirm that your broadband connection is already disconnected. The pending activity is the physical uninstallation and pickup of the broadband equipment from your premises.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you, {customer_name}. As I mentioned, your broadband connection has already been disconnected. Now, only the device uninstallation and pickup from your home is pending.",
+     "hi": "धन्यवाद {customer_name} जी। जैसा कि मैंने आपको बताया, आपका broadband connection disconnect हो चुका है। अब बस आपके घर से device का uninstallation और pickup करवाना बाकी है।"
+    },
+    "responseDirective": "ENGLISH: Thank you, {customer_name}. As I mentioned, your broadband connection has already been disconnected. Now, only the device uninstallation and pickup from your home is pending.\nHINDI: धन्यवाद {customer_name} जी। जैसा कि मैंने आपको बताया, आपका broadband connection disconnect हो चुका है। अब बस आपके घर से device का uninstallation और pickup करवाना बाकी है।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1080,
+   "y": 360,
+   "id": "n_confirm_address",
+   "kind": "intent",
+   "label": "Registered address correct?",
+   "config": {
+    "prompt": "The uninstallation is required at your registered address in [locality]. Is this the correct location?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "The uninstallation is required at your registered address in [locality]. Is this the correct location?",
+     "hi": "Uninstallation आपके registered address [locality] पर होना है। क्या ये location सही है?"
+    },
+    "responseDirective": "ENGLISH: The uninstallation is required at your registered address in [locality]. Is this the correct location?\nHINDI: Uninstallation आपके registered address [locality] पर होना है। क्या ये location सही है?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1340,
+   "y": 360,
+   "id": "n_ask_visit_date",
+   "kind": "ask",
+   "label": "Preferred visit date",
+   "config": {
+    "entity": {
+     "dataType": "spoken_day"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "validation": {
+     "type": "future_datetime",
+     "timezone": "Asia/Kolkata",
+     "dayVariables": [
+      "visit_day"
+     ],
+     "timeVariables": [
+      "visit_time"
+     ],
+     "replyByLanguage": {
+      "day_past": {
+       "en": "That date has already passed. Please tell me an upcoming date, for example tomorrow or the day after.",
+       "hi": "ये date निकल चुकी है। आप आने वाली कोई date बताइए, जैसे कल या परसों।"
+      },
+      "time_past": {
+       "en": "That time today has already passed. Please tell me a later time today, or another day.",
+       "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।"
+      },
+      "day_invalid": {
+       "en": "That does not seem to be a valid date. Please tell me the date again, for example tomorrow or the day after.",
+       "hi": "ये date सही नहीं लग रही। आप date फिर से बताइए, जैसे कल या परसों।"
+      },
+      "day_missing": {
+       "en": "Noted the time. And on which day would you like the visit, for example tomorrow or the day after?",
+       "hi": "समय note कर लिया। और visit किस दिन करवाना चाहेंगे, जैसे कल या परसों?"
+      },
+      "day_unclear": {
+       "en": "I did not quite catch the date. Please tell me the day, for example tomorrow, the day after, or a specific date.",
+       "hi": "मुझे date ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+      },
+      "time_invalid": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_unclear": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_ambiguous": {
+       "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+       "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।"
+      }
+     },
+     "spokenVariables": {
+      "day": "visit_day_spoken",
+      "time": "visit_time_spoken",
+      "languages": [
+       "hi",
+       "en"
+      ]
+     },
+     "normalizedDayVariable": "visit_date_iso",
+     "normalizedTimeVariable": "visit_time_24h"
+    },
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+     "hi": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+    },
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1600,
+   "y": 360,
+   "id": "n_final_confirm",
+   "kind": "intent",
+   "label": "Confirm details — proceed?",
+   "config": {
+    "prompt": "Let me confirm the details. Does that work for you?",
+    "readback": {
+     "en": {
+      "intro": "Let me confirm the details.",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_en",
+         "visit_time_spoken_en"
+        ],
+        "template": "Our engineer will come to {new_address} {visit_day_spoken_en} {visit_time_spoken_en} for the Airtel Broadband device uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "visit_time_spoken_en"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_en"
+        ],
+        "template": "Our engineer will come to {new_address} {visit_day_spoken_en} for the Airtel Broadband device uninstallation and pickup. The engineer will call you to confirm the exact time."
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_spoken_en",
+         "visit_time_spoken_en"
+        ],
+        "template": "Our engineer will come to your registered address in {locality} {visit_day_spoken_en} {visit_time_spoken_en} for the Airtel Broadband device uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_spoken_en"
+        ],
+        "requires": [
+         "visit_day_spoken_en"
+        ],
+        "template": "Our engineer will come to your registered address in {locality} {visit_day_spoken_en} for the Airtel Broadband device uninstallation and pickup. The engineer will call you to confirm the exact time."
+       }
+      ],
+      "question": "Does that work for you?"
+     },
+     "hi": {
+      "intro": "ठीक है, एक बार confirm कर लेते हैं।",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_hi",
+         "visit_time_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} {visit_time_spoken_hi} आपके बताए हुए पते {new_address} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+       },
+       {
+        "absent": [
+         "visit_time_spoken_hi"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} आपके बताए हुए पते {new_address} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। visit का exact समय engineer आपको call करके बताएँगे।"
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_spoken_hi",
+         "visit_time_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} {visit_time_spoken_hi} आपके registered address {locality} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_spoken_hi"
+        ],
+        "requires": [
+         "visit_day_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} आपके registered address {locality} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। visit का exact समय engineer आपको call करके बताएँगे।"
+       }
+      ],
+      "question": "क्या ये आपके लिए ठीक रहेगा?"
+     }
+    },
+    "responseMode": "llm_grounded",
+    "responseDirective": "Confirm the booking exactly as in the script: device uninstallation and pickup, the address, and the visit day — and the time only if the script has one. Say the day and time naturally in the customer's language ('kal' -> 'tomorrow', '4 baje sham' -> '4 PM' in English; 'tomorrow' -> 'कल', '4 PM' -> 'शाम 4 बजे' in Hindi). Never add a time, slot or detail that is not in the script, and never repeat the customer's filler words. End with 'Shall I proceed?' / 'क्या हम आगे बढ़ें?'. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1600,
+   "y": 520,
+   "id": "n_final_confirm_2",
+   "kind": "intent",
+   "label": "Confirm details — proceed? (2nd)",
+   "config": {
+    "prompt": "Let me confirm the details. Does that work for you?",
+    "readback": {
+     "en": {
+      "intro": "Let me confirm the details.",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_en",
+         "visit_time_spoken_en"
+        ],
+        "template": "Our engineer will come to {new_address} {visit_day_spoken_en} {visit_time_spoken_en} for the Airtel Broadband device uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "visit_time_spoken_en"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_en"
+        ],
+        "template": "Our engineer will come to {new_address} {visit_day_spoken_en} for the Airtel Broadband device uninstallation and pickup. The engineer will call you to confirm the exact time."
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_spoken_en",
+         "visit_time_spoken_en"
+        ],
+        "template": "Our engineer will come to your registered address in {locality} {visit_day_spoken_en} {visit_time_spoken_en} for the Airtel Broadband device uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_spoken_en"
+        ],
+        "requires": [
+         "visit_day_spoken_en"
+        ],
+        "template": "Our engineer will come to your registered address in {locality} {visit_day_spoken_en} for the Airtel Broadband device uninstallation and pickup. The engineer will call you to confirm the exact time."
+       }
+      ],
+      "question": "Does that work for you?"
+     },
+     "hi": {
+      "intro": "ठीक है, एक बार confirm कर लेते हैं।",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_hi",
+         "visit_time_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} {visit_time_spoken_hi} आपके बताए हुए पते {new_address} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+       },
+       {
+        "absent": [
+         "visit_time_spoken_hi"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} आपके बताए हुए पते {new_address} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। visit का exact समय engineer आपको call करके बताएँगे।"
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_spoken_hi",
+         "visit_time_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} {visit_time_spoken_hi} आपके registered address {locality} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_spoken_hi"
+        ],
+        "requires": [
+         "visit_day_spoken_hi"
+        ],
+        "template": "हमारे engineer {visit_day_spoken_hi} आपके registered address {locality} पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। visit का exact समय engineer आपको call करके बताएँगे।"
+       }
+      ],
+      "question": "क्या ये आपके लिए ठीक रहेगा?"
+     }
+    },
+    "responseMode": "llm_grounded",
+    "responseDirective": "Confirm the booking exactly as in the script: device uninstallation and pickup, the address, and the visit day — and the time only if the script has one. Say the day and time naturally in the customer's language ('kal' -> 'tomorrow', '4 baje sham' -> '4 PM' in English; 'tomorrow' -> 'कल', '4 PM' -> 'शाम 4 बजे' in Hindi). Never add a time, slot or detail that is not in the script, and never repeat the customer's filler words. End with 'Shall I proceed?' / 'क्या हम आगे बढ़ें?'. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1340,
+   "y": 520,
+   "id": "n_ask_visit_date_2",
+   "kind": "ask",
+   "label": "Visit date — asked once more",
+   "config": {
+    "entity": {
+     "dataType": "spoken_day"
+    },
+    "question": "No problem. Please tell me the date you would prefer for the visit.",
+    "variable": "visit_day_2",
+    "validation": {
+     "type": "future_datetime",
+     "timezone": "Asia/Kolkata",
+     "dayVariables": [
+      "visit_day_2",
+      "visit_day"
+     ],
+     "timeVariables": [
+      "visit_time_2",
+      "visit_time"
+     ],
+     "replyByLanguage": {
+      "day_past": {
+       "en": "That date has already passed. Please tell me an upcoming date, for example tomorrow or the day after.",
+       "hi": "ये date निकल चुकी है। आप आने वाली कोई date बताइए, जैसे कल या परसों।"
+      },
+      "time_past": {
+       "en": "That time today has already passed. Please tell me a later time today, or another day.",
+       "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।"
+      },
+      "day_invalid": {
+       "en": "That does not seem to be a valid date. Please tell me the date again, for example tomorrow or the day after.",
+       "hi": "ये date सही नहीं लग रही। आप date फिर से बताइए, जैसे कल या परसों।"
+      },
+      "day_missing": {
+       "en": "Noted the time. And on which day would you like the visit, for example tomorrow or the day after?",
+       "hi": "समय note कर लिया। और visit किस दिन करवाना चाहेंगे, जैसे कल या परसों?"
+      },
+      "day_unclear": {
+       "en": "I did not quite catch the date. Please tell me the day, for example tomorrow, the day after, or a specific date.",
+       "hi": "मुझे date ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+      },
+      "time_invalid": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_unclear": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_ambiguous": {
+       "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+       "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।"
+      }
+     },
+     "spokenVariables": {
+      "day": "visit_day_spoken",
+      "time": "visit_time_spoken",
+      "languages": [
+       "hi",
+       "en"
+      ]
+     },
+     "normalizedDayVariable": "visit_date_iso",
+     "normalizedTimeVariable": "visit_time_24h"
+    },
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "visit_time_2",
+      "overwrite": true
+     },
+     {
+      "entity": {
+       "dataType": "spoken_day"
+      },
+      "variable": "visit_day",
+      "overwrite": true
+     },
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. Please tell me the date you would prefer for the visit.",
+     "hi": "कोई बात नहीं। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+     "hi": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+    },
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1860,
+   "y": 360,
+   "id": "n_end_booked",
+   "kind": "end",
+   "label": "End call (visit booked)",
+   "config": {
+    "text": "Thank you for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.",
+    "setSlots": {
+     "visit_status": "booked"
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for your time and for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.",
+     "hi": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: Thank you for your time and for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.\nHINDI: Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1860,
+   "y": 520,
+   "id": "n_end_team_callback",
+   "kind": "end",
+   "label": "End call (date to be fixed by the team)",
+   "config": {
+    "text": "No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.",
+    "setSlots": {
+     "visit_status": "date_pending"
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.",
+     "hi": "कोई बात नहीं। हमारी team आपको call करके visit के लिए सही date तय कर लेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.\nHINDI: कोई बात नहीं। हमारी team आपको call करके visit के लिए सही date तय कर लेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 430,
+   "y": 360,
+   "id": "n_today_capture",
+   "kind": "ask",
+   "label": "Visit today — read the day / time from that sentence (silent)",
+   "config": {
+    "entity": {
+     "dataType": "spoken_day"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "validation": {
+     "type": "future_datetime",
+     "timezone": "Asia/Kolkata",
+     "dayVariables": [
+      "visit_day"
+     ],
+     "timeVariables": [
+      "visit_time"
+     ],
+     "replyByLanguage": {
+      "day_past": {
+       "en": "That date has already passed. Please tell me an upcoming date, for example tomorrow or the day after.",
+       "hi": "ये date निकल चुकी है। आप आने वाली कोई date बताइए, जैसे कल या परसों।"
+      },
+      "time_past": {
+       "en": "That time today has already passed. Please tell me a later time today, or another day.",
+       "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।"
+      },
+      "day_invalid": {
+       "en": "That does not seem to be a valid date. Please tell me the date again, for example tomorrow or the day after.",
+       "hi": "ये date सही नहीं लग रही। आप date फिर से बताइए, जैसे कल या परसों।"
+      },
+      "day_missing": {
+       "en": "Noted the time. And on which day would you like the visit, for example tomorrow or the day after?",
+       "hi": "समय note कर लिया। और visit किस दिन करवाना चाहेंगे, जैसे कल या परसों?"
+      },
+      "day_unclear": {
+       "en": "I did not quite catch the date. Please tell me the day, for example tomorrow, the day after, or a specific date.",
+       "hi": "मुझे date ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+      },
+      "time_invalid": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_unclear": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_ambiguous": {
+       "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+       "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।"
+      }
+     },
+     "spokenVariables": {
+      "day": "visit_day_spoken",
+      "time": "visit_time_spoken",
+      "languages": [
+       "hi",
+       "en"
+      ]
+     },
+     "normalizedDayVariable": "visit_date_iso",
+     "normalizedTimeVariable": "visit_time_24h"
+    },
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+     "hi": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+    },
+    "consumePrecedingUtterance": true,
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 560,
+   "y": 360,
+   "id": "n_today_ack",
+   "kind": "intent",
+   "label": "Visit today — technician will contact before visiting",
+   "config": {
+    "prompt": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+     "hi": "ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।"
+    },
+    "responseDirective": "ENGLISH: Okay sir, we will align our technician. He will contact you before visiting your place.\nHINDI: ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 950,
+   "y": 360,
+   "id": "n_today_read_locality",
+   "kind": "ask",
+   "label": "Read locality from call data (silent)",
+   "config": {
+    "variable": "locality",
+    "prefillOnly": true,
+    "prefillFromContext": "locality"
+   }
+  },
+  {
+   "x": 1210,
+   "y": 520,
+   "id": "n_today_day_known",
+   "kind": "condition",
+   "label": "Visit day already known?",
+   "config": {
+    "operator": "exists",
+    "variable": "visit_day"
+   }
+  },
+  {
+   "x": 1340,
+   "y": 520,
+   "id": "n_today_capture_2",
+   "kind": "ask",
+   "label": "Visit today — read the day / time from that sentence (silent)",
+   "config": {
+    "entity": {
+     "dataType": "spoken_day"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "validation": {
+     "type": "future_datetime",
+     "timezone": "Asia/Kolkata",
+     "dayVariables": [
+      "visit_day"
+     ],
+     "timeVariables": [
+      "visit_time"
+     ],
+     "replyByLanguage": {
+      "day_past": {
+       "en": "That date has already passed. Please tell me an upcoming date, for example tomorrow or the day after.",
+       "hi": "ये date निकल चुकी है। आप आने वाली कोई date बताइए, जैसे कल या परसों।"
+      },
+      "time_past": {
+       "en": "That time today has already passed. Please tell me a later time today, or another day.",
+       "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।"
+      },
+      "day_invalid": {
+       "en": "That does not seem to be a valid date. Please tell me the date again, for example tomorrow or the day after.",
+       "hi": "ये date सही नहीं लग रही। आप date फिर से बताइए, जैसे कल या परसों।"
+      },
+      "day_missing": {
+       "en": "Noted the time. And on which day would you like the visit, for example tomorrow or the day after?",
+       "hi": "समय note कर लिया। और visit किस दिन करवाना चाहेंगे, जैसे कल या परसों?"
+      },
+      "day_unclear": {
+       "en": "I did not quite catch the date. Please tell me the day, for example tomorrow, the day after, or a specific date.",
+       "hi": "मुझे date ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+      },
+      "time_invalid": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_unclear": {
+       "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+       "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।"
+      },
+      "time_ambiguous": {
+       "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+       "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।"
+      }
+     },
+     "spokenVariables": {
+      "day": "visit_day_spoken",
+      "time": "visit_time_spoken",
+      "languages": [
+       "hi",
+       "en"
+      ]
+     },
+     "normalizedDayVariable": "visit_date_iso",
+     "normalizedTimeVariable": "visit_time_24h"
+    },
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "spoken_time"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+     "hi": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+    },
+    "consumePrecedingUtterance": true,
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1470,
+   "y": 520,
+   "id": "n_today_ack_2",
+   "kind": "intent",
+   "label": "Visit today — technician will contact before visiting",
+   "config": {
+    "prompt": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+     "hi": "ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।"
+    },
+    "responseDirective": "ENGLISH: Okay sir, we will align our technician. He will contact you before visiting your place.\nHINDI: ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1280,
+   "y": 440,
+   "id": "n_mark_address_mismatch",
+   "kind": "message",
+   "label": "Sub-disposition: Address Mismatch (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "address_mismatch",
+     "sub_disposition": "Address Mismatch",
+     "address_verified": "no"
+    }
+   }
+  },
+  {
+   "x": 1280,
+   "y": 520,
+   "id": "n_end_address_mismatch",
+   "kind": "end",
+   "label": "End call (address mismatch — support team will contact)",
+   "config": {
+    "text": "Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance. Thank you for your time. Have a great day.",
+     "hi": "{customer_name} ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance.\nHINDI: {customer_name} ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 170,
+   "y": 130,
+   "id": "n_mark_call_started",
+   "kind": "message",
+   "label": "Summary: call started (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "incomplete"
+    }
+   }
+  },
+  {
+   "x": 1210,
+   "y": 270,
+   "id": "n_mark_address_ok",
+   "kind": "message",
+   "label": "Summary: address confirmed (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "address_verified": "yes"
+    }
+   }
+  },
+  {
+   "x": 1210,
+   "y": 430,
+   "id": "n_reset_visit",
+   "kind": "message",
+   "label": "Summary: date being changed (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_day": "",
+     "visit_time": "",
+     "visit_date_iso": "",
+     "visit_time_24h": "",
+     "visit_time_pending": "",
+     "visit_day_spoken_en": "",
+     "visit_day_spoken_hi": "",
+     "visit_time_2_pending": "",
+     "visit_time_spoken_en": "",
+     "visit_time_spoken_hi": ""
+    }
+   }
+  },
+  {
+   "x": 1730,
+   "y": 450,
+   "id": "n_mark_booked",
+   "kind": "message",
+   "label": "Summary: booked (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "booked"
+    }
+   }
+  },
+  {
+   "x": 1730,
+   "y": 610,
+   "id": "n_mark_date_pending",
+   "kind": "message",
+   "label": "Summary: date_pending (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "date_pending"
+    }
+   }
+  },
+  {
+   "x": 690,
+   "y": 290,
+   "id": "n_mark_callback",
+   "kind": "message",
+   "label": "Summary: callback_requested (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "callback_requested"
+    }
+   }
+  },
+  {
+   "x": 690,
+   "y": 130,
+   "id": "n_mark_wrong_person",
+   "kind": "message",
+   "label": "Summary: wrong_person (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "wrong_person"
+    }
+   }
+  },
+  {
+   "x": 1210,
+   "y": 560,
+   "id": "n_mark_address_changed",
+   "kind": "message",
+   "label": "Summary: address changed (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "address_verified": "changed"
+    }
+   }
+  },
+  {
+   "x": 1340,
+   "y": 560,
+   "id": "n_ask_address",
+   "kind": "intent",
+   "label": "Correct address for the uninstallation",
+   "config": {
+    "prompt": "No problem. Please tell me the correct address where the device uninstallation and pickup should be done.",
+    "elseIsAnswer": true,
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. Could you please share your correct address along with the pincode, where the device needs to be uninstalled and picked up?",
+     "hi": "कोई बात नहीं। आप please अपना सही address pincode के साथ बताइए, जहाँ से device का uninstallation और pickup होना है।"
+    },
+    "captureVariable": "new_address",
+    "responseDirective": "ENGLISH: No problem. Could you please share your correct address along with the pincode, where the device needs to be uninstalled and picked up?\nHINDI: कोई बात नहीं। आप please अपना सही address pincode के साथ बताइए, जहाँ से device का uninstallation और pickup होना है।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1340,
+   "y": 680,
+   "id": "n_ask_address_2",
+   "kind": "intent",
+   "label": "Correct address — asked once more",
+   "config": {
+    "prompt": "Sure. Please tell me the full address, with house number, area and city.",
+    "elseIsAnswer": true,
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sure. Please tell me the full address, with house number, area and city.",
+     "hi": "ज़रूर। आप पूरा address बताइए, जैसे house number, area और city।"
+    },
+    "captureVariable": "new_address",
+    "responseDirective": "ENGLISH: Sure. Please tell me the full address, with house number, area and city.\nHINDI: ज़रूर। आप पूरा address बताइए, जैसे house number, area और city।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 760,
+   "y": 40,
+   "id": "n_mark_already_picked",
+   "kind": "message",
+   "label": "Sub-disposition: Already Picked Up (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "already_picked_up",
+     "sub_disposition": "Already Picked Up"
+    }
+   }
+  },
+  {
+   "x": 1020,
+   "y": 40,
+   "id": "n_end_already_picked",
+   "kind": "end",
+   "label": "End call (router already picked up)",
+   "config": {
+    "text": "We apologize for contacting you again, {customer_name}. We're glad to know that your router has already been picked up. Thank you for your time. Have a nice day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "We apologize for contacting you again, {customer_name}. We're glad to know that your router has already been picked up. Thank you for your time. Have a nice day.",
+     "hi": "माफ़ कीजिएगा {customer_name} जी हमें खुशी है कि आपका router pick up हो चुका है। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: We apologize for contacting you again, {customer_name}. We're glad to know that your router has already been picked up. Thank you for your time. Have a nice day.\nHINDI: माफ़ कीजिएगा {customer_name} जी हमें खुशी है कि आपका router pick up हो चुका है। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 540,
+   "y": -60,
+   "id": "n_refund_info",
+   "kind": "intent",
+   "label": "Refund asked — Customer Care handles it; schedule the pickup?",
+   "config": {
+    "prompt": "I understand your concern. For refund-related queries, you'll need to contact Airtel Customer Care, as they handle billing and refunds directly. I'm calling from Airtel to help arrange the pickup of your broadband device. Would you like me to schedule the device pickup for you?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "I understand your concern. For refund-related queries, you'll need to contact Airtel Customer Care, as they handle billing and refunds directly. I'm calling from Airtel to help arrange the pickup of your broadband device. Would you like me to schedule the device pickup for you?",
+     "hi": "मैं आपकी concern समझ सकता हूँ। Refund से जुड़ी queries के लिए आपको Airtel Customer Care से contact करना होगा, क्योंकि billing और refund वही handle करते हैं। मैं Airtel से आपके broadband device का pickup arrange करने के लिए call कर रहा हूँ। क्या आप चाहेंगे कि मैं आपके device का pickup schedule कर दूँ?"
+    },
+    "responseDirective": "ENGLISH: I understand your concern. For refund-related queries, you'll need to contact Airtel Customer Care, as they handle billing and refunds directly. I'm calling from Airtel to help arrange the pickup of your broadband device. Would you like me to schedule the device pickup for you?\nHINDI: मैं आपकी concern समझ सकता हूँ। Refund से जुड़ी queries के लिए आपको Airtel Customer Care से contact करना होगा, क्योंकि billing और refund वही handle करते हैं। मैं Airtel से आपके broadband device का pickup arrange करने के लिए call कर रहा हूँ। क्या आप चाहेंगे कि मैं आपके device का pickup schedule कर दूँ?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 760,
+   "y": -140,
+   "id": "n_mark_refund_first",
+   "kind": "message",
+   "label": "Sub-disposition: Refund First (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "visit_status": "refund_first",
+     "sub_disposition": "Refund First"
+    }
+   }
+  },
+  {
+   "x": 1020,
+   "y": -140,
+   "id": "n_end_refund_first",
+   "kind": "end",
+   "label": "End call (refund first — team will call back)",
+   "config": {
+    "text": "{customer_name}, I understand your concern. I'll forward your request to the concerned team, and our support team will call you back to provide further assistance. Thank you for your time. Have a nice day!",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "{customer_name}, I understand your concern. I'll forward your request to the concerned team, and our support team will call you back to provide further assistance. Thank you for your time. Have a nice day!",
+     "hi": "{customer_name} जी, मैं आपकी concern समझ सकता हूँ। मैं आपकी request आगे forward कर दूँगा, और हमारी support team आपसे contact करके आगे की help provide करेगी। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे!"
+    },
+    "responseDirective": "ENGLISH: {customer_name}, I understand your concern. I'll forward your request to the concerned team, and our support team will call you back to provide further assistance. Thank you for your time. Have a nice day!\nHINDI: {customer_name} जी, मैं आपकी concern समझ सकता हूँ। मैं आपकी request आगे forward कर दूँगा, और हमारी support team आपसे contact करके आगे की help provide करेगी। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ रहे!\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_n_start__n_mark_call_started",
+   "to": "n_mark_call_started",
+   "from": "n_start"
+  },
+  {
+   "id": "e_n_identity_gate__n_is_identity_denied",
+   "to": "n_is_identity_denied",
+   "from": "n_identity_gate"
+  },
+  {
+   "id": "e_n_is_identity_denied__n_mark_wrong_person__true",
+   "to": "n_mark_wrong_person",
+   "from": "n_is_identity_denied",
+   "label": "true"
+  },
+  {
+   "id": "e_n_is_identity_denied__n_good_time__false",
+   "to": "n_good_time",
+   "from": "n_is_identity_denied",
+   "label": "false"
+  },
+  {
+   "id": "e_n_good_time__n_read_locality",
+   "to": "n_read_locality",
+   "from": "n_good_time",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes it's a good time/yes this is a good time/it's fine/go on/tell me/haan boliye/haan bataiye/haan bolo/boliye/bataiye/haan time hai/abhi kar lo/abhi kar dijiye/schedule kar do/haan schedule kar do/हाँ बोलिए/हाँ बताइए/बोलिए/बताइए/हाँ time है/अभी कर दीजिए/schedule कर दीजिए"
+  },
+  {
+   "id": "e_n_good_time__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_good_time",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/busy/i am busy/i'm busy/not now/not a good time/later/call me later/call back later/please call later/i'm driving/i am driving/in a meeting/abhi nahi/abhi busy hoon/busy hoon/baad mein/baad mein call karo/baad mein call kijiye/abhi time nahi hai/meeting mein hoon/drive kar raha hoon/अभी नहीं/बिज़ी हूँ/बिजी हूँ/अभी busy हूँ/बाद में/बाद में call कीजिए/अभी time नहीं है/meeting में हूँ"
+  },
+  {
+   "id": "e_n_good_time__n_read_locality__else",
+   "to": "n_read_locality",
+   "from": "n_good_time",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_callback__n_mark_callback",
+   "to": "n_mark_callback",
+   "from": "n_ask_callback"
+  },
+  {
+   "id": "e_n_ask_callback__n_mark_callback__fallback",
+   "to": "n_mark_callback",
+   "from": "n_ask_callback",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_read_locality__n_confirm_disconnected",
+   "to": "n_confirm_disconnected",
+   "from": "n_read_locality"
+  },
+  {
+   "id": "e_n_confirm_disconnected__n_confirm_address",
+   "to": "n_confirm_address",
+   "from": "n_confirm_disconnected"
+  },
+  {
+   "id": "e_n_confirm_address__n_mark_address_ok",
+   "to": "n_mark_address_ok",
+   "from": "n_confirm_address",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes that's correct/yes it is correct/haan sahi hai/sahi hai/हाँ सही है/सही है"
+  },
+  {
+   "id": "e_n_confirm_address__n_ask_visit_date__else",
+   "to": "n_ask_visit_date",
+   "from": "n_confirm_address",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_visit_date__n_final_confirm",
+   "to": "n_final_confirm",
+   "from": "n_ask_visit_date"
+  },
+  {
+   "id": "e_n_ask_visit_date__n_mark_date_pending__fallback",
+   "to": "n_mark_date_pending",
+   "from": "n_ask_visit_date",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_final_confirm__n_mark_booked",
+   "to": "n_mark_booked",
+   "from": "n_final_confirm",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes go ahead/haan kar do/haan book kar do/हाँ कर दीजिए/ठीक रहेगा/हाँ ठीक रहेगा/ठीक है जी/चलेगा/हाँ चलेगा/सही है/हाँ सही है/theek rahega/thik rahega/haan theek rahega/chalega/haan chalega/sahi hai/haan sahi hai/that works/works for me/that's fine/fine"
+  },
+  {
+   "id": "e_n_final_confirm__n_reset_visit",
+   "to": "n_reset_visit",
+   "from": "n_final_confirm",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/don't proceed/do not proceed/wait/change the date/different date/date change/date badal do/date change karni hai/dusri date/abhi mat karo/रुकिए/date बदल दीजिए/दूसरी date/ठीक नहीं रहेगा/नहीं चलेगा/theek nahi rahega/nahi chalega/doesn't work/does not work/not fine"
+  },
+  {
+   "id": "e_n_ask_visit_date_2__n_final_confirm_2",
+   "to": "n_final_confirm_2",
+   "from": "n_ask_visit_date_2"
+  },
+  {
+   "id": "e_n_ask_visit_date_2__n_mark_date_pending__fallback",
+   "to": "n_mark_date_pending",
+   "from": "n_ask_visit_date_2",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_final_confirm_2__n_mark_booked",
+   "to": "n_mark_booked",
+   "from": "n_final_confirm_2",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes go ahead/haan kar do/हाँ कर दीजिए/ठीक रहेगा/हाँ ठीक रहेगा/ठीक है जी/चलेगा/हाँ चलेगा/सही है/हाँ सही है/theek rahega/thik rahega/haan theek rahega/chalega/haan chalega/sahi hai/haan sahi hai/that works/works for me/that's fine/fine"
+  },
+  {
+   "id": "e_n_final_confirm_2__n_mark_date_pending",
+   "to": "n_mark_date_pending",
+   "from": "n_final_confirm_2",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/don't proceed/do not proceed/wait/change the date/different date/date change/date badal do/date change karni hai/dusri date/abhi mat karo/रुकिए/date बदल दीजिए/दूसरी date/ठीक नहीं रहेगा/नहीं चलेगा/theek nahi rahega/nahi chalega/doesn't work/does not work/not fine"
+  },
+  {
+   "id": "e_n_good_time__n_today_capture",
+   "to": "n_today_capture",
+   "from": "n_good_time",
+   "label": "आज/आज ही/हाँ आज/हां आज/जी आज/आज कर दो/आज कर दीजिए/आज ही कर दो/आज ही कर दीजिए/आज करवा दो/आज करवा दीजिए/आज भेज दो/आज भेज दीजिए/आज ही भेज दीजिए/आज आ जाओ/आज आ जाइए/आज चलेगा/आज ठीक है/आज सुबह/आज दोपहर/आज शाम/हाँ आज कर दो/हाँ आज भेज दो/आज भेज देना/हाँ सही है आज/सही है आज/aaj/ajj/aaj hi/ha aaj/haan aaj/han aaj/ji aaj/aaj kar do/aaj krdo/aaj kardo/aaj kr do/aaj kar dijiye/aaj hi kar do/aaj karwa do/aaj karva do/aaj bhej do/ajj bhej do/aaj bhej dijiye/aaj hi bhej do/aaj aa jao/aaj aa jaiye/aaj chalega/aaj theek hai/aaj thik hai/aaj subah/aaj dopahar/aaj shaam/aaj sham/ha aaj krdo/haan aaj kar do/ha ajj bhej do/haan aaj bhej do/aaj bhej dena/aaj hi kar dijiye/aaj hi bhej dijiye/aaj karwa dijiye/haan sahi hai aaj/sahi hai aaj/come today/today is fine/today works/today itself/do it today/schedule it today/schedule today/visit today/send today/send the engineer today/send someone today/yes today/today please/today evening/today morning/today afternoon"
+  },
+  {
+   "id": "e_n_today_capture__n_today_ack",
+   "to": "n_today_ack",
+   "from": "n_today_capture"
+  },
+  {
+   "id": "e_n_today_capture__n_mark_date_pending__fallback",
+   "to": "n_mark_date_pending",
+   "from": "n_today_capture",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_today_ack__n_today_read_locality",
+   "to": "n_today_read_locality",
+   "from": "n_today_ack",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/alright/fine/ok sir/okay sir/thank you/thanks/accha/achha/accha theek hai/chalega/ho jayega/thik hai ji/अच्छा/अच्छा ठीक है/चलेगा/हाँ ठीक है/धन्यवाद"
+  },
+  {
+   "id": "e_n_today_ack__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_today_ack",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/not today/aaj nahi/aaj nahin/aaj mat bhejo/mat bhejo/don't send/do not send/i am not available/i'm not available/not available/available nahi hoon/ghar pe nahi hoon/आज नहीं/मत भेजिए/मत भेजो/मैं available नहीं हूँ/घर पे नहीं हूँ"
+  },
+  {
+   "id": "e_n_today_ack__n_today_read_locality__else",
+   "to": "n_today_read_locality",
+   "from": "n_today_ack",
+   "label": "else"
+  },
+  {
+   "id": "e_n_today_read_locality__n_confirm_address",
+   "to": "n_confirm_address",
+   "from": "n_today_read_locality"
+  },
+  {
+   "id": "e_n_confirm_address__n_today_day_known",
+   "to": "n_today_day_known",
+   "from": "n_confirm_address",
+   "label": "आज/आज ही/हाँ आज/हां आज/जी आज/आज कर दो/आज कर दीजिए/आज ही कर दो/आज ही कर दीजिए/आज करवा दो/आज करवा दीजिए/आज भेज दो/आज भेज दीजिए/आज ही भेज दीजिए/आज आ जाओ/आज आ जाइए/आज चलेगा/आज ठीक है/आज सुबह/आज दोपहर/आज शाम/हाँ आज कर दो/हाँ आज भेज दो/आज भेज देना/हाँ सही है आज/सही है आज/aaj/ajj/aaj hi/ha aaj/haan aaj/han aaj/ji aaj/aaj kar do/aaj krdo/aaj kardo/aaj kr do/aaj kar dijiye/aaj hi kar do/aaj karwa do/aaj karva do/aaj bhej do/ajj bhej do/aaj bhej dijiye/aaj hi bhej do/aaj aa jao/aaj aa jaiye/aaj chalega/aaj theek hai/aaj thik hai/aaj subah/aaj dopahar/aaj shaam/aaj sham/ha aaj krdo/haan aaj kar do/ha ajj bhej do/haan aaj bhej do/aaj bhej dena/aaj hi kar dijiye/aaj hi bhej dijiye/aaj karwa dijiye/haan sahi hai aaj/sahi hai aaj/come today/today is fine/today works/today itself/do it today/schedule it today/schedule today/visit today/send today/send the engineer today/send someone today/yes today/today please/today evening/today morning/today afternoon"
+  },
+  {
+   "id": "e_n_today_day_known__n_ask_visit_date__true",
+   "to": "n_ask_visit_date",
+   "from": "n_today_day_known",
+   "label": "true"
+  },
+  {
+   "id": "e_n_today_day_known__n_today_capture_2__false",
+   "to": "n_today_capture_2",
+   "from": "n_today_day_known",
+   "label": "false"
+  },
+  {
+   "id": "e_n_today_capture_2__n_today_ack_2",
+   "to": "n_today_ack_2",
+   "from": "n_today_capture_2"
+  },
+  {
+   "id": "e_n_today_capture_2__n_mark_date_pending__fallback",
+   "to": "n_mark_date_pending",
+   "from": "n_today_capture_2",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_today_ack_2__n_final_confirm",
+   "to": "n_final_confirm",
+   "from": "n_today_ack_2",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/alright/fine/ok sir/okay sir/thank you/thanks/accha/achha/accha theek hai/chalega/ho jayega/thik hai ji/अच्छा/अच्छा ठीक है/चलेगा/हाँ ठीक है/धन्यवाद"
+  },
+  {
+   "id": "e_n_today_ack_2__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_today_ack_2",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/not today/aaj nahi/aaj nahin/aaj mat bhejo/mat bhejo/don't send/do not send/i am not available/i'm not available/not available/available nahi hoon/ghar pe nahi hoon/आज नहीं/मत भेजिए/मत भेजो/मैं available नहीं हूँ/घर पे नहीं हूँ"
+  },
+  {
+   "id": "e_n_today_ack_2__n_final_confirm__else",
+   "to": "n_final_confirm",
+   "from": "n_today_ack_2",
+   "label": "else"
+  },
+  {
+   "id": "e_n_confirm_address__n_mark_address_mismatch",
+   "to": "n_mark_address_changed",
+   "from": "n_confirm_address",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/wrong address/that's not correct/not correct/it's not correct/this is not my address/i have shifted/i shifted/address has changed/address changed/galat hai/galat address/ye address sahi nahi hai/address badal gaya/shift ho gaya/maine ghar badal liya/dusra address hai/गलत है/ये एड्रेस सही नहीं है/एड्रेस बदल गया/शिफ्ट हो गया/घर बदल लिया/incorrect/address is incorrect/address incorrect/the address is incorrect/address is wrong/wrong/galat/address galat hai/पता गलत है/गलत/ग़लत/ye mera address nahi hai/yeh mera address nahi hai/purana address hai/old address/पुराना एड्रेस है/address galat/galat address hai/address sahi nahi hai/address sahi nhi hai/address sahi nahin hai/address sahi nahi/address sahi nhi/ye address mera nahi hai/mera address ye nahi hai/mera address nahi hai/address change ho gaya hai/address change ho gaya/address badal gaya hai/main wahan nahi rehta/main wahan nahi rehti/main ab wahan nahi rehta/main ab wahan nahi rehti/hum wahan nahi rehte/ghar shift kar liya/ghar shift kar liya hai/ghar shift ho gaya/shift ho gaye hain/shift kar liya/location galat hai/location sahi nahi hai/location sahi nhi hai/galat location hai/galat location/पता सही नहीं है/एड्रेस गलत है/एड्रेस सही नहीं है/ये मेरा एड्रेस नहीं है/ये मेरा पता नहीं है/मेरा पता नहीं है/एड्रेस बदल गया है/पता बदल गया है/मैं वहाँ नहीं रहता/मैं वहाँ नहीं रहती/मैं वहां नहीं रहता/मैं वहां नहीं रहती/हम वहाँ नहीं रहते/घर शिफ्ट कर लिया/शिफ्ट हो गए हैं/लोकेशन गलत है/लोकेशन सही नहीं है/गलत एड्रेस/गलत पता/पुराना पता है/एड्रेस गलत/the address is wrong/address is not correct/that's not my address/that is not my address/not my address/i don't live there/i do not live there/i don't live there anymore/i do not live there anymore/i have moved/i've moved/we have moved/we have shifted/wrong location/location is wrong/location is not correct"
+  },
+  {
+   "id": "e_n_mark_address_mismatch__n_end_address_mismatch",
+   "to": "n_end_address_mismatch",
+   "from": "n_mark_address_mismatch"
+  },
+  {
+   "id": "e_n_mark_call_started__n_identity_gate",
+   "to": "n_identity_gate",
+   "from": "n_mark_call_started"
+  },
+  {
+   "id": "e_n_mark_address_ok__n_ask_visit_date",
+   "to": "n_ask_visit_date",
+   "from": "n_mark_address_ok"
+  },
+  {
+   "id": "e_n_reset_visit__n_ask_visit_date_2",
+   "to": "n_ask_visit_date_2",
+   "from": "n_reset_visit"
+  },
+  {
+   "id": "e_n_mark_booked__n_end_booked",
+   "to": "n_end_booked",
+   "from": "n_mark_booked"
+  },
+  {
+   "id": "e_n_mark_date_pending__n_end_team_callback",
+   "to": "n_end_team_callback",
+   "from": "n_mark_date_pending"
+  },
+  {
+   "id": "e_n_mark_callback__n_end_callback",
+   "to": "n_end_callback",
+   "from": "n_mark_callback"
+  },
+  {
+   "id": "e_n_mark_wrong_person__n_end_wrong_person",
+   "to": "n_end_wrong_person",
+   "from": "n_mark_wrong_person"
+  },
+  {
+   "id": "e_n_good_time__n_mark_address_mismatch",
+   "to": "n_mark_address_changed",
+   "from": "n_good_time",
+   "label": "address galat hai/address galat/galat address hai/galat address/address sahi nahi hai/address sahi nhi hai/address sahi nahin hai/address sahi nahi/address sahi nhi/ye mera address nahi hai/yeh mera address nahi hai/ye address mera nahi hai/mera address ye nahi hai/mera address nahi hai/address change ho gaya hai/address change ho gaya/address badal gaya hai/address badal gaya/main wahan nahi rehta/main wahan nahi rehti/main ab wahan nahi rehta/main ab wahan nahi rehti/hum wahan nahi rehte/ghar shift kar liya/ghar shift kar liya hai/ghar shift ho gaya/shift ho gaye hain/shift kar liya/location galat hai/location sahi nahi hai/location sahi nhi hai/galat location hai/galat location/purana address hai/पता गलत है/पता सही नहीं है/एड्रेस गलत है/एड्रेस सही नहीं है/ये मेरा एड्रेस नहीं है/ये मेरा पता नहीं है/मेरा पता नहीं है/एड्रेस बदल गया है/पता बदल गया है/मैं वहाँ नहीं रहता/मैं वहाँ नहीं रहती/मैं वहां नहीं रहता/मैं वहां नहीं रहती/हम वहाँ नहीं रहते/घर शिफ्ट कर लिया/शिफ्ट हो गए हैं/लोकेशन गलत है/लोकेशन सही नहीं है/गलत एड्रेस/गलत पता/पुराना पता है/एड्रेस गलत/ये एड्रेस सही नहीं है/एड्रेस बदल गया/पुराना एड्रेस है/wrong address/address is wrong/the address is wrong/address is not correct/address is incorrect/this is not my address/that's not my address/that is not my address/not my address/i don't live there/i do not live there/i don't live there anymore/i do not live there anymore/i have moved/i've moved/we have moved/we have shifted/i have shifted/wrong location/location is wrong/location is not correct"
+  },
+  {
+   "id": "e_n_mark_address_changed__n_ask_address",
+   "to": "n_ask_address",
+   "from": "n_mark_address_changed"
+  },
+  {
+   "id": "e_n_ask_address__n_mark_address_mismatch",
+   "to": "n_mark_address_mismatch",
+   "from": "n_ask_address",
+   "label": "pata nahi/pata nhi/pata nahin/yaad nahi/yaad nhi/yaad nahin/maloom nahi/malum nahi/maloom nhi/baad mein bata/baad me bata/bad me bata/baad mein bhej/abhi nahi bata/nahi bata sakta/nahi bata sakti/nahi bataunga/nahi bataungi/nhi bataunga/rehne do/rahne do/support se baat/support team se baat/पता नहीं/याद नहीं/मालूम नहीं/बाद में बता/बाद में भेज/अभी नहीं बता/नहीं बता सकता/नहीं बता सकती/नहीं बताऊँगा/नहीं बताऊंगा/नहीं बताऊँगी/रहने दो/रहने दीजिए/सपोर्ट से बात/i don't know/i do not know/don't know/not sure/i'm not sure/don't remember/do not remember/i'll tell later/i will tell later/tell you later/can't tell/cannot tell/i'll share later"
+  },
+  {
+   "id": "e_n_ask_address__n_ask_address_2",
+   "to": "n_ask_address_2",
+   "from": "n_ask_address",
+   "label": "haan/haan ji/ha ji/han ji/theek hai/thik hai/nahi/nahin/nhi/हाँ/हां/हाँ जी/हां जी/ठीक है/नहीं/नही"
+  },
+  {
+   "id": "e_n_ask_address__n_ask_visit_date__else",
+   "to": "n_ask_visit_date",
+   "from": "n_ask_address",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_address_2__n_mark_address_mismatch",
+   "to": "n_mark_address_mismatch",
+   "from": "n_ask_address_2",
+   "label": "pata nahi/pata nhi/pata nahin/yaad nahi/yaad nhi/yaad nahin/maloom nahi/malum nahi/maloom nhi/baad mein bata/baad me bata/bad me bata/baad mein bhej/abhi nahi bata/nahi bata sakta/nahi bata sakti/nahi bataunga/nahi bataungi/nhi bataunga/rehne do/rahne do/support se baat/support team se baat/पता नहीं/याद नहीं/मालूम नहीं/बाद में बता/बाद में भेज/अभी नहीं बता/नहीं बता सकता/नहीं बता सकती/नहीं बताऊँगा/नहीं बताऊंगा/नहीं बताऊँगी/रहने दो/रहने दीजिए/सपोर्ट से बात/i don't know/i do not know/don't know/not sure/i'm not sure/don't remember/do not remember/i'll tell later/i will tell later/tell you later/can't tell/cannot tell/i'll share later/haan/haan ji/ha ji/han ji/theek hai/thik hai/nahi/nahin/nhi/हाँ/हां/हाँ जी/हां जी/ठीक है/नहीं/नही"
+  },
+  {
+   "id": "e_n_ask_address_2__n_ask_visit_date__else",
+   "to": "n_ask_visit_date",
+   "from": "n_ask_address_2",
+   "label": "else"
+  },
+  {
+   "id": "e_n_mark_already_picked__n_end_already_picked",
+   "to": "n_end_already_picked",
+   "from": "n_mark_already_picked"
+  },
+  {
+   "id": "e_n_good_time__n_mark_already_picked",
+   "to": "n_mark_already_picked",
+   "from": "n_good_time",
+   "label": "already pick ho chuka hai/pick ho gaya hai/router toh return kar diya hai maine/router pick ho chuka hai/router le gaye aap log/router already collect ho gaya hai/mere paas nahi hai/aap log pick kar chuke ho/router toh pehle hi le gaye/router toh de diya tha/maine router return kar diya/aapki team router le gayi/pick up ho gaya tha/router pehle hi collect ho chuka hai/aap log le chuke ho/router mere ghar se le gaye/aapke bande router le gaye the/router handover kar diya tha/router already return ho chuka hai/router jama karwa diya hai/router wapas de diya hai/already pick/already picked/already pickup/already collect/already return/already le gaye/pick ho chuka/pick ho gaya/pickup ho gaya/pickup ho chuka/pick up ho gaya/pick up ho chuka/pick kar liya/pick kar chuke/pick kar gaye/router le gaye/router le gayi/router le liya/router le chuke/router pehle hi/router de diya/router wapas kar diya/router wapas de diya/router return kar diya/router return ho gaya/router return ho chuka/router collect ho gaya/router collect ho chuka/router collect kar liya/router jama kar diya/router jama karwa diya/router jama ho gaya/router handover kar diya/router mere paas nahi hai/return kar diya hai/return kar chuka hoon/wapas kar diya hai/wapas de diya hai/jama karwa diya/collect ho chuka hai/pehle hi le gaye/pehle hi le gaye the/le gaye the/le ja chuke/device return kar diya/device le gaye/device pick ho gaya/device jama kar diya/राउटर पहले ही ले जा चुके हैं/राउटर पिक हो चुका है/मैंने राउटर वापस कर दिया है/राउटर ले लिया गया है/आपकी टीम राउटर ले गई है/राउटर पहले ही जमा करवा दिया था/राउटर मेरे पास नहीं है/आप लोग पहले ही ले गए थे/राउटर वापस कर दिया है/राउटर पहले ही कलेक्ट हो चुका है/राउटर आपको दे दिया था/आपकी टीम ले जा चुकी है/राउटर घर से ले गए थे/राउटर पहले ही उठा लिया गया था/राउटर वापस कर चुका हूँ/राउटर जमा हो गया है/राउटर की वापसी हो चुकी है/आप लोग राउटर ले चुके हैं/पिक हो चुका/पिक हो गया/पिकअप हो गया/पिकअप हो चुका/पिक अप हो गया/पिक अप हो चुका/पिक कर लिया/पिक कर चुके/राउटर ले गए/राउटर ले गई/राउटर ले लिया/राउटर ले चुके/राउटर पहले ही/राउटर दे दिया/राउटर वापस कर/राउटर वापस दे/राउटर रिटर्न कर/राउटर रिटर्न हो/राउटर जमा/राउटर कलेक्ट/राउटर उठा लिया/रिटर्न कर दिया/वापस कर दिया है/जमा करवा दिया/पहले ही ले गए/ले गए थे/ले जा चुके/ऑलरेडी पिक/ऑलरेडी ले गए/डिवाइस ले गए/डिवाइस वापस कर दिया/it has already been picked up/it's already collected/i've already returned the router/the router has been picked up/your team has already taken it/i've already handed it over/i don't have the router/you already picked it up/the router has already been returned/the router was collected earlier/i've already given it back/your team took the router/i've already submitted the router/you guys have already collected it/your representative picked it up/the router is no longer with me/i've already handed over the device/already picked up/already been picked/already collected/already been collected/already returned/already been returned/already taken/already handed/already given/already submitted/already took/already picked it/i have already returned/i have already given/i have already handed/i have already submitted/i do not have the router/router was picked up/router was collected/router is picked up/router has been collected/returned the router/returned the device/took the router/picked up the router/collected the router/no longer have the router"
+  },
+  {
+   "id": "e_n_confirm_address__n_mark_already_picked",
+   "to": "n_mark_already_picked",
+   "from": "n_confirm_address",
+   "label": "already pick ho chuka hai/pick ho gaya hai/router toh return kar diya hai maine/router pick ho chuka hai/router le gaye aap log/router already collect ho gaya hai/mere paas nahi hai/aap log pick kar chuke ho/router toh pehle hi le gaye/router toh de diya tha/maine router return kar diya/aapki team router le gayi/pick up ho gaya tha/router pehle hi collect ho chuka hai/aap log le chuke ho/router mere ghar se le gaye/aapke bande router le gaye the/router handover kar diya tha/router already return ho chuka hai/router jama karwa diya hai/router wapas de diya hai/already pick/already picked/already pickup/already collect/already return/already le gaye/pick ho chuka/pick ho gaya/pickup ho gaya/pickup ho chuka/pick up ho gaya/pick up ho chuka/pick kar liya/pick kar chuke/pick kar gaye/router le gaye/router le gayi/router le liya/router le chuke/router pehle hi/router de diya/router wapas kar diya/router wapas de diya/router return kar diya/router return ho gaya/router return ho chuka/router collect ho gaya/router collect ho chuka/router collect kar liya/router jama kar diya/router jama karwa diya/router jama ho gaya/router handover kar diya/router mere paas nahi hai/return kar diya hai/return kar chuka hoon/wapas kar diya hai/wapas de diya hai/jama karwa diya/collect ho chuka hai/pehle hi le gaye/pehle hi le gaye the/le gaye the/le ja chuke/device return kar diya/device le gaye/device pick ho gaya/device jama kar diya/राउटर पहले ही ले जा चुके हैं/राउटर पिक हो चुका है/मैंने राउटर वापस कर दिया है/राउटर ले लिया गया है/आपकी टीम राउटर ले गई है/राउटर पहले ही जमा करवा दिया था/राउटर मेरे पास नहीं है/आप लोग पहले ही ले गए थे/राउटर वापस कर दिया है/राउटर पहले ही कलेक्ट हो चुका है/राउटर आपको दे दिया था/आपकी टीम ले जा चुकी है/राउटर घर से ले गए थे/राउटर पहले ही उठा लिया गया था/राउटर वापस कर चुका हूँ/राउटर जमा हो गया है/राउटर की वापसी हो चुकी है/आप लोग राउटर ले चुके हैं/पिक हो चुका/पिक हो गया/पिकअप हो गया/पिकअप हो चुका/पिक अप हो गया/पिक अप हो चुका/पिक कर लिया/पिक कर चुके/राउटर ले गए/राउटर ले गई/राउटर ले लिया/राउटर ले चुके/राउटर पहले ही/राउटर दे दिया/राउटर वापस कर/राउटर वापस दे/राउटर रिटर्न कर/राउटर रिटर्न हो/राउटर जमा/राउटर कलेक्ट/राउटर उठा लिया/रिटर्न कर दिया/वापस कर दिया है/जमा करवा दिया/पहले ही ले गए/ले गए थे/ले जा चुके/ऑलरेडी पिक/ऑलरेडी ले गए/डिवाइस ले गए/डिवाइस वापस कर दिया/it has already been picked up/it's already collected/i've already returned the router/the router has been picked up/your team has already taken it/i've already handed it over/i don't have the router/you already picked it up/the router has already been returned/the router was collected earlier/i've already given it back/your team took the router/i've already submitted the router/you guys have already collected it/your representative picked it up/the router is no longer with me/i've already handed over the device/already picked up/already been picked/already collected/already been collected/already returned/already been returned/already taken/already handed/already given/already submitted/already took/already picked it/i have already returned/i have already given/i have already handed/i have already submitted/i do not have the router/router was picked up/router was collected/router is picked up/router has been collected/returned the router/returned the device/took the router/picked up the router/collected the router/no longer have the router"
+  },
+  {
+   "id": "e_n_good_time__n_refund_info",
+   "to": "n_refund_info",
+   "from": "n_good_time",
+   "label": "मुझे मेरा रिफंड चाहिए/मुझे मेरे पैसे वापस चाहिए/मेरे पैसे वापस कर दीजिए/मेरा रिफंड प्रोसेस कर दीजिए/मुझे पैसे वापस चाहिए जी/मेरी रकम वापस कर दीजिए/मुझे मेरा पैसा वापस चाहिए/कृपया मेरा रिफंड कर दीजिए/मेरे पैसे लौटा दीजिए/मुझे अपना पैसा वापस चाहिए/मेरा पैसा वापस कर दीजिए/मुझे भुगतान का रिफंड चाहिए/मेरा रिफंड कर दीजिए/मेरे पैसे वापस भेज दीजिए/मुझे रिफंड लेना है/मेरी पेमेंट वापस कर दीजिए/मेरा रिफंड शुरू कर दीजिए/मुझे मेरी रकम वापस चाहिए/मेरे पैसे कब वापस मिलेंगे/मेरा पैसा वापस चाहिए मुझे/रिफंड/पैसे वापस/पैसा वापस/रकम वापस/पेमेंट वापस/पैसे लौटा/पैसा लौटा/mujhe mera refund chahiye/mere paise wapas kar do/mujhe paise wapas chahiye/mera refund process kar do/mujhe refund chahiye ji/mere paise return kar do/refund chahiye mujhe/mujhe mera paisa wapas chahiye/please mera refund kar do/mera paisa wapas kar dijiye/mujhe apne paise wapas chahiye/refund kab milega mujhe/mera refund abhi tak nahi aaya/mere paise wapas bhej do/mujhe payment ka refund chahiye/mera paisa refund kar do/paise wapas karne hain mujhe/mujhe refund lena hai/mera refund initiate kar do/paise wapas/paisa wapas/paise vapas/paisa vapas/paise return/paisa return/i want my refund/i need my money back/please refund my money/i want a refund/can i get my refund/please process my refund/return my money please/i need a refund for my payment/refund me please/i want my money returned/please give me my money back/i would like to request a refund/please initiate my refund/when will i receive my refund/my refund hasn't arrived yet/i need my payment refunded/kindly refund my amount/i want my money back as soon as possible/please return the amount i paid/i'd like my refund processed right away/refund/my money back/money back/return my money/my money returned/refund my/return the amount i paid"
+  },
+  {
+   "id": "e_n_good_time__n_mark_refund_first",
+   "to": "n_mark_refund_first",
+   "from": "n_good_time",
+   "label": "i want my refund first then you can collect the router/i want my money back first then pick up the router/refund pehle chahiye uske baad router le jana/pehle mera refund kar do phir router pickup kar lena/pehle paise wapas karo uske baad router le jana/refund milne ke baad hi router pickup karwana/mujhe pehle refund chahiye phir pickup karwa lena/pehle refund process karo phir router le jana/paise wapas kar do phir router le jana/first refund then router pickup/please refund me first and collect the router later/you can pick up the router after my refund/mera refund pehle aana chahiye uske baad router pickup karna/pehle refund do phir router le jao/refund ke bina router nahi dunga/pehle mera paisa wapas karo phir router le jana/मुझे पहले रिफंड चाहिए उसके बाद राउटर ले जाना/पहले मेरे पैसे वापस करो फिर राउटर पिकअप करना/पहले रिफंड कर दीजिए फिर राउटर ले जाइए/मेरा रिफंड पहले आना चाहिए उसके बाद राउटर कलेक्ट करना/रिफंड मिलने के बाद ही राउटर ले जाना/पहले पैसे वापस कर दीजिए फिर राउटर ले जाइए/पहले मेरा रिफंड प्रोसेस करो उसके बाद राउटर ले जाना/पहले रिफंड दो फिर पिकअप करना/मुझे पहले मेरे पैसे चाहिए फिर राउटर वापस करूँगा/please process my refund before collecting the router/return my money first then take the router back/i will return the router after receiving my refund/you can collect the router once my refund is done/refund first pickup later/i don't want to return the router until i get my refund/please give me my money back before arranging the pickup/first refund my payment then schedule the pickup/मेरा पैसा वापस होने के बाद ही राउटर पिकअप करना/पहले रिफंड फिर पिकअप/मुझे रिफंड मिलने के बाद ही राउटर देना है/रिफंड पहले कर दो फिर राउटर ले जाना/i want my refund first/i need my refund first/first i want my money back/please refund me first/refund me before anything else/i want my money back first/mujhe pehle refund chahiye/pehle mera refund kar do/pehle mere paise wapas karo/mujhe pehle paise chahiye/pehle mera paisa return karo/refund pehle chahiye mujhe/mera refund pehle process karo/pehle refund de do phir baaki baat karna/mujhe pehle mera paisa wapas chahiye/paise pehle wapas kar do/mujhe pehle refund chahiye ji/pehle refund kar dijiye/mera paisa pehle wapas kar do/refund pehle process hona chahiye/i want the refund before proceeding/please process my refund first/first return the amount i paid/मुझे पहले मेरा रिफंड चाहिए/पहले मेरा रिफंड कर दीजिए/पहले मेरे पैसे वापस कर दो/मुझे पहले पैसे वापस चाहिए/पहले मेरा पैसा लौटा दीजिए/मेरा रिफंड पहले प्रोसेस कीजिए/पहले रिफंड चाहिए मुझे/मुझे सबसे पहले मेरा पैसा वापस चाहिए/पहले मेरी रकम वापस कर दीजिए/मेरा पैसा पहले वापस करिए/refund first/refund pehle/pehle refund/pehle mera refund/pehle mere paise/pehle paise/pehle mera paisa/paise pehle/paisa pehle/money back first/refund me first/my refund first/refund before/before my refund/after my refund/after the refund/after receiving my refund/until i get my refund/until my refund/once my refund/refund ke baad/refund milne ke baad/refund ke bina/bina refund/पहले रिफंड/रिफंड पहले/पहले मेरा रिफंड/पहले मेरे पैसे/पहले पैसे/पहले मेरा पैसा/पहले मेरी रकम/पैसे पहले/पैसा पहले/रिफंड के बाद/रिफंड मिलने के बाद/रिफंड के बिना/बिना रिफंड/पैसा वापस होने के बाद/पैसे वापस होने के बाद/pehle paise wapas/pehle paise wapas karo/phir router le jana/phir router le jao/phir router pickup/uske baad router le jana/uske baad router pickup/first refund/then router pickup/return my money first/my money first/money first/then take the router/then pick up the router/then schedule the pickup/पहले पैसे वापस/फिर राउटर ले जाइए/फिर राउटर ले जाना/फिर राउटर पिकअप/उसके बाद राउटर ले जाना/उसके बाद राउटर कलेक्ट/रिफंड पहले आना"
+  },
+  {
+   "id": "e_n_refund_info__n_read_locality",
+   "to": "n_read_locality",
+   "from": "n_refund_info",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes it's a good time/yes this is a good time/it's fine/go on/tell me/haan boliye/haan bataiye/haan bolo/boliye/bataiye/haan time hai/abhi kar lo/abhi kar dijiye/schedule kar do/haan schedule kar do/हाँ बोलिए/हाँ बताइए/बोलिए/बताइए/हाँ time है/अभी कर दीजिए/schedule कर दीजिए/ha krdo/haan kar do/ha ji kar do/haan ji kar dijiye/okay kar do/okay ji/yes kar do/yes go ahead/sure kar do/theek hai kar do/theek hai ji/kar dijiye/pickup schedule kar do/pick up schedule kar do/pickup book kar do/pickup fix kar do/pickup arrange kar do/mera pickup schedule kar do/router ka pickup schedule kar do/haan pickup karwa do/haan ji pickup karwa dijiye/pickup ke liye schedule kar do/thik hai pickup kar do/accha kar do/haan bhej do/haan schedule kar dijiye/please schedule the pickup/yes schedule it/okay schedule the pickup/go ahead and schedule it/please arrange the pickup/yes book the pickup/sure please proceed/yes that's fine/okay go ahead/yes please do that/हाँ कर दो/हाँ जी कर दीजिए/ठीक है कर दो/ठीक है जी/पिकअप शेड्यूल कर दो/पिकअप बुक कर दो/पिकअप फिक्स कर दो/पिकअप अरेंज कर दो/मेरा पिकअप शेड्यूल कर दो/राउटर का पिकअप शेड्यूल कर दो/हाँ पिकअप करवा दो/हाँ जी पिकअप करवा दीजिए/पिकअप के लिए शेड्यूल कर दीजिए/अच्छा कर दो/हाँ भेज दो/जी हाँ कर दीजिए/पिकअप की बुकिंग कर दीजिए/आप पिकअप शेड्यूल कर दीजिए/accha/acha/achha/अच्छा"
+  },
+  {
+   "id": "e_n_refund_info__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_refund_info",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/busy/i am busy/i'm busy/not now/not a good time/later/call me later/call back later/please call later/i'm driving/i am driving/in a meeting/abhi nahi/abhi busy hoon/busy hoon/baad mein/baad mein call karo/baad mein call kijiye/abhi time nahi hai/meeting mein hoon/drive kar raha hoon/अभी नहीं/बिज़ी हूँ/बिजी हूँ/अभी busy हूँ/बाद में/बाद में call कीजिए/अभी time नहीं है/meeting में हूँ"
+  },
+  {
+   "id": "e_n_refund_info__n_read_locality__else",
+   "to": "n_read_locality",
+   "from": "n_refund_info",
+   "label": "else"
+  },
+  {
+   "id": "e_n_refund_info__n_today_capture",
+   "to": "n_today_capture",
+   "from": "n_refund_info",
+   "label": "आज/आज ही/हाँ आज/हां आज/जी आज/आज कर दो/आज कर दीजिए/आज ही कर दो/आज ही कर दीजिए/आज करवा दो/आज करवा दीजिए/आज भेज दो/आज भेज दीजिए/आज ही भेज दीजिए/आज आ जाओ/आज आ जाइए/आज चलेगा/आज ठीक है/आज सुबह/आज दोपहर/आज शाम/हाँ आज कर दो/हाँ आज भेज दो/आज भेज देना/हाँ सही है आज/सही है आज/aaj/ajj/aaj hi/ha aaj/haan aaj/han aaj/ji aaj/aaj kar do/aaj krdo/aaj kardo/aaj kr do/aaj kar dijiye/aaj hi kar do/aaj karwa do/aaj karva do/aaj bhej do/ajj bhej do/aaj bhej dijiye/aaj hi bhej do/aaj aa jao/aaj aa jaiye/aaj chalega/aaj theek hai/aaj thik hai/aaj subah/aaj dopahar/aaj shaam/aaj sham/ha aaj krdo/haan aaj kar do/ha ajj bhej do/haan aaj bhej do/aaj bhej dena/aaj hi kar dijiye/aaj hi bhej dijiye/aaj karwa dijiye/haan sahi hai aaj/sahi hai aaj/come today/today is fine/today works/today itself/do it today/schedule it today/schedule today/visit today/send today/send the engineer today/send someone today/yes today/today please/today evening/today morning/today afternoon"
+  },
+  {
+   "id": "e_n_refund_info__n_mark_address_mismatch",
+   "to": "n_mark_address_changed",
+   "from": "n_refund_info",
+   "label": "address galat hai/address galat/galat address hai/galat address/address sahi nahi hai/address sahi nhi hai/address sahi nahin hai/address sahi nahi/address sahi nhi/ye mera address nahi hai/yeh mera address nahi hai/ye address mera nahi hai/mera address ye nahi hai/mera address nahi hai/address change ho gaya hai/address change ho gaya/address badal gaya hai/address badal gaya/main wahan nahi rehta/main wahan nahi rehti/main ab wahan nahi rehta/main ab wahan nahi rehti/hum wahan nahi rehte/ghar shift kar liya/ghar shift kar liya hai/ghar shift ho gaya/shift ho gaye hain/shift kar liya/location galat hai/location sahi nahi hai/location sahi nhi hai/galat location hai/galat location/purana address hai/पता गलत है/पता सही नहीं है/एड्रेस गलत है/एड्रेस सही नहीं है/ये मेरा एड्रेस नहीं है/ये मेरा पता नहीं है/मेरा पता नहीं है/एड्रेस बदल गया है/पता बदल गया है/मैं वहाँ नहीं रहता/मैं वहाँ नहीं रहती/मैं वहां नहीं रहता/मैं वहां नहीं रहती/हम वहाँ नहीं रहते/घर शिफ्ट कर लिया/शिफ्ट हो गए हैं/लोकेशन गलत है/लोकेशन सही नहीं है/गलत एड्रेस/गलत पता/पुराना पता है/एड्रेस गलत/ये एड्रेस सही नहीं है/एड्रेस बदल गया/पुराना एड्रेस है/wrong address/address is wrong/the address is wrong/address is not correct/address is incorrect/this is not my address/that's not my address/that is not my address/not my address/i don't live there/i do not live there/i don't live there anymore/i do not live there anymore/i have moved/i've moved/we have moved/we have shifted/i have shifted/wrong location/location is wrong/location is not correct"
+  },
+  {
+   "id": "e_n_refund_info__n_mark_already_picked",
+   "to": "n_mark_already_picked",
+   "from": "n_refund_info",
+   "label": "already pick ho chuka hai/pick ho gaya hai/router toh return kar diya hai maine/router pick ho chuka hai/router le gaye aap log/router already collect ho gaya hai/mere paas nahi hai/aap log pick kar chuke ho/router toh pehle hi le gaye/router toh de diya tha/maine router return kar diya/aapki team router le gayi/pick up ho gaya tha/router pehle hi collect ho chuka hai/aap log le chuke ho/router mere ghar se le gaye/aapke bande router le gaye the/router handover kar diya tha/router already return ho chuka hai/router jama karwa diya hai/router wapas de diya hai/already pick/already picked/already pickup/already collect/already return/already le gaye/pick ho chuka/pick ho gaya/pickup ho gaya/pickup ho chuka/pick up ho gaya/pick up ho chuka/pick kar liya/pick kar chuke/pick kar gaye/router le gaye/router le gayi/router le liya/router le chuke/router pehle hi/router de diya/router wapas kar diya/router wapas de diya/router return kar diya/router return ho gaya/router return ho chuka/router collect ho gaya/router collect ho chuka/router collect kar liya/router jama kar diya/router jama karwa diya/router jama ho gaya/router handover kar diya/router mere paas nahi hai/return kar diya hai/return kar chuka hoon/wapas kar diya hai/wapas de diya hai/jama karwa diya/collect ho chuka hai/pehle hi le gaye/pehle hi le gaye the/le gaye the/le ja chuke/device return kar diya/device le gaye/device pick ho gaya/device jama kar diya/राउटर पहले ही ले जा चुके हैं/राउटर पिक हो चुका है/मैंने राउटर वापस कर दिया है/राउटर ले लिया गया है/आपकी टीम राउटर ले गई है/राउटर पहले ही जमा करवा दिया था/राउटर मेरे पास नहीं है/आप लोग पहले ही ले गए थे/राउटर वापस कर दिया है/राउटर पहले ही कलेक्ट हो चुका है/राउटर आपको दे दिया था/आपकी टीम ले जा चुकी है/राउटर घर से ले गए थे/राउटर पहले ही उठा लिया गया था/राउटर वापस कर चुका हूँ/राउटर जमा हो गया है/राउटर की वापसी हो चुकी है/आप लोग राउटर ले चुके हैं/पिक हो चुका/पिक हो गया/पिकअप हो गया/पिकअप हो चुका/पिक अप हो गया/पिक अप हो चुका/पिक कर लिया/पिक कर चुके/राउटर ले गए/राउटर ले गई/राउटर ले लिया/राउटर ले चुके/राउटर पहले ही/राउटर दे दिया/राउटर वापस कर/राउटर वापस दे/राउटर रिटर्न कर/राउटर रिटर्न हो/राउटर जमा/राउटर कलेक्ट/राउटर उठा लिया/रिटर्न कर दिया/वापस कर दिया है/जमा करवा दिया/पहले ही ले गए/ले गए थे/ले जा चुके/ऑलरेडी पिक/ऑलरेडी ले गए/डिवाइस ले गए/डिवाइस वापस कर दिया/it has already been picked up/it's already collected/i've already returned the router/the router has been picked up/your team has already taken it/i've already handed it over/i don't have the router/you already picked it up/the router has already been returned/the router was collected earlier/i've already given it back/your team took the router/i've already submitted the router/you guys have already collected it/your representative picked it up/the router is no longer with me/i've already handed over the device/already picked up/already been picked/already collected/already been collected/already returned/already been returned/already taken/already handed/already given/already submitted/already took/already picked it/i have already returned/i have already given/i have already handed/i have already submitted/i do not have the router/router was picked up/router was collected/router is picked up/router has been collected/returned the router/returned the device/took the router/picked up the router/collected the router/no longer have the router"
+  },
+  {
+   "id": "e_n_refund_info__n_mark_refund_first",
+   "to": "n_mark_refund_first",
+   "from": "n_refund_info",
+   "label": "i want my refund first then you can collect the router/i want my money back first then pick up the router/refund pehle chahiye uske baad router le jana/pehle mera refund kar do phir router pickup kar lena/pehle paise wapas karo uske baad router le jana/refund milne ke baad hi router pickup karwana/mujhe pehle refund chahiye phir pickup karwa lena/pehle refund process karo phir router le jana/paise wapas kar do phir router le jana/first refund then router pickup/please refund me first and collect the router later/you can pick up the router after my refund/mera refund pehle aana chahiye uske baad router pickup karna/pehle refund do phir router le jao/refund ke bina router nahi dunga/pehle mera paisa wapas karo phir router le jana/मुझे पहले रिफंड चाहिए उसके बाद राउटर ले जाना/पहले मेरे पैसे वापस करो फिर राउटर पिकअप करना/पहले रिफंड कर दीजिए फिर राउटर ले जाइए/मेरा रिफंड पहले आना चाहिए उसके बाद राउटर कलेक्ट करना/रिफंड मिलने के बाद ही राउटर ले जाना/पहले पैसे वापस कर दीजिए फिर राउटर ले जाइए/पहले मेरा रिफंड प्रोसेस करो उसके बाद राउटर ले जाना/पहले रिफंड दो फिर पिकअप करना/मुझे पहले मेरे पैसे चाहिए फिर राउटर वापस करूँगा/please process my refund before collecting the router/return my money first then take the router back/i will return the router after receiving my refund/you can collect the router once my refund is done/refund first pickup later/i don't want to return the router until i get my refund/please give me my money back before arranging the pickup/first refund my payment then schedule the pickup/मेरा पैसा वापस होने के बाद ही राउटर पिकअप करना/पहले रिफंड फिर पिकअप/मुझे रिफंड मिलने के बाद ही राउटर देना है/रिफंड पहले कर दो फिर राउटर ले जाना/i want my refund first/i need my refund first/first i want my money back/please refund me first/refund me before anything else/i want my money back first/mujhe pehle refund chahiye/pehle mera refund kar do/pehle mere paise wapas karo/mujhe pehle paise chahiye/pehle mera paisa return karo/refund pehle chahiye mujhe/mera refund pehle process karo/pehle refund de do phir baaki baat karna/mujhe pehle mera paisa wapas chahiye/paise pehle wapas kar do/mujhe pehle refund chahiye ji/pehle refund kar dijiye/mera paisa pehle wapas kar do/refund pehle process hona chahiye/i want the refund before proceeding/please process my refund first/first return the amount i paid/मुझे पहले मेरा रिफंड चाहिए/पहले मेरा रिफंड कर दीजिए/पहले मेरे पैसे वापस कर दो/मुझे पहले पैसे वापस चाहिए/पहले मेरा पैसा लौटा दीजिए/मेरा रिफंड पहले प्रोसेस कीजिए/पहले रिफंड चाहिए मुझे/मुझे सबसे पहले मेरा पैसा वापस चाहिए/पहले मेरी रकम वापस कर दीजिए/मेरा पैसा पहले वापस करिए/refund first/refund pehle/pehle refund/pehle mera refund/pehle mere paise/pehle paise/pehle mera paisa/paise pehle/paisa pehle/money back first/refund me first/my refund first/refund before/before my refund/after my refund/after the refund/after receiving my refund/until i get my refund/until my refund/once my refund/refund ke baad/refund milne ke baad/refund ke bina/bina refund/पहले रिफंड/रिफंड पहले/पहले मेरा रिफंड/पहले मेरे पैसे/पहले पैसे/पहले मेरा पैसा/पहले मेरी रकम/पैसे पहले/पैसा पहले/रिफंड के बाद/रिफंड मिलने के बाद/रिफंड के बिना/बिना रिफंड/पैसा वापस होने के बाद/पैसे वापस होने के बाद/pehle paise wapas/pehle paise wapas karo/phir router le jana/phir router le jao/phir router pickup/uske baad router le jana/uske baad router pickup/first refund/then router pickup/return my money first/my money first/money first/then take the router/then pick up the router/then schedule the pickup/पहले पैसे वापस/फिर राउटर ले जाइए/फिर राउटर ले जाना/फिर राउटर पिकअप/उसके बाद राउटर ले जाना/उसके बाद राउटर कलेक्ट/रिफंड पहले आना/मुझे मेरा रिफंड चाहिए/मुझे मेरे पैसे वापस चाहिए/मेरे पैसे वापस कर दीजिए/मेरा रिफंड प्रोसेस कर दीजिए/मुझे पैसे वापस चाहिए जी/मेरी रकम वापस कर दीजिए/मुझे मेरा पैसा वापस चाहिए/कृपया मेरा रिफंड कर दीजिए/मेरे पैसे लौटा दीजिए/मुझे अपना पैसा वापस चाहिए/मेरा पैसा वापस कर दीजिए/मुझे भुगतान का रिफंड चाहिए/मेरा रिफंड कर दीजिए/मेरे पैसे वापस भेज दीजिए/मुझे रिफंड लेना है/मेरी पेमेंट वापस कर दीजिए/मेरा रिफंड शुरू कर दीजिए/मुझे मेरी रकम वापस चाहिए/मेरे पैसे कब वापस मिलेंगे/मेरा पैसा वापस चाहिए मुझे/रिफंड/पैसे वापस/पैसा वापस/रकम वापस/पेमेंट वापस/पैसे लौटा/पैसा लौटा/mujhe mera refund chahiye/mere paise wapas kar do/mujhe paise wapas chahiye/mera refund process kar do/mujhe refund chahiye ji/mere paise return kar do/refund chahiye mujhe/mujhe mera paisa wapas chahiye/please mera refund kar do/mera paisa wapas kar dijiye/mujhe apne paise wapas chahiye/refund kab milega mujhe/mera refund abhi tak nahi aaya/mere paise wapas bhej do/mujhe payment ka refund chahiye/mera paisa refund kar do/paise wapas karne hain mujhe/mujhe refund lena hai/mera refund initiate kar do/paise wapas/paisa wapas/paise vapas/paisa vapas/paise return/paisa return/i want my refund/i need my money back/please refund my money/i want a refund/can i get my refund/please process my refund/return my money please/i need a refund for my payment/refund me please/i want my money returned/please give me my money back/i would like to request a refund/please initiate my refund/when will i receive my refund/my refund hasn't arrived yet/i need my payment refunded/kindly refund my amount/i want my money back as soon as possible/please return the amount i paid/i'd like my refund processed right away/refund/my money back/money back/return my money/my money returned/refund my/return the amount i paid"
+  },
+  {
+   "id": "e_n_mark_refund_first__n_end_refund_first",
+   "to": "n_end_refund_first",
+   "from": "n_mark_refund_first"
+  }
+ ]
+}

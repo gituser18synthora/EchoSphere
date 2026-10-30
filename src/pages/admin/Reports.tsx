@@ -45,7 +45,10 @@ export default function Reports() {
                   <BarChart data={a.data.callsSeries} x="t" series={[{ key: "calls", label: "Calls" }]} maxTicks={8} />
                 </ChartCard>
                 <ChartCard title="Top tenants by call volume" sub="This month">
-                  <HBarList data={a.data.topTenantsByCalls} />
+                  <HBarList
+                    data={a.data.topTenantsByCalls.map((t) => ({ ...t, detail: t.avgDuration }))}
+                    columns={{ value: "Calls", detail: "Avg duration" }}
+                  />
                 </ChartCard>
               </div>
             )}

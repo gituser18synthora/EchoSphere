@@ -1,8 +1,16 @@
 """Parameter-schema validation, language mapping helpers, sentence buffering."""
 
+import re
+from pathlib import Path
+
 import pytest
 
-from backend.core.provider_catalog import validate_params
+from backend.core.provider_catalog import (
+    PLATFORM_LLM_SETTING_KEYS,
+    validate_llm_settings,
+    validate_params,
+    validate_stt_settings,
+)
 from shared.providers.languages import (
     matches_model_language,
     to_platform_language,
@@ -19,11 +27,21 @@ class TestValidateParams:
         "mode": {"type": "enum", "values": ["transcribe", "verbatim"], "default": "transcribe"},
         "dict_id": {"type": "string", "optional": True, "max_length": 10},
         "chunk_length_schedule": {"type": "int_list", "min": 50, "max": 500, "max_items": 3},
+        "language_hints": {"type": "string_list", "max_items": 2,
+                           "values": ["hi", "en", "ta"]},
         "streaming": {"type": "boolean", "default": True, "fixed": True},
     }
 
     def check(self, params):
         return validate_params(self.SCHEMA, params, prefix="TTS")
+
+    def test_string_list_accepts_allowed_values(self):
+        assert self.check({"language_hints": ["hi", "en"]}) == []
+
+    def test_string_list_rejects_unknown_value_and_overflow(self):
+        assert self.check({"language_hints": ["hi", "fr"]})
+        assert self.check({"language_hints": ["hi", "en", "ta"]})  # > max_items
+        assert self.check({"language_hints": "hi"})  # not a list
 
     def test_valid_params_pass(self):
         assert self.check({
@@ -63,6 +81,106 @@ class TestValidateParams:
 
     def test_none_values_ignored(self):
         assert self.check({"pace": None, "dict_id": None}) == []
+
+
+class TestValidateSttSettings:
+    SCHEMA = {"mode": {"type": "enum", "values": ["transcribe", "translate"]}}
+
+    def test_turn_detection_is_accepted_outside_provider_schema(self):
+        assert validate_stt_settings(self.SCHEMA, {
+            "mode": "transcribe",
+            "turn_detection": {
+                "user_speech_timeout": 0.7,
+                "finalize_grace": 0.15,
+                "barge_in_min_words": 3,
+            },
+        }) == []
+
+    @pytest.mark.parametrize("turn_detection", [
+        {"user_speech_timeout": 0.1},
+        {"finalize_grace": 2},
+        {"user_speech_timeout": "fast"},
+        {"barge_in_min_words": 11},
+        {"barge_in_min_words": True},
+        {"unknown": 1},
+        "fast",
+    ])
+    def test_invalid_turn_detection_is_rejected(self, turn_detection):
+        assert validate_stt_settings(
+            self.SCHEMA, {"mode": "transcribe", "turn_detection": turn_detection}
+        )
+
+
+class TestValidateLlmSettings:
+    """Platform-owned orchestration keys are validated by the platform
+    contract and removed before provider-schema validation — the same design
+    as the STT turn_detection/noise_gate sections."""
+
+    SCHEMA = {
+        "temperature": {"type": "number", "min": 0.0, "max": 2.0},
+        "max_tokens": {"type": "integer", "min": 16, "max": 4096},
+    }
+
+    def check(self, params):
+        return validate_llm_settings(self.SCHEMA, params, prefix="LLM")
+
+    def test_platform_keys_accepted_outside_provider_schema(self):
+        assert self.check({
+            "temperature": 0.3,
+            "max_tokens": 256,
+            "goal_engine_enabled": True,
+            "intent_llm_enabled": False,
+            "orchestration_provider": "openai",
+            "orchestration_model": "gpt-4o-mini",
+            "orchestration_timeout_seconds": 1.2,
+            "orchestration_max_tokens": 200,
+            "intent_timeout_seconds": 2.0,
+            "memory_greeting_enabled": True,
+            "memory_greeting_timeout_seconds": 4.0,
+        }) == []
+
+    def test_provider_params_still_validated_strictly(self):
+        errors = self.check({"temperature": 9.0, "bogus": 1,
+                             "goal_engine_enabled": True})
+        assert any("temperature" in e for e in errors)
+        assert any("unknown parameter 'bogus'" in e for e in errors)
+        assert not any("goal_engine_enabled" in e for e in errors)
+
+    @pytest.mark.parametrize("params", [
+        {"goal_engine_enabled": "yes"},
+        {"intent_llm_enabled": 1},
+        {"memory_greeting_enabled": "on"},
+        {"orchestration_provider": 42},
+        {"orchestration_model": "x" * 81},
+        {"orchestration_timeout_seconds": 0.1},     # below the 0.5 s floor
+        {"orchestration_timeout_seconds": 9.0},     # above the 5 s ceiling
+        {"orchestration_timeout_seconds": "fast"},
+        {"orchestration_max_tokens": 32},           # below the 64 floor
+        {"orchestration_max_tokens": 512},          # above the 340 ceiling
+        {"orchestration_max_tokens": 1.5},
+        {"orchestration_max_tokens": True},
+        {"intent_timeout_seconds": 0.2},
+        {"intent_timeout_seconds": 8.0},
+        {"memory_greeting_timeout_seconds": 30.0},
+    ])
+    def test_invalid_platform_values_are_rejected(self, params):
+        assert self.check(params)
+
+    def test_safe_boundary_values_accepted(self):
+        assert self.check({"orchestration_timeout_seconds": 0.5}) == []
+        assert self.check({"orchestration_timeout_seconds": 5.0}) == []
+        assert self.check({"orchestration_max_tokens": 64}) == []
+        assert self.check({"orchestration_max_tokens": 340}) == []
+
+    def test_the_studio_keeps_every_platform_key_on_a_model_switch(self):
+        # The Studio's copy of the list is what survives an LLM provider /
+        # model switch; a key missing there is silently dropped on the next
+        # save (reply_service_tier / reply_reasoning_effort were, on demo).
+        source = (Path(__file__).resolve().parents[2]
+                  / "src/pages/tenant/studio/VoiceTab.tsx").read_text()
+        block = re.search(r"const PLATFORM_LLM_SETTING_KEYS = \[(.*?)\];", source, re.S)
+        assert block is not None
+        assert set(re.findall(r'"([a-z_]+)"', block.group(1))) == set(PLATFORM_LLM_SETTING_KEYS)
 
 
 class TestLanguageMapping:

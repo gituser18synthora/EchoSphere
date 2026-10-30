@@ -1,0 +1,196 @@
+<svg viewBox="0 0 1240 680" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="v-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="v-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <marker id="v-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#D97706"/></marker>
+    <marker id="v-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16A34A"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; }
+      .stage { rx: 8; stroke-width: 1.4; }
+      .t { font-size: 11px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 8.6px; fill: #55607A; }
+      .e { fill: none; stroke-width: 1.5; }
+      .el { font-size: 8.6px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- ===== admission strip ===== -->
+  <rect class="cl" x="20" y="18" width="1200" height="106" fill="#FEF1F2" stroke="#E11D48"/>
+  <text class="clabel" x="38" y="40" fill="#E11D48">CALL ADMISSION (telephony only) &#8212; shared/telephony_webhooks.py</text>
+  <g font-size="9.4px" fill="#1F2937">
+    <rect class="stage" x="38" y="52" width="150" height="56" fill="#FFFFFF" stroke="#E11D48"/>
+    <text class="t" x="113" y="74" text-anchor="middle">Signed webhook</text>
+    <text class="s" x="113" y="88" text-anchor="middle">HMAC + 300 s skew</text>
+    <text class="s" x="113" y="99" text-anchor="middle">replay SETNX (Redis)</text>
+    <rect class="stage" x="208" y="52" width="160" height="56" fill="#FFFFFF" stroke="#E11D48"/>
+    <text class="t" x="288" y="74" text-anchor="middle">Number routing</text>
+    <text class="s" x="288" y="88" text-anchor="middle">dialed DID &#8594; tenant &#8594; bot</text>
+    <text class="s" x="288" y="99" text-anchor="middle">published release required</text>
+    <rect class="stage" x="388" y="52" width="170" height="56" fill="#FFFFFF" stroke="#E11D48"/>
+    <text class="t" x="473" y="74" text-anchor="middle">Compliance gate</text>
+    <text class="s" x="473" y="88" text-anchor="middle">outbound_call_block &#183; calling window</text>
+    <text class="s" x="473" y="99" text-anchor="middle">daily contact limit &#8594; sanitized 403</text>
+    <rect class="stage" x="578" y="52" width="170" height="56" fill="#FFFFFF" stroke="#E11D48"/>
+    <text class="t" x="663" y="74" text-anchor="middle">Mint session</text>
+    <text class="s" x="663" y="88" text-anchor="middle">voice:session:{id} in Redis</text>
+    <text class="s" x="663" y="99" text-anchor="middle">reply carries per-call WS URL</text>
+    <rect class="stage" x="768" y="52" width="432" height="56" fill="#FFFFFF" stroke="#E11D48"/>
+    <text class="t" x="984" y="74" text-anchor="middle">Media connect &#8212; :9011/ws/telephony/{provider}/{id}</text>
+    <text class="s" x="984" y="88" text-anchor="middle">Vaani JSON media 8 kHz &#183; FS mod_audio_fork 16 kHz / mod_audio_stream 8 kHz stereo</text>
+    <text class="s" x="984" y="99" text-anchor="middle">browser path skips this strip: REST POST /voice-sessions &#8594; ws://&#8230;:9002/ws/voice/{id}</text>
+  </g>
+  <path class="e" d="M188 80 L 208 80" stroke="#E11D48" marker-end="url(#v-rose)"/>
+  <path class="e" d="M368 80 L 388 80" stroke="#E11D48" marker-end="url(#v-rose)"/>
+  <path class="e" d="M558 80 L 578 80" stroke="#E11D48" marker-end="url(#v-rose)"/>
+  <path class="e" d="M748 80 L 768 80" stroke="#E11D48" marker-end="url(#v-rose)"/>
+
+  <!-- ===== pipecat chain ===== -->
+  <rect class="cl" x="20" y="146" width="1200" height="196" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="38" y="168" fill="#0D9488">PIPECAT 1.5 PIPELINE &#8212; voice_runtime/pipeline.py (one per call, config pinned at start)</text>
+
+  <rect class="stage" x="38" y="182" width="118" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="97" y="204" text-anchor="middle">transport.input()</text>
+  <text class="s" x="97" y="219" text-anchor="middle">WS serializer per</text>
+  <text class="s" x="97" y="231" text-anchor="middle">provider/transport</text>
+
+  <rect class="stage" x="172" y="182" width="122" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="233" y="204" text-anchor="middle">CallerAudioGate</text>
+  <text class="s" x="233" y="219" text-anchor="middle">dBFS noise floor gate</text>
+  <text class="s" x="233" y="231" text-anchor="middle">(substitutes silence)</text>
+
+  <rect class="stage" x="310" y="182" width="118" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="369" y="204" text-anchor="middle">Silero VAD</text>
+  <text class="s" x="369" y="219" text-anchor="middle">tenant turn-detection</text>
+  <text class="s" x="369" y="231" text-anchor="middle">params per transport</text>
+
+  <rect class="stage" x="444" y="182" width="150" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="519" y="200" text-anchor="middle">STT service</text>
+  <text class="s" x="519" y="214" text-anchor="middle">Sarvam WS (no interims)</text>
+  <text class="s" x="519" y="226" text-anchor="middle">Deepgram Flux (owns EOT)</text>
+  <text class="s" x="519" y="238" text-anchor="middle">segmented REST (Whisper&#8230;)</text>
+
+  <rect class="stage" x="610" y="182" width="146" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="683" y="200" text-anchor="middle">UserTurnProcessor</text>
+  <text class="s" x="683" y="214" text-anchor="middle">word-confirmed barge-in</text>
+  <text class="s" x="683" y="226" text-anchor="middle">speech-timeout stop</text>
+  <text class="s" x="683" y="238" text-anchor="middle">(Flux: provider-owned)</text>
+
+  <rect class="stage" x="772" y="182" width="150" height="64" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="847" y="204" text-anchor="middle">ConversationBrain</text>
+  <text class="s" x="847" y="219" text-anchor="middle">orchestration (below)</text>
+  <text class="s" x="847" y="231" text-anchor="middle">brain.py &#183; 4,482 lines</text>
+
+  <rect class="stage" x="938" y="182" width="150" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="1013" y="200" text-anchor="middle">TTS router</text>
+  <text class="s" x="1013" y="214" text-anchor="middle">Sarvam / ElevenLabs WS</text>
+  <text class="s" x="1013" y="226" text-anchor="middle">REST fallback engines</text>
+  <text class="s" x="1013" y="238" text-anchor="middle">per-language voice map</text>
+
+  <rect class="stage" x="1104" y="182" width="100" height="64" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="1154" y="204" text-anchor="middle">transport</text>
+  <text class="t" x="1154" y="218" text-anchor="middle">.output()</text>
+  <text class="s" x="1154" y="233" text-anchor="middle">+ stereo recorder</text>
+
+  <path class="e" d="M156 214 L 172 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M294 214 L 310 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M428 214 L 444 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M594 214 L 610 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M756 214 L 772 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M922 214 L 938 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+  <path class="e" d="M1088 214 L 1104 214" stroke="#0D9488" marker-end="url(#v-teal)"/>
+
+  <text class="s" x="38" y="266">Guarantees encoded in ordering: the energy gate sits ahead of VAD so suppressed noise can never open a turn; STT receives the VAD-stop frame before the</text>
+  <text class="s" x="38" y="279">turn processor so Sarvam flushes; the recorder taps after transport.output() so it stores exactly what was played (caller left channel, bot right channel).</text>
+  <text class="s" x="38" y="298">Interruption path: barge-in &#8594; cancel generation + provider context &#8594; clear queued audio &#8594; killAudio (FreeSWITCH) / clear (Vaani). Sentence-level guardrail hold:</text>
+  <text class="s" x="38" y="311">each sentence is checked before synthesis when the profile has blocking output rules; a violating sentence is never spoken.</text>
+  <text class="s" x="38" y="330" font-style="italic">Latency budgets: goal decision 1.2 s / 200 tok &#183; LLM first token 3 s &#183; TTS first audio 4 s &#183; endpoint 0.35 s complete-thought / 0.12 s short reply &#183; pause-flush 0.6 s</text>
+
+  <!-- ===== orchestration cluster ===== -->
+  <rect class="cl" x="20" y="364" width="770" height="270" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="clabel" x="38" y="386" fill="#B45D09">TURN ORCHESTRATION INSIDE THE BRAIN (per final transcript)</text>
+
+  <rect class="stage" x="38" y="400" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="123" y="420" text-anchor="middle">1 &#183; Transcript gate</text>
+  <text class="s" x="123" y="434" text-anchor="middle">noise / foreign-language /</text>
+  <text class="s" x="123" y="446" text-anchor="middle">hallucination rejection (hi+en)</text>
+
+  <rect class="stage" x="228" y="400" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="313" y="420" text-anchor="middle">2 &#183; Deterministic router</text>
+  <text class="s" x="313" y="434" text-anchor="middle">hangup &#183; emergency &#183; DNC &#183; signals</text>
+  <text class="s" x="313" y="446" text-anchor="middle">intent match-strength scoring</text>
+
+  <rect class="stage" x="418" y="400" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="503" y="420" text-anchor="middle">3 &#183; Guardrail input check</text>
+  <text class="s" x="503" y="434" text-anchor="middle">mandatory floor &#8746; tenant profile</text>
+  <text class="s" x="503" y="446" text-anchor="middle">blocked &#8594; safe localized reply</text>
+
+  <rect class="stage" x="608" y="400" width="164" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="690" y="420" text-anchor="middle">4 &#183; Goal Engine (Stage A)</text>
+  <text class="s" x="690" y="434" text-anchor="middle">gpt-4o-mini &#183; 1.2 s / 200 tok</text>
+  <text class="s" x="690" y="446" text-anchor="middle">ConversationDecision + scope rules</text>
+
+  <rect class="stage" x="38" y="480" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="123" y="500" text-anchor="middle">5a &#183; Workflow engine</text>
+  <text class="s" x="123" y="514" text-anchor="middle">LangGraph interpreter &#183; 9 node kinds</text>
+  <text class="s" x="123" y="526" text-anchor="middle">PG checkpoints &#183; ask/edge routing</text>
+
+  <rect class="stage" x="228" y="480" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="313" y="500" text-anchor="middle">5b &#183; Knowledge (RAG)</text>
+  <text class="s" x="313" y="514" text-anchor="middle">hybrid retrieval &#183; speculative</text>
+  <text class="s" x="313" y="526" text-anchor="middle">prefetch &#183; verified-context fallback</text>
+
+  <rect class="stage" x="418" y="480" width="170" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="503" y="500" text-anchor="middle">5c &#183; Tool executor</text>
+  <text class="s" x="503" y="514" text-anchor="middle">SSRF-guarded API calls &#183; idempotent</text>
+  <text class="s" x="503" y="526" text-anchor="middle">denied when a guardrail fired</text>
+
+  <rect class="stage" x="608" y="480" width="164" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="690" y="500" text-anchor="middle">6 &#183; Reply generation</text>
+  <text class="s" x="690" y="514" text-anchor="middle">direct Stage-A text when safe, else</text>
+  <text class="s" x="690" y="526" text-anchor="middle">streamed LLM &#183; 360-char cap</text>
+
+  <rect class="stage" x="38" y="558" width="734" height="60" fill="#FFFFFF" stroke="#D97706"/>
+  <text class="t" x="405" y="578" text-anchor="middle">7 &#183; Naturalness + delivery + language</text>
+  <text class="s" x="405" y="592" text-anchor="middle">SpeechNaturalnessPlanner (fillers, backchannels, micro-pauses; suppressed on amounts/IDs/compliance wording) &#183; empathy/energy prompt bands</text>
+  <text class="s" x="405" y="604" text-anchor="middle">per-turn hi/en language following with per-language voice switch &#183; spoken-number normalization &#183; turn_rewound retraction on late-final merges</text>
+
+  <path class="e" d="M208 430 L 228 430" stroke="#D97706" marker-end="url(#v-amber)"/>
+  <path class="e" d="M398 430 L 418 430" stroke="#D97706" marker-end="url(#v-amber)"/>
+  <path class="e" d="M588 430 L 608 430" stroke="#D97706" marker-end="url(#v-amber)"/>
+  <path class="e" d="M690 460 C 690 470 520 470 470 480" stroke="#D97706" marker-end="url(#v-amber)"/>
+  <path class="e" d="M690 460 L 690 480" stroke="#D97706" marker-end="url(#v-amber)"/>
+  <path class="e" d="M405 540 L 405 558" stroke="#D97706" marker-end="url(#v-amber)"/>
+
+  <!-- ===== finalize cluster ===== -->
+  <rect class="cl" x="810" y="364" width="410" height="270" fill="#F0FBF3" stroke="#16A34A"/>
+  <text class="clabel" x="828" y="386" fill="#16A34A">CALL FINALIZE (single-shot, idempotent)</text>
+  <g font-size="9.4px">
+    <rect class="stage" x="828" y="400" width="374" height="52" fill="#FFFFFF" stroke="#16A34A"/>
+    <text class="t" x="1015" y="420" text-anchor="middle">Disconnect verdict &#8212; first writer wins</text>
+    <text class="s" x="1015" y="434" text-anchor="middle">transferred &#8250; ESL hangup cause (normalize_disconnect) &#8250; socket shape</text>
+    <rect class="stage" x="828" y="462" width="374" height="76" fill="#FFFFFF" stroke="#16A34A"/>
+    <text class="t" x="1015" y="482" text-anchor="middle">Persist once</text>
+    <text class="s" x="1015" y="496" text-anchor="middle">Mongo transcript (turns, events, kb sources, recording descriptor)</text>
+    <text class="s" x="1015" y="508" text-anchor="middle">MySQL conversation_sessions row + usage_events (llm/stt/tts/telephony,</text>
+    <text class="s" x="1015" y="520" text-anchor="middle">deterministic request_ids &#8212; re-run bills nothing; mock never billed)</text>
+    <rect class="stage" x="828" y="548" width="374" height="70" fill="#FFFFFF" stroke="#16A34A"/>
+    <text class="t" x="1015" y="568" text-anchor="middle">Post-call intelligence (tenant opt-in)</text>
+    <text class="s" x="1015" y="582" text-anchor="middle">enqueue conversation_memories &#8594; worker: LLM summary + outcome +</text>
+    <text class="s" x="1015" y="594" text-anchor="middle">next-best-action &#8594; next call gets memory greeting + language continuity</text>
+    <text class="s" x="1015" y="606" text-anchor="middle">guardrail trigger ledger persisted &#183; stereo WAV closed</text>
+  </g>
+  <path class="e" d="M1015 452 L 1015 462" stroke="#16A34A" marker-end="url(#v-green)"/>
+  <path class="e" d="M1015 538 L 1015 548" stroke="#16A34A" marker-end="url(#v-green)"/>
+
+  <!-- flow between clusters -->
+  <path class="e" d="M620 124 C 500 138 380 140 300 146" stroke="#E11D48" marker-end="url(#v-rose)"/>
+  <path class="e" d="M847 246 C 847 300 500 330 405 364" stroke="#D97706" stroke-width="1.8" marker-end="url(#v-amber)"/>
+  <text class="el" x="700" y="316">every final user turn</text>
+  <path class="e" d="M1154 246 C 1160 300 1060 330 1015 364" stroke="#16A34A" stroke-width="1.8" marker-end="url(#v-green)"/>
+  <text class="el" x="1082" y="316">socket closes / hangup</text>
+
+  <!-- footer note -->
+  <text class="s" x="38" y="652" font-style="italic">Config source: shared/bot_config.py compiles number&#8594;tenant&#8594;bot&#8594;release&#8594;providers&#8594;voices&#8594;intents&#8594;KBs into one Redis-cached snapshot (TTL 300 s),</text>
+  <text class="s" x="38" y="665" font-style="italic">pinned per call &#8212; publishing a release invalidates botcfg:* so new calls see it while live calls keep their snapshot.</text>
+</svg>

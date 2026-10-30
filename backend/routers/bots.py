@@ -3,28 +3,43 @@
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     get_current_user,
+    require_permission,
+    require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
+from shared.providers.tts.delivery import strip_speed_params
+from shared.providers.stt.sarvam_keyterms import KEYTERMS_SETTING, normalize_keyterms
+from shared.audio.ambience_presets import ambience_preset_catalog
+from shared.orchestration.naturalness import resolve_human_speech_with_sources
+from shared.providers.stt_language_policy import resolve_auto_detect_language
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.core.softdelete import guard_hard_delete, soft_delete
+from backend.core.bot_lifecycle import (
+    archive_bot,
+    is_archived,
+    permanently_delete_bot,
+    restore_bot,
+)
+from backend.core.softdelete import guard_hard_delete
 from shared.db.mysql import get_db
 from shared.models import (
     BotLanguage,
     ChannelConfig,
     SupportedLanguage,
     Tenant,
+    TenantSetting,
     UsageRecord,
     User,
     VoiceBot,
@@ -34,6 +49,7 @@ from shared.models import (
     Workflow,
 )
 from backend.serializers import serialize_bot
+from shared.readiness import refresh_readiness
 
 router = APIRouter(tags=["VoiceBots"])
 
@@ -70,9 +86,24 @@ def _bot_extras(db: Session, bots: list[VoiceBot]) -> dict[str, dict]:
             .group_by(UsageRecord.bot_id)
         ).all()
     )
-    month_calls = dict(
-        db.execute(
-            select(UsageRecord.bot_id, func.coalesce(func.sum(UsageRecord.calls), 0))
+    # Calls and AI cost for the current calendar month, from the metering
+    # rollup (usage_records is written per call at finalize) — never from the
+    # static voice_bots columns, which only demo seeds ever populated.
+    month_cost = (
+        func.coalesce(func.sum(UsageRecord.cost_llm), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_tts), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_stt), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_telephony), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_embedding), 0)
+    )
+    month_usage = {
+        bot_id: (int(calls or 0), float(cost or 0))
+        for bot_id, calls, cost in db.execute(
+            select(
+                UsageRecord.bot_id,
+                func.coalesce(func.sum(UsageRecord.calls), 0),
+                month_cost,
+            )
             .where(
                 UsageRecord.bot_id.in_(ids),
                 func.extract("year", UsageRecord.date) == today.year,
@@ -80,25 +111,30 @@ def _bot_extras(db: Session, bots: list[VoiceBot]) -> dict[str, dict]:
             )
             .group_by(UsageRecord.bot_id)
         ).all()
-    )
+    }
     owner_ids = [b.owner_user_id for b in bots if b.owner_user_id]
     owners = {}
     if owner_ids:
         owners = dict(
             db.execute(select(User.id, User.name).where(User.id.in_(owner_ids))).all()
         )
-    return {
-        b.id: {
+    extras = {}
+    for b in bots:
+        calls_month, cost_month = month_usage.get(b.id, (0, 0.0))
+        extras[b.id] = {
             "channels": channels.get(b.id, []),
             "calls_today": int(today_calls.get(b.id, 0)),
-            "calls_month": int(month_calls.get(b.id, 0)),
+            "calls_month": calls_month,
+            # Cost per answered call this month, from actual metered usage.
+            "avg_cost_per_call": (cost_month / calls_month) if calls_month else 0.0,
             "owner": owners.get(b.owner_user_id, "—"),
         }
-        for b in bots
-    }
+    return extras
 
 
-def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
+def _serialize_many(
+    db: Session, bots: list[VoiceBot], *, include_costs: bool = True
+) -> list[dict]:
     extras = _bot_extras(db, bots)
     return [
         serialize_bot(
@@ -107,6 +143,8 @@ def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
             channels=extras[b.id]["channels"],
             calls_today=extras[b.id]["calls_today"],
             calls_month=extras[b.id]["calls_month"],
+            avg_cost_per_call=extras[b.id]["avg_cost_per_call"],
+            include_costs=include_costs,
         )
         for b in bots
     ]
@@ -116,7 +154,12 @@ def _get_bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
     bot = db.get(VoiceBot, bot_id)
     if bot is None or bot.is_deleted:
         raise NotFoundError("VoiceBot")
-    assert_tenant_access(user, bot.tenant_id)
+    try:
+        assert_tenant_access(user, bot.tenant_id)
+    except NotFoundError:
+        # Same message as a missing bot — a cross-tenant probe must not be
+        # able to tell whether the id exists.
+        raise NotFoundError("VoiceBot")
     return bot
 
 
@@ -145,27 +188,32 @@ def list_bots(
     rows = db.scalars(
         stmt.order_by(VoiceBot.created_at.asc()).offset(params.offset).limit(params.page_size)
     ).all()
-    return paginated(_serialize_many(db, rows), page=params.page, page_size=params.page_size, total=total)
+    return paginated(
+        _serialize_many(db, rows, include_costs=can_view_costs(user)),
+        page=params.page, page_size=params.page_size, total=total,
+    )
 
 
 @router.get("/bots/{bot_id}")
 def get_bot(bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     bot = _get_bot_checked(db, bot_id, user)
-    return ok(_serialize_many(db, [bot])[0])
+    return ok(_serialize_many(db, [bot], include_costs=can_view_costs(user))[0])
 
 
 class CreateBotRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     use_case: str = Field(default="", alias="useCase", max_length=200)
     description: str = Field(default="", max_length=2000)
-    languages: list[str] = Field(default_factory=lambda: ["en-US"])
+    # Omitted means "use the current enabled platform default".  A literal
+    # locale here becomes stale as soon as an administrator disables it.
+    languages: list[str] | None = None
     tenant_id: str | None = Field(default=None, alias="tenantId")
 
     model_config = {"populate_by_name": True}
 
 
 def _validated_languages(db: Session, codes: list[str]) -> list[str]:
-    """Dedupe (order-preserving) and require every code to be an enabled platform language."""
+    """Require every code to be an enabled platform language."""
     deduped = list(dict.fromkeys(c.strip() for c in codes if c and c.strip()))
     if not deduped:
         raise ApiError("At least one supported language is required.", 422)
@@ -180,6 +228,21 @@ def _validated_languages(db: Session, codes: list[str]) -> list[str]:
     return deduped
 
 
+def _default_bot_languages(db: Session) -> list[str]:
+    """One enabled catalog language: flagged default first, then display order."""
+    code = db.scalar(
+        select(SupportedLanguage.code)
+        .where(SupportedLanguage.enabled.is_(True))
+        .order_by(
+            SupportedLanguage.is_default.desc(),
+            SupportedLanguage.sort_order,
+            SupportedLanguage.code,
+        )
+        .limit(1)
+    )
+    return [code] if code else []
+
+
 @router.post("/bots", status_code=201)
 def create_bot(
     body: CreateBotRequest,
@@ -191,7 +254,10 @@ def create_bot(
     if db.get(Tenant, tid) is None:
         raise NotFoundError("Tenant")
 
-    langs = _validated_languages(db, body.languages)
+    requested_languages = (
+        body.languages if body.languages is not None else _default_bot_languages(db)
+    )
+    langs = _validated_languages(db, requested_languages)
 
     bot = VoiceBot(
         id=new_id("bot"),
@@ -244,6 +310,68 @@ def create_bot(
     return ok(_serialize_many(db, [bot])[0])
 
 
+@router.post("/bots/{bot_id}/clone", status_code=201)
+async def clone_bot(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Deep-clone a bot's configuration into a new Draft bot.
+
+    Configuration (languages, voice/STT/TTS/delivery settings, prompts and
+    versions, intents, workflows, bot-owned API connections, bot-scoped
+    knowledge, test-scenario definitions, runtime-context schema) is copied
+    under fresh ids; operational and customer data (conversations, releases,
+    analytics, channels, phone numbers, context records, test results) is not.
+    The clone is never callable until it is configured and published itself.
+    Tenancy comes from the source bot, never from the client.
+    """
+    from backend.core.bot_clone import (
+        clone_bot_deep,
+        copy_knowledge_plane,
+        delete_knowledge_documents,
+    )
+    from backend.core.deps import has_permission
+
+    if not has_permission(user, "bots.manage"):
+        from shared.errors import ForbiddenError
+
+        raise ForbiddenError()
+    src = _get_bot_checked(db, bot_id, user)
+
+    try:
+        clone, kb_id_map, summary = clone_bot_deep(db, src, user)
+        # Readiness is derived from the CLONED configuration (no channels, no
+        # test runs yet) — never copied from the source's checklist state.
+        refresh_readiness(db, clone)
+        record_audit(
+            db, user=user, action="Cloned VoiceBot", entity_type="voice_bot",
+            entity_id=clone.id, target_label=clone.name, tenant_id=src.tenant_id,
+            new_value={"sourceBotId": src.id, "clonedBotId": clone.id,
+                       "name": clone.name, **summary},
+            request=request,
+        )
+    except Exception:
+        db.rollback()  # all-or-nothing: no partial clone survives
+        raise
+
+    # The knowledge plane lives in PostgreSQL, so its copy cannot join the
+    # MySQL transaction: it is written first and compensated (deleted) if the
+    # MySQL commit fails, so neither database keeps a half-clone.
+    copied_documents: list[str] = []
+    try:
+        copied_documents = await copy_knowledge_plane(kb_id_map, user_id=user.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        await delete_knowledge_documents(copied_documents)
+        raise
+
+    db.refresh(clone)
+    return ok(_serialize_many(db, [clone])[0])
+
+
 class UpdateBotRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     use_case: str | None = Field(default=None, alias="useCase", max_length=200)
@@ -275,11 +403,29 @@ def update_bot(
         val = getattr(body, field)
         if val is not None:
             setattr(bot, field, val)
+    # Archive / restore are lifecycle transitions with side effects (channels,
+    # phone numbers, runtime cache). A status PATCH that crosses the archive
+    # boundary runs the same helpers as the dedicated endpoints so the two
+    # paths can never drift apart.
+    lifecycle_action: str | None = None
+    lifecycle_summary: dict = {}
     if body.status is not None and body.status != bot.status:
-        bot.status = body.status
-        if body.status == "published":
-            bot.published_at = datetime.now(timezone.utc)
-            bot.live_version = bot.version
+        if body.status == "archived":
+            lifecycle_summary = archive_bot(db, bot, user)
+            lifecycle_action = "Archived VoiceBot"
+        elif is_archived(bot):
+            if body.status != "draft":
+                raise ApiError(
+                    "An archived bot can only be restored to draft. Restore it "
+                    "first, then publish it again through the release flow.", 409,
+                )
+            lifecycle_summary = restore_bot(db, bot, user)
+            lifecycle_action = "Restored VoiceBot"
+        else:
+            bot.status = body.status
+            if body.status == "published":
+                bot.published_at = datetime.now(timezone.utc)
+                bot.live_version = bot.version
     if body.voice_id is not None:
         if body.voice_id and db.get(VoiceProfile, body.voice_id) is None:
             raise ApiError("Unknown voice profile.", 422)
@@ -305,15 +451,117 @@ def update_bot(
                 item.done = bool(body.readiness[item.item_key])
     bot.updated_by = user.id
     record_audit(
-        db, user=user, action="Updated VoiceBot", entity_type="voice_bot",
+        db, user=user, action=lifecycle_action or "Updated VoiceBot",
+        entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
         previous_value=before,
-        new_value={"name": bot.name, "status": bot.status, "voiceId": bot.voice_id},
+        new_value={"name": bot.name, "status": bot.status, "voiceId": bot.voice_id,
+                   **lifecycle_summary},
         request=request,
     )
     db.commit()
+    if lifecycle_action:
+        from shared.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(bot.tenant_id, bot.id)
     db.refresh(bot)
     return ok(_serialize_many(db, [bot])[0])
+
+
+@router.post("/bots/{bot_id}/readiness/recompute")
+def recompute_bot_readiness(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-derive every readiness item from the bot's real configuration.
+
+    Domain mutations keep the flags current going forward; this endpoint
+    heals bots whose flags predate that wiring (stale checklist rows)."""
+    bot = _get_bot_checked(db, bot_id, user)
+    before = {r.item_key: r.done for r in bot.readiness_items}
+    derived = refresh_readiness(db, bot)
+    if derived != before:
+        record_audit(
+            db, user=user, action="Recomputed readiness", entity_type="voice_bot",
+            entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+            previous_value=before, new_value=derived, request=request,
+        )
+    db.commit()
+    db.refresh(bot)
+    return ok(_serialize_many(db, [bot])[0])
+
+
+# ── Lifecycle: archive / restore / delete ─────────────────────────────────────
+#
+# Archive is reversible and visible (status="archived", is_deleted=0). Delete is
+# permanent from the product's point of view (is_deleted=1 tombstone). The two
+# never share a column value: an archived bot that is later deleted keeps
+# status="archived" but gains is_deleted=1, and every read path filters on the
+# flag first. See backend/core/bot_lifecycle.py for the side effects.
+
+
+def _invalidate_runtime(bot: VoiceBot) -> None:
+    # The runtime resolves bot configs cache-first (300s TTL) — without this a
+    # parked or deleted bot could keep serving inbound calls until the TTL
+    # expires.
+    from shared.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
+
+
+@router.post("/bots/{bot_id}/archive")
+def archive_bot_route(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Park a bot: no calls, messages or test sessions; channels deactivated;
+    phone numbers reserved for this bot; every piece of configuration kept."""
+    bot = _get_bot_checked(db, bot_id, user)
+    summary = archive_bot(db, bot, user)
+    record_audit(
+        db, user=user, action="Archived VoiceBot", entity_type="voice_bot",
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        previous_value={"status": summary["previousStatus"],
+                        "liveVersion": summary["previousLiveVersion"]},
+        new_value={"status": "archived",
+                   "channelsDisabled": summary["channelsDisabled"],
+                   "phoneNumbersReserved": summary["phoneNumbersReserved"]},
+        request=request,
+    )
+    db.commit()
+    _invalidate_runtime(bot)
+    return ok({"archived": True, "id": bot.id, "status": "archived",
+               "channelsDisabled": summary["channelsDisabled"],
+               "phoneNumbersReserved": summary["phoneNumbersReserved"]})
+
+
+@router.post("/bots/{bot_id}/restore")
+def restore_bot_route(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Archived -> draft with configuration and number relationship intact.
+    Channels stay deactivated and nothing is live until the bot is published."""
+    bot = _get_bot_checked(db, bot_id, user)
+    summary = restore_bot(db, bot, user)
+    record_audit(
+        db, user=user, action="Restored VoiceBot", entity_type="voice_bot",
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        previous_value={"status": "archived"},
+        new_value={"status": "draft",
+                   "phoneNumbersReassigned": summary["phoneNumbersReassigned"]},
+        request=request,
+    )
+    db.commit()
+    _invalidate_runtime(bot)
+    return ok({"restored": True, "id": bot.id, "status": "draft",
+               "phoneNumbersReassigned": summary["phoneNumbersReassigned"]})
 
 
 @router.delete("/bots/{bot_id}")
@@ -324,16 +572,32 @@ def delete_bot(
     user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_db),
 ):
+    """Permanently delete a bot (tombstone row, is_deleted=1).
+
+    The bot leaves every list including Archived, can never take traffic
+    again and has no restore action. Channels are archived + disabled, phone
+    numbers return to the platform pool, editable configuration is retired.
+    Conversations, transcripts, usage/billing and audit history are kept.
+    ``?hard=true`` is only an environment guard — the row is never purged."""
     bot = _get_bot_checked(db, bot_id, user)
     if hard:
         guard_hard_delete()
-    soft_delete(bot, user)
+    summary = permanently_delete_bot(db, bot, user)
     record_audit(
-        db, user=user, action="Archived VoiceBot", entity_type="voice_bot",
-        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id, request=request,
+        db, user=user, action="Deleted VoiceBot", entity_type="voice_bot",
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        previous_value={"status": summary["previousStatus"]},
+        new_value={"isDeleted": True,
+                   "channelsArchived": summary["channelsArchived"],
+                   "phoneNumbersReleased": summary["phoneNumbersReleased"],
+                   "configurationRetired": summary["configurationRetired"]},
+        request=request,
     )
     db.commit()
-    return ok({"archived": True, "id": bot.id})
+    _invalidate_runtime(bot)
+    return ok({"deleted": True, "id": bot.id,
+               "channelsArchived": summary["channelsArchived"],
+               "phoneNumbersReleased": summary["phoneNumbersReleased"]})
 
 
 # ── Voice settings (tuning) ──────────────────────────────────────────────────
@@ -362,8 +626,26 @@ class VoiceSettingsRequest(BaseModel):
     fallback_model: str | None = Field(default=None, alias="fallbackModel", max_length=80)
     fallback_voice: str | None = Field(default=None, alias="fallbackVoice", max_length=80)
     audio_settings: dict | None = Field(default=None, alias="audioSettings")
+    # Goal Engine configuration ({} clears it back to the derived default).
+    goal_policy: dict | None = Field(default=None, alias="goalPolicy")
+    # Human speech naturalness overrides ({} clears back to tenant/platform).
+    human_speech: dict | None = Field(default=None, alias="humanSpeech")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("llm_settings")
+    @classmethod
+    def validate_llm_output_length(cls, value):
+        if value is None:
+            return value
+        raw = value.get("max_output_characters", 360)
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("max_output_characters must be an integer")
+        if not 120 <= limit <= 2000:
+            raise ValueError("max_output_characters must be between 120 and 2000")
+        return {**value, "max_output_characters": limit}
 
 
 _VOICE_SETTINGS_FIELDS = (
@@ -372,10 +654,51 @@ _VOICE_SETTINGS_FIELDS = (
     "tts_provider", "tts_model", "tts_voice", "tts_settings",
     "llm_provider", "llm_model", "llm_settings",
     "fallback_provider", "fallback_model", "fallback_voice", "audio_settings",
+    "goal_policy", "human_speech",
 )
 
+# Delivery tuning's speaking speed is the single canonical speed control:
+# per-provider duplicates in stored TTS parameters are stripped on save and
+# hidden on read (the runtime additionally overrides any value that survives
+# in old rows). shared/providers/tts/delivery.py owns the key list so the save
+# path and the preview path strip exactly the same parameters.
 
-def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
+def _sanitize_language_voice_map(lang_map: dict | None) -> dict | None:
+    if lang_map is None:
+        return None
+    sanitized: dict = {}
+    for locale, entry in lang_map.items():
+        if isinstance(entry, dict) and entry.get("params"):
+            entry = {**entry, "params": strip_speed_params(entry["params"])}
+        sanitized[locale] = entry
+    return sanitized
+
+
+def _serialize_voice_settings(
+    s: VoiceBotSetting,
+    tenant_human_speech: dict | None = None,
+    *,
+    bot_languages: list[str] | None = None,
+    tenant_default_languages: list[str] | None = None,
+) -> dict:
+    effective, sources = resolve_human_speech_with_sources(
+        tenant_human_speech, s.human_speech
+    )
+    # STT auto-detect is tri-state on disk (absent/true/false); the effective
+    # value and where it came from are reported so the Voice tab can show
+    # "following the multilingual default" vs "set by you" without guessing.
+    auto_detect = resolve_auto_detect_language(
+        s.stt_settings, bot_languages, tenant_default_languages
+    )
+    inherited, inherited_sources = resolve_human_speech_with_sources(
+        tenant_human_speech
+    )
+    public_stt_settings = dict(s.stt_settings or {})
+    # Turn detection moved to a Tenant Admin-only tenant endpoint. Never leak
+    # its legacy bot-level representation through the broadly readable Voice
+    # API (Tenant Users can legitimately manage provider/voice selection).
+    public_stt_settings.pop("turn_detection", None)
+    public_stt_settings.pop("noise_gate", None)
     return {
         "botId": s.bot_id,
         "voiceId": s.voice_id,
@@ -383,23 +706,48 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "pauseMs": s.pause_ms,
         "empathy": s.empathy,
         "energy": s.energy,
-        "languageVoiceMap": s.language_voice_map or {},
+        "languageVoiceMap": _sanitize_language_voice_map(s.language_voice_map) or {},
         "sttProvider": s.stt_provider,
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
-        "sttSettings": s.stt_settings or {},
+        "sttSettings": public_stt_settings,
+        "sttAutoDetectLanguage": auto_detect.as_dict(),
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
-        "ttsSettings": s.tts_settings or {},
+        "ttsSettings": strip_speed_params(s.tts_settings),
         "llmProvider": s.llm_provider,
         "llmModel": s.llm_model,
-        "llmSettings": s.llm_settings or {},
+        "llmSettings": {"max_output_characters": 360, **(s.llm_settings or {})},
         "fallbackProvider": s.fallback_provider,
         "fallbackModel": s.fallback_model,
         "fallbackVoice": s.fallback_voice,
         "audioSettings": s.audio_settings or {},
+        "goalPolicy": s.goal_policy or {},
+        "humanSpeech": s.human_speech or {},
+        "humanSpeechEffective": effective,
+        "humanSpeechSources": sources,
+        "humanSpeechInherited": inherited,
+        "humanSpeechInheritedSources": inherited_sources,
+        "ambiencePresets": ambience_preset_catalog(),
     }
+
+
+def _bot_language_codes(bot: VoiceBot) -> list[str]:
+    return sorted(row.language_code for row in (bot.languages or []))
+
+
+def _tenant_voice_context(db: Session, bot: VoiceBot) -> tuple[dict | None, list[str]]:
+    """Tenant-level human-speech overrides and default languages (the
+    languages a bot without its own list inherits)."""
+    row = db.execute(
+        select(TenantSetting.human_speech, TenantSetting.default_languages).where(
+            TenantSetting.tenant_id == bot.tenant_id
+        )
+    ).first()
+    if row is None:
+        return None, []
+    return row[0], list(row[1] or [])
 
 
 @router.get("/bots/{bot_id}/voice-settings")
@@ -415,7 +763,12 @@ def get_voice_settings(
         )
         db.add(s)
         db.commit()
-    return ok(_serialize_voice_settings(s))
+    tenant_human_speech, tenant_default_languages = _tenant_voice_context(db, bot)
+    return ok(_serialize_voice_settings(
+        s, tenant_human_speech,
+        bot_languages=_bot_language_codes(bot),
+        tenant_default_languages=tenant_default_languages,
+    ))
 
 
 @router.put("/bots/{bot_id}/voice-settings")
@@ -423,17 +776,36 @@ def update_voice_settings(
     bot_id: str,
     body: VoiceSettingsRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_voices", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     bot = _get_bot_checked(db, bot_id, user)
+    protected_turn_keys = {"turn_detection", "noise_gate"}
+    attempted_turn_update = bool(
+        body.stt_settings is not None
+        and protected_turn_keys.intersection(body.stt_settings)
+    )
+    if attempted_turn_update:
+        # A normal Tenant User must receive a permission failure even when
+        # crafting the request manually; Tenant Admins use the tenant-scoped
+        # endpoint so the values cannot accidentally become per-bot again.
+        status_code = 403 if user.role.code == "tenant_user" else 422
+        raise ApiError(
+            "Turn detection can only be changed by a Tenant Admin from the Turn Detection menu.",
+            status_code,
+        )
     s = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
     if s is None:
         s = VoiceBotSetting(
             id=new_id("vbs"), bot_id=bot.id, tenant_id=bot.tenant_id, created_by=user.id
         )
         db.add(s)
-    before = _serialize_voice_settings(s)
+    tenant_human_speech, tenant_default_languages = _tenant_voice_context(db, bot)
+    serialize_kwargs = {
+        "bot_languages": _bot_language_codes(bot),
+        "tenant_default_languages": tenant_default_languages,
+    }
+    before = _serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs)
     if body.voice_id is not None:
         if body.voice_id:
             profile = db.get(VoiceProfile, body.voice_id)
@@ -450,6 +822,61 @@ def update_voice_settings(
                 )
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
+
+    # Goal Engine configuration must at least parse into the policy schema —
+    # a config that cannot compile would silently fall back to the derived
+    # default at runtime, which is exactly the confusion to reject here.
+    if body.goal_policy:
+        from shared.orchestration.goal_engine import BotGoalPolicy, end_call_problems
+
+        try:
+            BotGoalPolicy.model_validate(body.goal_policy)
+        except Exception as exc:  # noqa: BLE001 — surfaced as a field error
+            raise ApiError(
+                "Goal policy configuration is invalid.", 422,
+                errors=[{"field": "goalPolicy", "message": str(exc)[:300]}],
+            )
+        # The runtime only switches an invalid endCall OFF (fail-soft), so a
+        # write must reject it explicitly instead of storing a dead switch.
+        problems = end_call_problems(body.goal_policy)
+        if problems:
+            raise ApiError(
+                "Goal policy configuration is invalid.", 422,
+                errors=[{"field": "goalPolicy.endCall", "message": p[:300]} for p in problems],
+            )
+
+    # Human speech overrides are sparse per-key; junk keys/values are
+    # rejected here rather than silently dropped at runtime resolution.
+    if body.human_speech:
+        from shared.orchestration.naturalness import validate_human_speech
+
+        problems = validate_human_speech(body.human_speech, existing=s.human_speech)
+        if problems:
+            raise ApiError(
+                "Human speech configuration is invalid.", 422,
+                errors=[{"field": "humanSpeech", "message": p} for p in problems],
+            )
+
+    # Sanitize legacy per-provider speed duplicates before validation and
+    # persistence — Delivery tuning's speed is the only speed control.
+    if body.tts_settings is not None:
+        body.tts_settings = strip_speed_params(body.tts_settings)
+    if body.stt_settings is not None and KEYTERMS_SETTING in body.stt_settings:
+        # Sarvam key terms (saaras:v4): persist the cleaned list — trimmed,
+        # de-duplicated, blanks dropped — and never store an empty list, so
+        # "no key terms" and "key terms removed" are the same absent key.
+        # Validation below still reports over-limit or malformed entries
+        # (and rejects the key outright for models without the feature).
+        raw = body.stt_settings[KEYTERMS_SETTING]
+        cleaned = normalize_keyterms(raw) if isinstance(raw, (list, tuple)) else raw
+        body.stt_settings = {
+            key: value for key, value in body.stt_settings.items()
+            if key != KEYTERMS_SETTING
+        }
+        if cleaned:
+            body.stt_settings[KEYTERMS_SETTING] = cleaned
+    if body.language_voice_map is not None:
+        body.language_voice_map = _sanitize_language_voice_map(body.language_voice_map)
 
     # The provider registry gates which adapters exist; the DB catalog gates
     # which provider/model/language/voice/parameter combinations are valid.
@@ -478,17 +905,185 @@ def update_voice_settings(
         if val is not None:
             setattr(s, field, val)
     s.updated_by = user.id
-    # Voice readiness follows having a voice selected.
-    for item in bot.readiness_items:
-        if item.item_key == "r2" and s.voice_id:
-            item.done = True
+    # Voice readiness follows the effective voice configuration.
+    refresh_readiness(db, bot, keys=("r2",))
     record_audit(
         db, user=user, action="Updated voice settings", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
-        previous_value=before, new_value=_serialize_voice_settings(s), request=request,
+        previous_value=before,
+        new_value=_serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs),
+        request=request,
     )
     db.commit()
     from shared.bot_config import invalidate_bot_config_sync
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
-    return ok(_serialize_voice_settings(s), meta={"warnings": warnings} if warnings else None)
+    return ok(
+        _serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs),
+        meta={"warnings": warnings} if warnings else None,
+    )
+
+
+# ── Goal policy: end-call switch ─────────────────────────────────────────────
+#
+# goal_policy is one JSON document that the generic voice-settings PUT
+# replaces WHOLE. A UI switch posting a stale or partial copy would drop the
+# bot's goals/safety rules, so the end-call switch has its own endpoint: the
+# server merges ONLY endCall.enabled into the latest stored value, under a row
+# lock. Bot-management level (not general voice editing): it decides when the
+# bot may hang up on a caller.
+
+
+class EndCallToggleRequest(BaseModel):
+    enabled: StrictBool
+
+    model_config = {"extra": "forbid"}
+
+
+@router.patch("/bots/{bot_id}/goal-policy/end-call")
+def set_goal_policy_end_call(
+    bot_id: str,
+    body: EndCallToggleRequest,
+    request: Request,
+    user: User = Depends(require_permission("bots.manage")),
+    db: Session = Depends(get_db),
+):
+    from shared.orchestration.goal_engine import end_call_enabled, with_end_call_enabled
+
+    bot = _get_bot_checked(db, bot_id, user)
+    s = db.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id).with_for_update()
+    )
+    if s is None:
+        s = VoiceBotSetting(
+            id=new_id("vbs"), bot_id=bot.id, tenant_id=bot.tenant_id,
+            voice_id=bot.voice_id, created_by=user.id,
+        )
+        db.add(s)
+    current = dict(s.goal_policy or {}) if isinstance(s.goal_policy, dict) else {}
+    merged = with_end_call_enabled(current, body.enabled)
+    changed = merged != current
+    if changed:
+        s.goal_policy = merged
+        s.updated_by = user.id
+        record_audit(
+            db, user=user,
+            action="Enabled end call on goal decision" if body.enabled
+            else "Disabled end call on goal decision",
+            entity_type="voice_bot", entity_id=bot.id, target_label=bot.name,
+            tenant_id=bot.tenant_id,
+            previous_value={"goalPolicy": {"endCall": current.get("endCall", current.get("end_call"))}},
+            new_value={"goalPolicy": {"endCall": merged.get("endCall")}},
+            request=request,
+        )
+    db.commit()
+    if changed:
+        from shared.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(bot.tenant_id, bot.id)
+    return ok({"botId": bot.id, "enabled": end_call_enabled(merged)})
+
+
+# ── Bot-level guardrail profile ───────────────────────────────────────────────
+#
+# Hierarchy: mandatory platform guardrails (always) → the bot's explicit
+# profile when set → else the tenant's default profile. Assignment is a
+# governance action (Super Admin); tenant members can VIEW the effective
+# result for their own bots.
+
+
+class BotGuardrailProfileRequest(BaseModel):
+    # "" clears the explicit assignment → the bot inherits the tenant default.
+    guardrail_profile_id: str = Field(alias="guardrailProfileId", max_length=50)
+
+    model_config = {"populate_by_name": True}
+
+
+@router.patch("/bots/{bot_id}/guardrail-profile")
+def set_bot_guardrail_profile(
+    bot_id: str,
+    body: BotGuardrailProfileRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    from backend.routers.tenants import _validate_guardrail_profile
+
+    bot = db.get(VoiceBot, bot_id)
+    if bot is None or bot.is_deleted:
+        raise NotFoundError("Bot")
+    before = {"guardrailProfileId": bot.guardrail_profile_id}
+    value = body.guardrail_profile_id.strip()
+    if not value:
+        bot.guardrail_profile_id = None
+    elif value != bot.guardrail_profile_id:
+        # New assignments require an ACTIVE profile; keeping the current
+        # (possibly deactivated) one untouched is always allowed.
+        bot.guardrail_profile_id = _validate_guardrail_profile(db, value).id
+    bot.updated_by = user.id
+    record_audit(
+        db, user=user,
+        action="Assigned bot guardrail profile" if bot.guardrail_profile_id
+        else "Cleared bot guardrail profile (inherits tenant default)",
+        entity_type="bot", entity_id=bot.id, target_label=bot.name,
+        tenant_id=bot.tenant_id, previous_value=before,
+        new_value={"guardrailProfileId": bot.guardrail_profile_id},
+        request=request,
+    )
+    db.commit()
+    from shared.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
+    return ok(_serialize_many(db, [bot])[0])
+
+
+@router.get("/bots/{bot_id}/effective-guardrails")
+def bot_effective_guardrails(
+    bot_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The guardrails and compliance policies actually enforced for this bot
+    at call start: mandatory rules ∪ (explicit bot profile ∥ tenant default),
+    plus every ACTIVE compliance policy version."""
+    from shared.compliance import load_active_policies_sync
+    from shared.guardrails import load_effective_guardrails_sync
+    from shared.models import GuardrailProfile
+
+    bot = _get_bot_checked(db, bot_id, user)
+    effective = load_effective_guardrails_sync(bot.tenant_id, bot.id, session=db)
+    tenant = db.get(Tenant, bot.tenant_id)
+    tenant_profile = db.get(GuardrailProfile, tenant.guardrail_profile_id) \
+        if tenant is not None and tenant.guardrail_profile_id else None
+    explicit_profile = db.get(GuardrailProfile, bot.guardrail_profile_id) \
+        if bot.guardrail_profile_id else None
+    policies = load_active_policies_sync(bot.tenant_id, session=db)
+
+    def _summary(p):
+        if p is None or p.is_deleted:
+            return None
+        return {"id": p.id, "code": p.code, "name": p.name,
+                "status": p.status, "version": p.version}
+
+    rules = sorted(effective.rules, key=lambda r: (not r.mandatory, r.name))
+    return ok({
+        "botId": bot.id,
+        "tenantId": bot.tenant_id,
+        "inherited": bot.guardrail_profile_id is None,
+        "profile": _summary(explicit_profile) if bot.guardrail_profile_id
+        else _summary(tenant_profile),
+        "tenantDefaultProfile": _summary(tenant_profile),
+        "rules": [
+            {"guardrailId": r.guardrail_id or "", "code": r.code, "name": r.name,
+             "category": r.category, "action": r.action, "mandatory": r.mandatory}
+            for r in rules
+        ],
+        "compliancePolicies": [
+            {"code": p.code, "version": p.version, "name": p.name,
+             "regulator": p.regulator, "jurisdiction": p.jurisdiction,
+             "timezone": p.timezone,
+             "callingWindows": list(p.calling_windows)}
+            for p in policies
+        ],
+        "degraded": effective.degraded,
+    })

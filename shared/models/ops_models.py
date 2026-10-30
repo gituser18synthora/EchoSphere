@@ -35,9 +35,22 @@ class ConversationSession(Base, TimestampMixin, SoftDeleteMixin):
     __table_args__ = (
         Index("ix_conversations_tenant_started", "tenant_id", "started_at"),
         Index("ix_conversations_bot_started", "bot_id", "started_at"),
+        Index("ix_conversations_session", "session_id"),
+        # Integrators look a call up by the id THEY know; the index is
+        # tenant-first so the lookup can never cross a tenant boundary.
+        Index("ix_conversations_tenant_call_id", "tenant_id", "call_id"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    # The voice session that produced this conversation. `usage_events` are
+    # keyed by it, so this is what makes a conversation's cost auditable and
+    # recomputable. Nullable: historical rows predate the column.
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The telephony provider's own call identifier (webhook `callId` /
+    # `CallSid`), verbatim as received (≤64 chars). Not unique: a dialer may
+    # retry a call under the same id, so lookups return the newest match.
+    # Nullable: browser sessions have none and historical rows predate it.
+    call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tenant_id: Mapped[str] = mapped_column(
         String(ID_LEN), ForeignKey("tenants.id"), nullable=False
     )
@@ -53,11 +66,22 @@ class ConversationSession(Base, TimestampMixin, SoftDeleteMixin):
     contained: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     escalation_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     csat: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cost_usd: Mapped[float] = mapped_column(Numeric(8, 4), default=0, nullable=False)
+    # Numeric(12, 6) matches usage_events.cost_usd: at Numeric(8, 4) any call
+    # under 0.00005 USD stored as exactly zero, which is what made cheap
+    # conversations look like they had no cost at all.
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0, nullable=False)
     language: Mapped[str | None] = mapped_column(String(15), nullable=True)
     qa_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     flagged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="completed", nullable=False)
+    # Call outcome captured by the runtime's conversation policy (e.g.
+    # promise_to_pay, payment_claimed, wrong_number, account_disputed,
+    # callback_requested, complaint, escalated). Nullable: rows predate it.
+    disposition: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Published prompt the call actually ran on — the audit answer to "which
+    # prompt version said that?". Nullable: rows predate it / no prompt row.
+    prompt_id: Mapped[str | None] = mapped_column(String(ID_LEN), nullable=True)
+    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class PlatformAlert(Base, TimestampMixin, SoftDeleteMixin):
@@ -158,6 +182,10 @@ class Guardrail(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "guardrails"
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    # Stable machine key the runtime enforcement registry dispatches on
+    # (names are display text and may be reworded). Nullable: custom rows
+    # without a runtime implementation are registry/QA entries only.
+    code: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -165,6 +193,9 @@ class Guardrail(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(20), default="flag", nullable=False
     )  # block | flag | redact
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Platform-mandatory rules apply to every tenant regardless of the
+    # assigned profile and cannot be disabled or weakened via the API.
+    is_mandatory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     triggers_30d: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
@@ -200,7 +231,13 @@ class UsageRecord(Base, TimestampMixin):
 
 
 class HealthMetric(Base, TimestampMixin):
-    """Latest platform component health snapshot (Monitoring page)."""
+    """Historical platform component health snapshots.
+
+    No longer the source for Platform Health: the admin dashboard and
+    Monitoring page probe the live services instead
+    (``backend/core/service_health.py``), because a stored row can only
+    report how things looked when it was written.
+    """
 
     __tablename__ = "health_metrics"
 

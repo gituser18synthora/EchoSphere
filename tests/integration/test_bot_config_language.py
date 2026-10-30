@@ -15,7 +15,7 @@ import pytest
 from shared.bot_config import _load_config_sync
 from shared.db.mysql import get_sessionmaker
 from shared.ids import new_id
-from shared.models import BotLanguage, VoiceBot, VoiceBotSetting
+from shared.models import BotLanguage, TenantSetting, VoiceBot, VoiceBotSetting
 
 pytestmark = pytest.mark.integration
 
@@ -75,8 +75,25 @@ class TestDefaultLanguageResolution:
         bot_id, session = sarvam_bot
         session.query(BotLanguage).filter(BotLanguage.bot_id == bot_id).delete()
         session.commit()
-        config = _load_config_sync(bot_id, require_published=False)
-        assert config.language == "en"  # normalized to en-IN by the provider layer
+        tenant = session.query(TenantSetting).filter(
+            TenantSetting.tenant_id == "tn-001"
+        ).one()
+        saved = list(tenant.default_languages or [])
+        try:
+            if saved:
+                # A bot with no languages of its own inherits the tenant's
+                # defaults first (seeded ["en-US"] for tn-001).
+                config = _load_config_sync(bot_id, require_published=False)
+                assert config.language == saved[0]
+            # Only with no tenant defaults either does the legacy bare "en"
+            # remain (normalized to en-IN by the provider layer).
+            tenant.default_languages = None
+            session.commit()
+            config = _load_config_sync(bot_id, require_published=False)
+            assert config.language == "en"
+        finally:
+            tenant.default_languages = saved or None
+            session.commit()
 
 
 class TestPerLanguageVoiceResolution:
@@ -111,6 +128,22 @@ class TestPerLanguageVoiceResolution:
         entry = config.tts["language_map"]["hi-IN"]
         assert entry["voice"] == "ritu"  # provider wire code, not the profile id
         assert entry["voice_name"] == "Ritu"
+        assert entry["voice_gender"] == "female"
+
+    def test_legacy_selected_voice_id_still_supplies_catalog_gender(self, sarvam_bot):
+        bot_id, session = sarvam_bot
+        vbs = session.query(VoiceBotSetting).filter(
+            VoiceBotSetting.bot_id == bot_id
+        ).one()
+        vbs.tts_voice = None
+        vbs.voice_id = "vp-sv-ritu"
+        session.commit()
+
+        config = _load_config_sync(bot_id, require_published=False)
+
+        assert config.tts["voice"] == "ritu"
+        assert config.tts["voice_name"] == "Ritu"
+        assert config.tts["voice_gender"] == "female"
 
     def test_incompatible_locale_uses_configured_fallback(self, sarvam_bot):
         bot_id, session = sarvam_bot
@@ -139,3 +172,34 @@ class TestPerLanguageVoiceResolution:
         assert "No compatible voice" in config.language_warnings["en-US"]
         # No invented engine: the locale is simply absent from the map.
         assert "en-US" not in config.tts["language_map"]
+
+
+class TestModelStreamingResolution:
+    """The catalog's realtime-streaming capability rides along in the resolved
+    snapshot so the runtime picks the WebSocket router or the segmented REST
+    service per model (ElevenLabs eleven_v3 is REST-only)."""
+
+    def test_streaming_model_resolves_true(self, sarvam_bot):
+        bot_id, _ = sarvam_bot
+        config = _load_config_sync(bot_id, require_published=False)
+        assert config.tts["streaming"] is True  # bulbul:v3 streams
+
+    def test_eleven_v3_resolves_false_and_flash_true(self, sarvam_bot):
+        bot_id, session = sarvam_bot
+        vbs = session.query(VoiceBotSetting).filter(
+            VoiceBotSetting.bot_id == bot_id
+        ).one()
+        vbs.tts_provider = "elevenlabs"
+        vbs.tts_model = "eleven_v3"
+        vbs.tts_voice = "vp-el-monika"
+        session.commit()
+        config = _load_config_sync(bot_id, require_published=False)
+        assert config.tts["provider"] == "elevenlabs"
+        assert config.tts["model"] == "eleven_v3"
+        assert config.tts["streaming"] is False
+
+        vbs.tts_model = "eleven_flash_v2_5"
+        session.commit()
+        config = _load_config_sync(bot_id, require_published=False)
+        assert config.tts["model"] == "eleven_flash_v2_5"
+        assert config.tts["streaming"] is True

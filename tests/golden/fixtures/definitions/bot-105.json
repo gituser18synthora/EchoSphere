@@ -1,0 +1,182 @@
+{
+ "bot": {
+  "id": "bot-105",
+  "name": "After-Hours Triage",
+  "tenant_id": "tn-001",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf-bot-105",
+   "name": "Triage journey",
+   "version": 5,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n1",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 40,
+     "y": 150,
+     "id": "n2",
+     "kind": "intent",
+     "label": "Detect intent"
+    },
+    {
+     "x": 252,
+     "y": 90,
+     "id": "n3",
+     "kind": "knowledge",
+     "label": "Answer from knowledge"
+    },
+    {
+     "x": 252,
+     "y": 210,
+     "id": "n4",
+     "kind": "handover",
+     "label": "Handover"
+    },
+    {
+     "x": 462,
+     "y": 150,
+     "id": "n5",
+     "kind": "end",
+     "label": "End call"
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1",
+     "to": "n2",
+     "from": "n1"
+    },
+    {
+     "id": "e2",
+     "to": "n3",
+     "from": "n2",
+     "label": "FAQ"
+    },
+    {
+     "id": "e3",
+     "to": "n4",
+     "from": "n2",
+     "label": "human"
+    },
+    {
+     "id": "e4",
+     "to": "n5",
+     "from": "n3"
+    },
+    {
+     "id": "e5",
+     "to": "n5",
+     "from": "n4"
+    }
+   ]
+  }
+ ],
+ "intents": [],
+ "connections": [
+  {
+   "id": "api_285257d41d91",
+   "name": "SSRF 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_58a899054fe3",
+   "name": "SSRF2 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_869880254e79",
+   "name": "CRM 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": "status < 400"
+  },
+  {
+   "id": "api_b6535aea6ec3",
+   "name": "Local 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": "status < 400"
+  },
+  {
+   "id": "api-01",
+   "name": "EHR Slot Availability",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "available_times",
+     "from": "$.slots[*].start"
+    },
+    {
+     "to": "provider_name",
+     "from": "$.slots[*].provider.name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-02",
+   "name": "Create Appointment",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "appointment_id",
+     "from": "$.appointment.id"
+    },
+    {
+     "to": "appointment_date",
+     "from": "$.appointment.confirmed_at"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-03",
+   "name": "SMS Confirmation",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "sms_id",
+     "from": "$.message_id"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-04",
+   "name": "Billing Balance Lookup",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "balance_due",
+     "from": "$.balance.amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-05",
+   "name": "On-call Roster",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "oncall_number",
+     "from": "$.oncall.phone"
+    }
+   ],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": []
+}

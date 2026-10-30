@@ -17,6 +17,8 @@ another response.
 import asyncio
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     EndWorkerFrame,
     InterruptionFrame,
     LLMFullResponseStartFrame,
@@ -53,8 +55,15 @@ class _RecorderStub:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
     def event_kinds(self):
         return [kind for kind, _ in self.events]
+
+
+GRACE = 0.05  # fast end-of-turn debounce for tests
 
 
 def make_brain(language="hi-IN", languages=("hi-IN",)) -> ConversationBrain:
@@ -63,7 +72,9 @@ def make_brain(language="hi-IN", languages=("hi-IN",)) -> ConversationBrain:
         published=True, language=language, languages=list(languages),
         stt={"provider": "sarvam"}, system_prompt="You are Test.",
     )
-    brain = ConversationBrain(config=config, llm=None, recorder=_RecorderStub())
+    brain = ConversationBrain(
+        config=config, llm=None, recorder=_RecorderStub(), finalize_grace=GRACE
+    )
     brain._pushed = []
     brain._notified = []
 
@@ -118,6 +129,12 @@ async def settle():
         await asyncio.sleep(0)
 
 
+async def settle_turn():
+    """Let the end-of-turn debounce elapse and the turn task start."""
+    await asyncio.sleep(GRACE * 2)
+    await settle()
+
+
 class TestTurnGating:
     async def test_segment_during_open_turn_does_not_trigger_llm(self):
         brain = make_brain()
@@ -140,28 +157,32 @@ class TestTurnGating:
         assert handled == []
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await settle()
+        assert handled == []  # debounce still waiting for straggler finals
+        await settle_turn()
         assert handled == ["नहीं, मेरे पास अभी पैसा नहीं है"]
 
-    async def test_transcript_without_open_turn_runs_immediately(self):
-        # First-response latency: a quiet "हाँ" the VAD missed must not wait
-        # for anything — the caller is already silent.
+    async def test_transcript_without_open_turn_runs_after_grace(self):
+        # A quiet "हाँ" the VAD missed runs after only the short debounce —
+        # the caller is already silent, no turn-close signal will come.
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await brain.process_frame(transcript("हाँ बोलिए"), FrameDirection.DOWNSTREAM)
         await settle()
+        assert handled == []
+        await settle_turn()
         assert handled == ["हाँ बोलिए"]
 
-    async def test_late_final_after_turn_close_runs_immediately(self):
+    async def test_late_final_after_turn_close_runs_after_grace(self):
         # STT slower than the turn policy: turn closes with an empty buffer,
-        # the transcript lands moments later and runs without further delay.
+        # the transcript lands moments later and runs after the debounce.
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await settle()
+        await settle_turn()
         assert handled == []
         await brain.process_frame(transcript("हाँ ठीक है"), FrameDirection.DOWNSTREAM)
-        await settle()
+        await settle_turn()
         assert handled == ["हाँ ठीक है"]
 
     async def test_empty_turn_produces_nothing(self):
@@ -199,7 +220,80 @@ class TestTurnGating:
         await brain.process_frame(transcript("दूसरा सवाल यह है"), FrameDirection.DOWNSTREAM)
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await asyncio.wait_for(started.wait(), 1)
-        assert handled == ["पहला सवाल यह है", "दूसरा सवाल यह है"]
+        # NO reply audio was heard before the caller resumed, so this is the
+        # late-final merge, not a barge-in: the first (unanswered) turn is
+        # rewound and the combined utterance runs once. The merge marker is
+        # set at dispatch, so it covers the whole in-flight window — the old
+        # expectation (two independent turns) silently dropped the first
+        # utterance whenever the caller resumed during the decision stage.
+        assert handled == [
+            "पहला सवाल यह है", "पहला सवाल यह है दूसरा सवाल यह है",
+        ]
+
+
+class TestSegmentsHeldDuringBotAudio:
+    """Orphan finals while the bot is audibly speaking must not cut the reply.
+
+    The turn controller's word gate declined to interrupt for these segments
+    (backchannel or noise below the barge-in threshold); if the brain then ran
+    a turn for them anyway, `_consume_pending_turn` would cancel the audible
+    generation and recreate the mid-sentence chop the gate exists to prevent.
+    """
+
+    async def test_segment_during_bot_audio_waits_for_reply_end(self):
+        brain = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("मुझे कुछ पूछना है"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == []  # held: the reply is still playing
+        assert "stt_segment_held_during_bot_audio" in brain._recorder.event_kinds()
+        await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == ["मुझे कुछ पूछना है"]
+
+    async def test_held_segment_does_not_cancel_playing_reply(self):
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        generation = brain._generation
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("हाँ ठीक है"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert not generation.cancelled()  # backchannel never chops the reply
+
+    async def test_held_segment_joins_confirmed_barge_in_turn(self):
+        # The word gate confirms a real interruption: the controller opens the
+        # turn (UserStartedSpeakingFrame), the reply is cancelled, and the held
+        # segment runs merged with the rest of the caller's utterance.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        started.clear()
+        generation = brain._generation
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("एक मिनट"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert generation.cancelled()
+        await brain.process_frame(transcript("मेरी बात सुनिए"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        assert handled[-1] == "एक मिनट मेरी बात सुनिए"
+
+    async def test_hangup_during_bot_audio_is_still_immediate(self):
+        # The word gate must never delay a hang-up: the brain acts on the
+        # segment itself, before any hold/buffer logic.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("फोन काट दो"), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert any(isinstance(f, EndWorkerFrame) for f in brain._pushed)
 
 
 class TestHangup:
@@ -250,6 +344,7 @@ class TestHangup:
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await self.hangup_via(brain, "फोन मत काटो, मैं बात करना चाहता हूं")
+        await settle_turn()
         assert brain._closing is False
         assert handled  # processed as a normal turn (no open VAD turn)
 
@@ -340,10 +435,13 @@ class TestTurnDetectionConfig:
     def test_endpoint_tolerates_normal_pauses(self):
         # The silence a caller gets before the bot takes the turn is
         # stop_secs + user_speech_timeout — it must comfortably exceed the
-        # ~0.2 s VAD flush interval that produces per-segment STT finals.
+        # ~0.2 s VAD flush interval that produces per-segment STT finals. The
+        # browser needs extra room for natural conversational pauses.
         for kind in ("browser", "telephony"):
             turn = resolve_turn_detection(self._config(), kind)
             assert turn["stop_secs"] + turn["user_speech_timeout"] >= 0.8
+        browser = resolve_turn_detection(self._config(), "browser")
+        assert browser["stop_secs"] + browser["user_speech_timeout"] >= 1.4
 
     def test_bot_overrides_apply(self):
         turn = resolve_turn_detection(
@@ -352,6 +450,18 @@ class TestTurnDetectionConfig:
         )
         assert turn["user_speech_timeout"] == 1.2
         assert turn["min_volume"] == 0.3
+
+    def test_barge_in_word_gate_defaults_on_and_can_be_disabled(self):
+        # Default: interruptions while the bot speaks need a 2-word transcript.
+        for kind in ("browser", "telephony"):
+            assert resolve_turn_detection(self._config(), kind)["barge_in_min_words"] == 2.0
+        # 0 is a legitimate override (pure-VAD barge-in); above-bounds clamps.
+        assert resolve_turn_detection(
+            self._config({"barge_in_min_words": 0}), "browser"
+        )["barge_in_min_words"] == 0.0
+        assert resolve_turn_detection(
+            self._config({"barge_in_min_words": 99}), "browser"
+        )["barge_in_min_words"] == 10.0
 
     def test_overrides_are_clamped_and_typo_safe(self):
         turn = resolve_turn_detection(
@@ -365,3 +475,140 @@ class TestTurnDetectionConfig:
         assert turn["user_speech_timeout"] == 3.0
         assert turn["stop_secs"] == 0.1
         assert turn["confidence"] == TURN_DETECTION_DEFAULTS["browser"]["confidence"]
+
+
+class TestDecisionWindowMerge:
+    async def test_resume_during_decision_window_rewinds_the_dispatched_text(self):
+        # The open-turn marker is set at DISPATCH, not after the (seconds-
+        # long) decision stage: a caller who resumes speaking while the turn
+        # task is still deciding must get the dispatched text rewound into
+        # the merged turn. Before the fix the text existed nowhere — the
+        # continuation ran without its first half.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("नहीं मैं कल"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await asyncio.wait_for(started.wait(), 1)
+        assert handled == ["नहीं मैं कल"]
+        # No reply audio yet: resuming is a late-final merge, not a barge-in.
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(
+            transcript("पेमेंट कर दूँगा"), FrameDirection.DOWNSTREAM
+        )
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled[-1] == "नहीं मैं कल पेमेंट कर दूँगा"
+
+    async def test_resume_after_reply_audio_is_a_real_barge_in(self):
+        # Once the caller has heard reply audio, resuming must NOT merge: the
+        # answered turn stands and the new speech is a new turn.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await asyncio.wait_for(started.wait(), 1)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("रुको एक मिनट"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled[-1] == "रुको एक मिनट"
+
+
+class TestSpeechResumeInsideOpenTurn:
+    """cv_d82a2669fea1 / cv_d20bd27a2156: the caller pauses after a closed
+    sentence and resumes inside the pause window. The turn controller keeps
+    the turn open, so it emits NO UserStartedSpeakingFrame — only the raw VAD
+    frames reach the brain. Those must cancel the adaptive complete-sentence
+    endpoint (or rewind a dispatched, not-yet-audible reply) instead of
+    letting the bot talk over the rest of the caller's thought."""
+
+    def _brain(self):
+        brain = make_brain()
+        # Realistic adaptive endpoint (turn-detection default is ~0.55 s):
+        # long enough for the "caller resumes first" race to be deterministic.
+        brain._complete_endpoint = 0.3
+        return brain
+
+    async def test_vad_resume_cancels_the_armed_complete_endpoint(self):
+        from pipecat.frames.frames import (
+            VADUserStartedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
+        )
+
+        brain = self._brain()
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        # VAD stop → Sarvam flush: a punctuated segment that "looks complete".
+        await brain.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("मैं प्रोडक्ट तो डिलीवर कर दिया।"), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert brain._finalize_pending()          # adaptive endpoint armed
+        # The caller resumes inside the pause window: only the VAD frame comes.
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert not brain._finalize_pending()
+        assert ("adaptive_endpoint_cancelled", {"reason": "speech_resumed"}) in brain._recorder.events
+        await asyncio.sleep(0.4)
+        assert handled == []                      # nothing spoken over the caller
+        # A final flushed while speech is still active is buffered, not judged.
+        await brain.process_frame(transcript("मैं कस्टमर के लोकेशन पर पहुंचा था और उसे कॉल भी दिया था।"), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert "stt_mid_utterance_segment_buffered" in brain._recorder.event_kinds()
+        assert handled == []
+        # Real end of speech: the turn closes and ONE merged turn runs.
+        await brain.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == [
+            "मैं प्रोडक्ट तो डिलीवर कर दिया। मैं कस्टमर के लोकेशन पर पहुंचा था और उसे कॉल भी दिया था।"
+        ]
+
+    async def test_first_vad_start_of_a_turn_changes_nothing(self):
+        from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+        brain = self._brain()
+        handled, _ = stub_turn_handler(brain)
+        # Orphan complete final (no open turn) arms the short endpoint …
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert brain._finalize_pending()
+        # … and a VAD start BEFORE the controller opens a turn is not a resume:
+        # the UserStartedSpeakingFrame that follows owns the bookkeeping.
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert brain._finalize_pending()
+        assert "adaptive_endpoint_cancelled" not in brain._recorder.event_kinds()
+
+    async def test_endpoint_firing_while_speech_is_active_stands_down(self):
+        from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+        brain = self._brain()
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        brain._physical_speech_active = True      # VAD says: talking right now
+        brain._finalize_task = None
+        await brain._finalize_after_grace(0.0, ignore_open_turn=True)
+        assert handled == []
+        assert ("adaptive_endpoint_deferred", {"reason": "speech_active"}) in brain._recorder.events
+
+    async def test_vad_resume_during_decision_window_rewinds_the_dispatched_text(self):
+        from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+        brain = self._brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("मैं प्रोडक्ट तो डिलीवर कर दिया।"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.4)                  # adaptive endpoint fires
+        await asyncio.wait_for(started.wait(), 1)
+        assert handled == ["मैं प्रोडक्ट तो डिलीवर कर दिया।"]
+        # No reply audio yet when the caller resumes: rewind, do not talk over.
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert "turn_merged_late_final" in brain._recorder.event_kinds()
+        await brain.process_frame(transcript("उसे कॉल भी दिया था।"), FrameDirection.DOWNSTREAM)
+        brain._physical_speech_active = False
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled[-1] == "मैं प्रोडक्ट तो डिलीवर कर दिया। उसे कॉल भी दिया था।"

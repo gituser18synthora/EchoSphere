@@ -1,0 +1,1083 @@
+{
+ "bot": {
+  "id": "bot_059e49443c76",
+  "name": "Frankfinn Seminar Booking",
+  "tenant_id": "tn_6553beac240d",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf_9f3b1b6928cc",
+   "name": "Frankfinn seminar booking journey",
+   "version": 3,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 300,
+     "y": 40,
+     "id": "n_hub_opening",
+     "kind": "intent",
+     "label": "Opening — reason of call",
+     "config": {
+      "prompt": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+      "unmatchedReply": "बस हाँ या नहीं बता दीजिए — क्या मैं आपकी eligibility check करके FREE career seminar की details बता दूँ?"
+     }
+    },
+    {
+     "x": 560,
+     "y": 40,
+     "id": "n_ask_age",
+     "kind": "ask",
+     "label": "Ask age",
+     "config": {
+      "question": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+      "variable": "student_age",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 820,
+     "y": 40,
+     "id": "n_ask_area",
+     "kind": "ask",
+     "label": "Ask area / locality",
+     "config": {
+      "question": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+      "variable": "student_area",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 40,
+     "id": "n_hub_qual",
+     "kind": "intent",
+     "label": "Qualification hub",
+     "config": {
+      "prompt": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+      "unmatchedReply": "माफ़ कीजिए, मैं ठीक से समझ नहीं पाई — क्या आप 12th pass हैं, graduation कर रहे हैं, या graduation complete हो गई है?"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 40,
+     "id": "n_hub_finalyear",
+     "kind": "intent",
+     "label": "Final-year probe",
+     "config": {
+      "prompt": "अच्छा, third year — क्या यह आपकी graduation का final year है?",
+      "unmatchedReply": "बस यह बता दीजिए — graduation का final year है, या अभी और साल बाकी हैं?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 170,
+     "id": "n_msg_grad_track",
+     "kind": "message",
+     "label": "Graduate track — 8 months",
+     "config": {
+      "text": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा।"
+     }
+    },
+    {
+     "x": 300,
+     "y": 170,
+     "id": "n_msg_ug_track",
+     "kind": "message",
+     "label": "Undergrad track — 11 months",
+     "config": {
+      "text": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा।"
+     }
+    },
+    {
+     "x": 560,
+     "y": 170,
+     "id": "n_msg_not_eligible",
+     "kind": "message",
+     "label": "Below 12th — not eligible",
+     "config": {
+      "text": "मैं आपका interest सच में appreciate करती हूँ, लेकिन हमारे courses और seminar के लिए 12th pass होना ज़रूरी है। जैसे ही आपकी 12th complete हो जाए, आप हमें हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर call कर सकते हैं। आपके future के लिए all the best! धन्यवाद।"
+     }
+    },
+    {
+     "x": 820,
+     "y": 170,
+     "id": "n_msg_boom",
+     "kind": "message",
+     "label": "Need creation — industry boom",
+     "config": {
+      "text": "और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल!"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 170,
+     "id": "n_msg_seminar",
+     "kind": "message",
+     "label": "Seminar pitch — seats/time + parents",
+     "config": {
+      "text": "इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर।"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 170,
+     "id": "n_hub_book",
+     "kind": "intent",
+     "label": "Book the seat?",
+     "config": {
+      "prompt": "तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+      "unmatchedReply": "बस हाँ या नहीं बता दीजिए — क्या मैं कल के FREE career seminar के लिए आपकी seat book कर दूँ?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 300,
+     "id": "n_msg_fees",
+     "kind": "message",
+     "label": "Fees question — seminar is free",
+     "config": {
+      "text": "अच्छा सवाल! Seminar बिल्कुल FREE है — इसमें कोई charges नहीं हैं, और call पर कोई payment नहीं होती। Course की fees और scholarship options की पूरी जानकारी seminar में हमारे senior counsellors आपको detail में देंगे — इसीलिए seminar attend करना best रहेगा।"
+     }
+    },
+    {
+     "x": 300,
+     "y": 300,
+     "id": "n_kb_answer",
+     "kind": "knowledge",
+     "label": "Seminar/course question (KB)",
+     "config": {
+      "fallbackText": "इसकी exact जानकारी seminar में हमारे senior counsellors आपको detail में देंगे — वहीं सब कुछ clear हो जाएगा।"
+     }
+    },
+    {
+     "x": 560,
+     "y": 300,
+     "id": "n_msg_think",
+     "kind": "message",
+     "label": "Wants to think it over",
+     "config": {
+      "text": "बिल्कुल, सोचना अच्छी बात है! बस इतना ध्यान रखिए — seminar FREE है और scholarship seats limited हैं, first come first serve पर मिलती हैं। आप चाहें तो parents से discuss करके उन्हें साथ ही ले आइए — उनके साथ आने पर 40 हज़ार रुपये तक की scholarship का benefit भी मिल सकता है।"
+     }
+    },
+    {
+     "x": 820,
+     "y": 300,
+     "id": "n_msg_objection",
+     "kind": "message",
+     "label": "Declined once — soft counter",
+     "config": {
+      "text": "कोई बात नहीं! बस एक बात बता दूँ — यह seminar बिल्कुल FREE है, सिर्फ़ 45 minute का है, और कोई obligation नहीं है। आपको सिर्फ़ चारों industries के career options की सही जानकारी मिलेगी।"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 300,
+     "id": "n_msg_objection_open",
+     "kind": "message",
+     "label": "Not interested at opening",
+     "config": {
+      "text": "मैं समझ सकती हूँ! सिर्फ़ 30 second दीजिए — आपने कुछ समय पहले aviation और hospitality careers में interest दिखाया था। हम बस एक बिल्कुल FREE, 45 minute का career counselling seminar offer कर रहे हैं — कोई fees नहीं, कोई obligation नहीं। हमारे students को highest दो लाख सैंतालीस हज़ार रुपये per month तक की salary offer हुई है।"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 300,
+     "id": "n_hub_book2",
+     "kind": "intent",
+     "label": "Reserve after objection?",
+     "config": {
+      "prompt": "तो बताइए — क्या मैं आपके लिए एक seat reserve कर दूँ?",
+      "unmatchedReply": "कोई pressure नहीं है — बस हाँ या नहीं बता दीजिए, seat reserve करूँ?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 430,
+     "id": "n_hub_sure",
+     "kind": "intent",
+     "label": "100% sure confirmation",
+     "config": {
+      "prompt": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+      "unmatchedReply": "बस confirm करना है — कल 10:15 से 11:30 के बीच center पहुँच पाएँगे, 100% sure?"
+     }
+    },
+    {
+     "x": 300,
+     "y": 430,
+     "id": "n_ask_day",
+     "kind": "ask",
+     "label": "Alternate day",
+     "config": {
+      "question": "कोई बात नहीं! कौन सा din आपके लिए convenient रहेगा? Timing वही रहेगी — entry 10:15 से 11:30, seminar 11:40 पर start।",
+      "variable": "visit_day",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 560,
+     "y": 430,
+     "id": "n_ask_parents",
+     "kind": "ask",
+     "label": "Parents joining?",
+     "config": {
+      "question": "Perfect! और क्या आपके parents आपके साथ आ पाएँगे? Parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship मिल सकती है।",
+      "variable": "parents_joining",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 820,
+     "y": 430,
+     "id": "n_api_book",
+     "kind": "api",
+     "label": "Book Seminar Seat API",
+     "config": {
+      "text": "बहुत बढ़िया! एक moment दीजिए — मैं आपकी seat book कर रही हूँ।",
+      "connection": "Frankfinn Book Seminar Seat"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 430,
+     "id": "n_msg_confirmed",
+     "kind": "message",
+     "label": "Seat confirmed (grounded)",
+     "config": {
+      "text": "बधाई हो — आपकी seat confirm हो गई है! मैंने आपको SMS भेज दिया है, जिसमें center का address, आपका appointment number, date और timing है। क्या आपको SMS मिला?",
+      "responseMode": "llm_grounded",
+      "responseDirective": "The seminar seat was just booked successfully — the booking facts (appointment number, centre name and address, seminar date, entry window, start time, SMS status) are in this conversation's system results. Warmly congratulate the student that their seat is confirmed, tell them the confirmation SMS with the appointment number and centre address has been sent to their number, mention the appointment number exactly as given, and ask whether they received the SMS. Never invent any detail."
+     }
+    },
+    {
+     "x": 1340,
+     "y": 430,
+     "id": "n_msg_pending",
+     "kind": "message",
+     "label": "Booking pending (API unavailable)",
+     "config": {
+      "text": "बहुत बढ़िया — आपकी seat book की जा रही है! Center का address, आपका appointment number, date और timing आपको SMS से मिल जाएगी। अगर 15-20 minute में SMS ना आए, तो हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर call कर लीजिएगा।"
+     }
+    },
+    {
+     "x": 40,
+     "y": 560,
+     "id": "n_hub_sms",
+     "kind": "intent",
+     "label": "SMS received?",
+     "config": {
+      "prompt": "क्या आपको SMS receive हुआ?",
+      "unmatchedReply": "आपके number पर Frankfinn की तरफ़ से एक SMS आया होगा — check कर लीजिए, मिला क्या?"
+     }
+    },
+    {
+     "x": 300,
+     "y": 560,
+     "id": "n_msg_sms_later",
+     "kind": "message",
+     "label": "SMS not received — speak address",
+     "config": {
+      "text": "कोई बात नहीं — SMS कुछ ही देर में आ जाएगा। मैं आपको address बता देती हूँ: Frankfinn Institute, third floor, Mocha Cafe के पास, C G Road, Ahmedabad. Appointment number आप SMS में देख लीजिएगा।"
+     }
+    },
+    {
+     "x": 560,
+     "y": 560,
+     "id": "n_msg_id",
+     "kind": "message",
+     "label": "Govt ID + helpline",
+     "config": {
+      "text": "और एक बहुत ज़रूरी बात — seminar में entry के लिए अपना और साथ आने वाले parents का Aadhaar card ज़रूर लेकर आइएगा — Aadhaar के बिना entry नहीं हो पाती। साथ में SMS वाला appointment number भी। और जब भी आपको call करनी हो, हमारा inbound number है 1 8 0 0, 2 5 8, 7 3 3 2।"
+     }
+    },
+    {
+     "x": 820,
+     "y": 560,
+     "id": "n_hub_anything",
+     "kind": "intent",
+     "label": "Anything else?",
+     "config": {
+      "prompt": "क्या मैं आपकी किसी और बात में help कर सकती हूँ?",
+      "unmatchedReply": "कोई और सवाल हो तो पूछ लीजिए — या मैं call यहीं close कर दूँ?"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 560,
+     "id": "n_kb_answer2",
+     "kind": "knowledge",
+     "label": "Wrap-up question (KB)",
+     "config": {
+      "fallbackText": "इसकी exact जानकारी आपको seminar में मिल जाएगी — और आप हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर भी पूछ सकते हैं।"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 560,
+     "id": "n_msg_close",
+     "kind": "message",
+     "label": "Scripted closing",
+     "config": {
+      "text": "Thank you very much for your time! आप बात कर रहे थे Priya से, Frankfinn Institute की तरफ़ से। Seminar में मिलते हैं — have a nice day!"
+     }
+    },
+    {
+     "x": 40,
+     "y": 690,
+     "id": "n_ask_callback",
+     "kind": "ask",
+     "label": "Busy — callback time",
+     "config": {
+      "question": "जी बिल्कुल, कोई बात नहीं! आपको call करने के लिए कौन सा time सही रहेगा?",
+      "variable": "callback_time",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 300,
+     "y": 690,
+     "id": "n_msg_callback_close",
+     "kind": "message",
+     "label": "Callback close",
+     "config": {
+      "text": "ठीक है, मैं आपको उसी time call कर लूँगी। यह Frankfinn के FREE career counselling seminar के बारे में है, जिसमें आपने interest दिखाया था। धन्यवाद, have a nice day!"
+     }
+    },
+    {
+     "x": 560,
+     "y": 690,
+     "id": "n_msg_wrong",
+     "kind": "message",
+     "label": "Wrong number close",
+     "config": {
+      "text": "ओह, माफ़ कीजिएगा — लगता है number ग़लत लग गया। आपका समय लेने के लिए sorry। धन्यवाद, have a nice day!"
+     }
+    },
+    {
+     "x": 820,
+     "y": 690,
+     "id": "n_msg_dnc",
+     "kind": "message",
+     "label": "Do-not-call close",
+     "config": {
+      "text": "जी बिल्कुल — मैंने आपकी request note कर ली है, आपका number हमारी calling list से हटा दिया जाएगा और आपको दोबारा call नहीं आएगी। असुविधा के लिए माफ़ी चाहती हूँ। धन्यवाद।"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 690,
+     "id": "n_msg_polite_close",
+     "kind": "message",
+     "label": "Polite decline close",
+     "config": {
+      "text": "कोई बात नहीं! अगर आप बाद में हमारा FREE career counselling seminar attend करना चाहें, तो हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर call कर सकते हैं। आपके career के लिए all the best! धन्यवाद, have a nice day!"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 690,
+     "id": "n_handover",
+     "kind": "handover",
+     "label": "Senior counsellor handover",
+     "config": {
+      "text": "जी बिल्कुल — मैं आपकी बात हमारे senior counsellor से करा रही हूँ। एक moment line पर बने रहिए।",
+      "queue": "senior_counsellor"
+     }
+    },
+    {
+     "x": 40,
+     "y": 820,
+     "id": "n_end",
+     "kind": "end",
+     "label": "Call ends"
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_n_start__n_hub_opening",
+     "to": "n_hub_opening",
+     "from": "n_start"
+    },
+    {
+     "id": "e_n_hub_opening__n_ask_age__9028",
+     "to": "n_ask_age",
+     "from": "n_hub_opening",
+     "label": "yes/haan/haan ji/ji haan/kar do/book kar do/zaroor/theek hai/ok/okay/sure/bilkul/chalo/हाँ/जी हाँ/कर दो/बुक कर दो/ज़रूर/ठीक है/बिल्कुल/चलो/batao/bataiye/details do/sun rahi hoon/sun raha hoon/बताओ/बताइए"
+    },
+    {
+     "id": "e_n_hub_opening__n_ask_callback__2681",
+     "to": "n_ask_callback",
+     "from": "n_hub_opening",
+     "label": "busy/baad mein/call later/abhi nahi/driving/meeting mein/kaam mein/free nahi/time nahi/बिज़ी/बाद में/अभी नहीं/काम में हूँ/टाइम नहीं"
+    },
+    {
+     "id": "e_n_hub_opening__n_msg_wrong__816",
+     "to": "n_msg_wrong",
+     "from": "n_hub_opening",
+     "label": "wrong number/galat number/aisa koi nahi/is naam ka koi nahi/ग़लत नंबर/गलत नंबर/ऐसा कोई नहीं"
+    },
+    {
+     "id": "e_n_hub_opening__n_msg_dnc__6600",
+     "to": "n_msg_dnc",
+     "from": "n_hub_opening",
+     "label": "do not call/don't call/dont call/call mat karna/call mat karo/number hata do/remove my number/list se hata do/dobara call mat/block kar do/कॉल मत करना/कॉल मत करो/नंबर हटा दो/दोबारा कॉल मत/लिस्ट से हटा दो"
+    },
+    {
+     "id": "e_n_hub_opening__n_msg_objection_open__3959",
+     "to": "n_msg_objection_open",
+     "from": "n_hub_opening",
+     "label": "no/nahi/nahin/not interested/nahi karna/interest nahi/nahi chahiye/rehne do/mat karo/नहीं/नहीं करना/इंटरेस्ट नहीं/नहीं चाहिए/रहने दो/मत करो"
+    },
+    {
+     "id": "e_n_hub_opening__n_msg_fees__207",
+     "to": "n_msg_fees",
+     "from": "n_hub_opening",
+     "label": "fees?/fee?/fees kitni hai?/course fees?/kitne paise?/kharcha?/cost?/charges?/kitna lagega?/fees/fee/paise lagenge/kharcha/फीस?/फीस/पैसे लगेंगे/खर्चा/कितना लगेगा"
+    },
+    {
+     "id": "e_n_hub_opening__n_handover__7076",
+     "to": "n_handover",
+     "from": "n_hub_opening",
+     "label": "manager/agent/human/customer care/insaan se/aadmi se/senior se baat/counsellor se baat/kisi se baat karao/मैनेजर/एजेंट/इंसान से/आदमी से/सीनियर से बात/काउंसलर से बात"
+    },
+    {
+     "id": "e_n_ask_age__n_ask_area",
+     "to": "n_ask_area",
+     "from": "n_ask_age"
+    },
+    {
+     "id": "e_n_ask_area__n_hub_qual",
+     "to": "n_hub_qual",
+     "from": "n_ask_area"
+    },
+    {
+     "id": "e_n_hub_qual__n_hub_finalyear__1776",
+     "to": "n_hub_finalyear",
+     "from": "n_hub_qual",
+     "label": "third year/3rd year/teesra saal/teesre saal/तीसरा साल/तीसरे साल/थर्ड ईयर"
+    },
+    {
+     "id": "e_n_hub_qual__n_msg_grad_track__96",
+     "to": "n_msg_grad_track",
+     "from": "n_hub_qual",
+     "label": "graduation complete/graduate ho gaya/graduate ho gayi/complete ho gayi/complete kar li/degree complete/graduation done/graduation ho gayi/post graduation/postgraduate/mba/graduate hoon/final year/last year/final semester/ग्रेजुएशन कम्पलीट/ग्रेजुएशन हो गई/ग्रेजुएट/डिग्री हो गई/फाइनल ईयर/लास्ट ईयर/पोस्ट ग्रेजुएशन"
+    },
+    {
+     "id": "e_n_hub_qual__n_msg_ug_track__4365",
+     "to": "n_msg_ug_track",
+     "from": "n_hub_qual",
+     "label": "12th pass/twelfth pass/12 pass/baarvi pass/inter pass/intermediate/first year/second year/pehla saal/doosra saal/graduation chal rahi/padh raha hoon/padh rahi hoon/pursuing/kar raha hoon/kar rahi hoon/12th kiya/baarvi ki hai/बारहवीं पास/12वीं पास/पहला साल/दूसरा साल/पढ़ रहा हूँ/पढ़ रही हूँ/चल रही है/ग्रेजुएशन चल रही"
+    },
+    {
+     "id": "e_n_hub_qual__n_msg_not_eligible__6544",
+     "to": "n_msg_not_eligible",
+     "from": "n_hub_qual",
+     "label": "10th/tenth/dasvi/10 pass/nauvi/school mein/12th appearing/12th mein hoon/12th chal rahi/abhi 12th/baarvi mein hoon/दसवीं/बारहवीं में हूँ/बारहवीं चल रही/स्कूल में"
+    },
+    {
+     "id": "e_n_hub_finalyear__n_msg_grad_track__5552",
+     "to": "n_msg_grad_track",
+     "from": "n_hub_finalyear",
+     "label": "yes/haan/ji haan/final hai/last hai/final year hai/haan final/हाँ/जी हाँ/फाइनल है/लास्ट है/फाइनल ईयर है"
+    },
+    {
+     "id": "e_n_hub_finalyear__n_msg_ug_track__532",
+     "to": "n_msg_ug_track",
+     "from": "n_hub_finalyear",
+     "label": "no/nahi/nahin/abhi nahi/baaki hai/aur saal/नहीं/बाकी है/और साल"
+    },
+    {
+     "id": "e_n_msg_grad_track__n_msg_boom",
+     "to": "n_msg_boom",
+     "from": "n_msg_grad_track"
+    },
+    {
+     "id": "e_n_msg_ug_track__n_msg_boom",
+     "to": "n_msg_boom",
+     "from": "n_msg_ug_track"
+    },
+    {
+     "id": "e_n_msg_not_eligible__n_end",
+     "to": "n_end",
+     "from": "n_msg_not_eligible"
+    },
+    {
+     "id": "e_n_msg_boom__n_msg_seminar",
+     "to": "n_msg_seminar",
+     "from": "n_msg_boom"
+    },
+    {
+     "id": "e_n_msg_seminar__n_hub_book",
+     "to": "n_hub_book",
+     "from": "n_msg_seminar"
+    },
+    {
+     "id": "e_n_hub_book__n_hub_sure__7793",
+     "to": "n_hub_sure",
+     "from": "n_hub_book",
+     "label": "yes/haan/haan ji/ji haan/kar do/book kar do/zaroor/theek hai/ok/okay/sure/bilkul/chalo/हाँ/जी हाँ/कर दो/बुक कर दो/ज़रूर/ठीक है/बिल्कुल/चलो"
+    },
+    {
+     "id": "e_n_hub_book__n_msg_fees__207",
+     "to": "n_msg_fees",
+     "from": "n_hub_book",
+     "label": "fees?/fee?/fees kitni hai?/course fees?/kitne paise?/kharcha?/cost?/charges?/kitna lagega?/fees/fee/paise lagenge/kharcha/फीस?/फीस/पैसे लगेंगे/खर्चा/कितना लगेगा"
+    },
+    {
+     "id": "e_n_hub_book__n_kb_answer__297",
+     "to": "n_kb_answer",
+     "from": "n_hub_book",
+     "label": "seminar mein kya hoga?/job pakki hai?/salary kitni milegi?/course details?/kya sikhaenge?/placement?/aadhaar kyun?/kahan hai?/kitne baje?/सेमिनार में क्या होगा?/जॉब पक्की है?/सैलरी कितनी मिलेगी?/क्या सिखाएँगे?/कहाँ है?/कितने बजे?"
+    },
+    {
+     "id": "e_n_hub_book__n_msg_think__1851",
+     "to": "n_msg_think",
+     "from": "n_hub_book",
+     "label": "sochna hai/soch ke bataunga/soch ke bataungi/think about it/parents se poochna/ghar par poochh/baad mein bataata hoon/सोचना है/सोच के/पूछना पड़ेगा/घर पर पूछ"
+    },
+    {
+     "id": "e_n_hub_book__n_msg_dnc__6600",
+     "to": "n_msg_dnc",
+     "from": "n_hub_book",
+     "label": "do not call/don't call/dont call/call mat karna/call mat karo/number hata do/remove my number/list se hata do/dobara call mat/block kar do/कॉल मत करना/कॉल मत करो/नंबर हटा दो/दोबारा कॉल मत/लिस्ट से हटा दो"
+    },
+    {
+     "id": "e_n_hub_book__n_handover__7076",
+     "to": "n_handover",
+     "from": "n_hub_book",
+     "label": "manager/agent/human/customer care/insaan se/aadmi se/senior se baat/counsellor se baat/kisi se baat karao/मैनेजर/एजेंट/इंसान से/आदमी से/सीनियर से बात/काउंसलर से बात"
+    },
+    {
+     "id": "e_n_hub_book__n_msg_objection__3959",
+     "to": "n_msg_objection",
+     "from": "n_hub_book",
+     "label": "no/nahi/nahin/not interested/nahi karna/interest nahi/nahi chahiye/rehne do/mat karo/नहीं/नहीं करना/इंटरेस्ट नहीं/नहीं चाहिए/रहने दो/मत करो"
+    },
+    {
+     "id": "e_n_msg_fees__n_hub_book",
+     "to": "n_hub_book",
+     "from": "n_msg_fees"
+    },
+    {
+     "id": "e_n_kb_answer__n_hub_book",
+     "to": "n_hub_book",
+     "from": "n_kb_answer"
+    },
+    {
+     "id": "e_n_msg_think__n_hub_book2",
+     "to": "n_hub_book2",
+     "from": "n_msg_think"
+    },
+    {
+     "id": "e_n_msg_objection__n_hub_book2",
+     "to": "n_hub_book2",
+     "from": "n_msg_objection"
+    },
+    {
+     "id": "e_n_msg_objection_open__n_hub_book2",
+     "to": "n_hub_book2",
+     "from": "n_msg_objection_open"
+    },
+    {
+     "id": "e_n_hub_book2__n_hub_sure__7793",
+     "to": "n_hub_sure",
+     "from": "n_hub_book2",
+     "label": "yes/haan/haan ji/ji haan/kar do/book kar do/zaroor/theek hai/ok/okay/sure/bilkul/chalo/हाँ/जी हाँ/कर दो/बुक कर दो/ज़रूर/ठीक है/बिल्कुल/चलो"
+    },
+    {
+     "id": "e_n_hub_book2__n_msg_fees__207",
+     "to": "n_msg_fees",
+     "from": "n_hub_book2",
+     "label": "fees?/fee?/fees kitni hai?/course fees?/kitne paise?/kharcha?/cost?/charges?/kitna lagega?/fees/fee/paise lagenge/kharcha/फीस?/फीस/पैसे लगेंगे/खर्चा/कितना लगेगा"
+    },
+    {
+     "id": "e_n_hub_book2__n_msg_dnc__6600",
+     "to": "n_msg_dnc",
+     "from": "n_hub_book2",
+     "label": "do not call/don't call/dont call/call mat karna/call mat karo/number hata do/remove my number/list se hata do/dobara call mat/block kar do/कॉल मत करना/कॉल मत करो/नंबर हटा दो/दोबारा कॉल मत/लिस्ट से हटा दो"
+    },
+    {
+     "id": "e_n_hub_book2__n_handover__7076",
+     "to": "n_handover",
+     "from": "n_hub_book2",
+     "label": "manager/agent/human/customer care/insaan se/aadmi se/senior se baat/counsellor se baat/kisi se baat karao/मैनेजर/एजेंट/इंसान से/आदमी से/सीनियर से बात/काउंसलर से बात"
+    },
+    {
+     "id": "e_n_hub_book2__n_msg_polite_close__3959",
+     "to": "n_msg_polite_close",
+     "from": "n_hub_book2",
+     "label": "no/nahi/nahin/not interested/nahi karna/interest nahi/nahi chahiye/rehne do/mat karo/नहीं/नहीं करना/इंटरेस्ट नहीं/नहीं चाहिए/रहने दो/मत करो"
+    },
+    {
+     "id": "e_n_hub_sure__n_ask_parents__9822",
+     "to": "n_ask_parents",
+     "from": "n_hub_sure",
+     "label": "yes/haan/haan ji/ji haan/kar do/book kar do/zaroor/theek hai/ok/okay/sure/bilkul/chalo/हाँ/जी हाँ/कर दो/बुक कर दो/ज़रूर/ठीक है/बिल्कुल/चलो/pakka/100 percent/sure hoon/aa jaunga/aa jaungi/pahunch jaunga/पक्का/आ जाऊँगा/आ जाऊँगी/पहुँच जाऊँगा"
+    },
+    {
+     "id": "e_n_hub_sure__n_ask_day__8284",
+     "to": "n_ask_day",
+     "from": "n_hub_sure",
+     "label": "no/nahi/kal nahi/mushkil hai/kal mushkil/doosra din/agle hafte/parson/नहीं/कल नहीं/मुश्किल/दूसरा दिन/अगले हफ़्ते/परसों"
+    },
+    {
+     "id": "e_n_ask_day__n_ask_parents",
+     "to": "n_ask_parents",
+     "from": "n_ask_day"
+    },
+    {
+     "id": "e_n_ask_parents__n_api_book",
+     "to": "n_api_book",
+     "from": "n_ask_parents"
+    },
+    {
+     "id": "e_n_api_book__n_msg_confirmed__1679",
+     "to": "n_msg_confirmed",
+     "from": "n_api_book",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_book__n_msg_pending__6967",
+     "to": "n_msg_pending",
+     "from": "n_api_book",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_confirmed__n_hub_sms",
+     "to": "n_hub_sms",
+     "from": "n_msg_confirmed"
+    },
+    {
+     "id": "e_n_hub_sms__n_msg_id__459",
+     "to": "n_msg_id",
+     "from": "n_hub_sms",
+     "label": "yes/haan/haan ji/ji haan/kar do/book kar do/zaroor/theek hai/ok/okay/sure/bilkul/chalo/हाँ/जी हाँ/कर दो/बुक कर दो/ज़रूर/ठीक है/बिल्कुल/चलो/mil gaya/aa gaya/received/dekh liya/मिल गया/आ गया/देख लिया"
+    },
+    {
+     "id": "e_n_hub_sms__n_msg_sms_later__5814",
+     "to": "n_msg_sms_later",
+     "from": "n_hub_sms",
+     "label": "no/nahi/nahi aaya/nahi mila/not yet/abhi nahi/nahi dikh raha/नहीं आया/नहीं मिला/अभी नहीं/नहीं दिख रहा"
+    },
+    {
+     "id": "e_n_msg_sms_later__n_msg_id",
+     "to": "n_msg_id",
+     "from": "n_msg_sms_later"
+    },
+    {
+     "id": "e_n_msg_pending__n_msg_id",
+     "to": "n_msg_id",
+     "from": "n_msg_pending"
+    },
+    {
+     "id": "e_n_msg_id__n_hub_anything",
+     "to": "n_hub_anything",
+     "from": "n_msg_id"
+    },
+    {
+     "id": "e_n_hub_anything__n_kb_answer2__2972",
+     "to": "n_kb_answer2",
+     "from": "n_hub_anything",
+     "label": "kaise aana hai?/kahan hai center?/kya lana hai?/kitne baje?/seminar mein kya hoga?/scholarship kaise milegi?/course kitne mahine?/salary?/job?/timing?/address kya hai?/कैसे आना है?/कहाँ है?/क्या लाना है?/कितने बजे?/स्कॉलरशिप कैसे मिलेगी?/एड्रेस क्या है?"
+    },
+    {
+     "id": "e_n_hub_anything__n_msg_close__2074",
+     "to": "n_msg_close",
+     "from": "n_hub_anything",
+     "label": "no/nothing/nahi/bas/bas itna hi/thank you/thanks/theek hai bas/nothing else/ho gaya/नहीं/बस/बस इतना ही/धन्यवाद/शुक्रिया/ओके बस/हो गया"
+    },
+    {
+     "id": "e_n_hub_anything__n_handover__7076",
+     "to": "n_handover",
+     "from": "n_hub_anything",
+     "label": "manager/agent/human/customer care/insaan se/aadmi se/senior se baat/counsellor se baat/kisi se baat karao/मैनेजर/एजेंट/इंसान से/आदमी से/सीनियर से बात/काउंसलर से बात"
+    },
+    {
+     "id": "e_n_kb_answer2__n_hub_anything",
+     "to": "n_hub_anything",
+     "from": "n_kb_answer2"
+    },
+    {
+     "id": "e_n_msg_close__n_end",
+     "to": "n_end",
+     "from": "n_msg_close"
+    },
+    {
+     "id": "e_n_ask_callback__n_msg_callback_close",
+     "to": "n_msg_callback_close",
+     "from": "n_ask_callback"
+    },
+    {
+     "id": "e_n_msg_callback_close__n_end",
+     "to": "n_end",
+     "from": "n_msg_callback_close"
+    },
+    {
+     "id": "e_n_msg_wrong__n_end",
+     "to": "n_end",
+     "from": "n_msg_wrong"
+    },
+    {
+     "id": "e_n_msg_dnc__n_end",
+     "to": "n_end",
+     "from": "n_msg_dnc"
+    },
+    {
+     "id": "e_n_msg_polite_close__n_end",
+     "to": "n_end",
+     "from": "n_msg_polite_close"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_98c3dc6801a7",
+   "name": "busy_callback",
+   "code": "busy_callback",
+   "samples": [
+    "main abhi busy hoon",
+    "baad mein call karna",
+    "call me later",
+    "abhi time nahi hai",
+    "main meeting mein hoon",
+    "gaadi chala raha hoon",
+    "मैं अभी बिज़ी हूँ",
+    "बाद में कॉल करें",
+    "अभी टाइम नहीं है",
+    "मीटिंग में हूँ"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_e3f3c088ca6d",
+   "name": "do_not_call",
+   "code": "do_not_call",
+   "samples": [
+    "dobara call mat karna",
+    "remove my number",
+    "do not call me again",
+    "mera number list se hata do",
+    "mujhe call mat karo",
+    "मुझे दोबारा कॉल मत करना",
+    "मेरा नंबर हटा दो",
+    "कॉल मत करो मुझे"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_1c259161b57e",
+   "name": "eligibility_course_question",
+   "code": "eligibility_course_question",
+   "samples": [
+    "main 12th pass hoon kya main eligible hoon",
+    "course kitne mahine ka hai",
+    "how long is the course",
+    "graduation walon ke liye kaunsa course hai",
+    "kya main eligible hoon",
+    "eligibility kya hai",
+    "कोर्स कितने महीने का है",
+    "क्या मैं एलिजिबल हूँ",
+    "एलिजिबिलिटी क्या है"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_9e633e00dd02",
+   "name": "fee_question",
+   "code": "fee_question",
+   "samples": [
+    "fees kitni hai",
+    "course fees kya hai",
+    "kitne paise lagenge",
+    "kya seminar ke paise lagenge",
+    "how much does it cost",
+    "फीस कितनी है",
+    "कितने पैसे लगेंगे",
+    "कोर्स की फीस क्या है"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_3c64975d1ac7",
+   "name": "human_handoff",
+   "code": "human_handoff",
+   "samples": [
+    "kisi senior se baat karao",
+    "manager se baat karao",
+    "counsellor se directly baat karani hai",
+    "i want to speak to a real person",
+    "kisi insaan se baat karao",
+    "किसी सीनियर से बात कराओ",
+    "असली इंसान से बात कराओ",
+    "काउंसलर से डायरेक्ट बात करनी है"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_10c2d6f239cc",
+   "name": "not_interested",
+   "code": "not_interested",
+   "samples": [
+    "mujhe interest nahi hai",
+    "not interested",
+    "mujhe nahi karna",
+    "abhi nahi karna mujhe",
+    "rehne dijiye",
+    "मुझे इंटरेस्ट नहीं है",
+    "नहीं करना मुझे",
+    "रहने दीजिए"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_f9da7293161f",
+   "name": "opening_identity_confirm",
+   "code": "opening_identity_confirm",
+   "samples": [
+    "haan bol raha hoon",
+    "haan bol rahi hoon",
+    "yes speaking",
+    "haan ji boliye",
+    "ji haan boliye",
+    "haan batao",
+    "haan bolo",
+    "main hi hoon",
+    "haan ji kahiye",
+    "yes tell me",
+    "haan ji",
+    "bataiye kya baat hai",
+    "हाँ बोल रहा हूँ",
+    "हाँ बोल रही हूँ",
+    "हाँ जी बोलिए",
+    "हाँ बताइए",
+    "मैं ही बोल रहा हूँ",
+    "जी कहिए",
+    "बताइए क्या बात है"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_9bb8c940226c",
+   "name": "seminar_fact_question",
+   "code": "seminar_fact_question",
+   "samples": [
+    "mera appointment number kya tha",
+    "kitne baje aana hai mujhe",
+    "entry timing kya hai",
+    "address kya hai center ka",
+    "kaunsa din tha mera appointment",
+    "kitni der ka seminar hai",
+    "मेरा अपॉइंटमेंट नंबर क्या था",
+    "कितने बजे आना है",
+    "सेंटर का एड्रेस क्या है",
+    "कौन सा दिन था मेरा अपॉइंटमेंट"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_098181e8dba4",
+   "name": "seminar_interest",
+   "code": "seminar_interest",
+   "samples": [
+    "seminar ke baare mein batao",
+    "mujhe seminar attend karna hai",
+    "seat book kar do",
+    "i want to attend the seminar",
+    "career counselling seminar mein aana hai",
+    "eligibility check karo",
+    "mujhe aviation mein career banana hai",
+    "air hostess ka course karna hai",
+    "सेमिनार के बारे में बताओ",
+    "मुझे सेमिनार अटेंड करना है",
+    "सीट बुक कर दो",
+    "मुझे एयर होस्टेस का कोर्स करना है"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_16d3b144c0a4",
+   "name": "wrong_number",
+   "code": "wrong_number",
+   "samples": [
+    "wrong number hai",
+    "aapne galat number lagaya hai",
+    "yahan is naam ka koi nahi rehta",
+    "is naam ka koi nahi hai",
+    "गलत नंबर है",
+    "यहाँ इस नाम का कोई नहीं रहता",
+    "ग़लत नंबर लगाया है"
+   ],
+   "route": "workflow:wf_9f3b1b6928cc",
+   "workflow_id": null,
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_f62266822daf",
+   "name": "Frankfinn Book Seminar Seat",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "sms_sent": true,
+     "center_code": "FIVT_AHMEDABAD",
+     "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+     "entry_window": "10:15 AM to 11:30 AM",
+     "seminar_date": "tomorrow",
+     "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+     "duration_minutes": 45,
+     "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+     "sms_number_masked": "XXXXXX6337",
+     "appointment_number": "FRK-AHD-104217",
+     "seminar_start_time": "11:40 AM"
+    },
+    "properties": {
+     "sms_sent": {
+      "type": "boolean"
+     },
+     "center_code": {
+      "type": "string"
+     },
+     "center_name": {
+      "type": "string"
+     },
+     "entry_window": {
+      "type": "string"
+     },
+     "seminar_date": {
+      "type": "string"
+     },
+     "center_address": {
+      "type": "string"
+     },
+     "duration_minutes": {
+      "type": "integer"
+     },
+     "scholarship_note": {
+      "type": "string"
+     },
+     "sms_number_masked": {
+      "type": "string"
+     },
+     "appointment_number": {
+      "type": "string"
+     },
+     "seminar_start_time": {
+      "type": "string"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "appointment_number",
+     "target": "appointment_number"
+    },
+    {
+     "source": "center_name",
+     "target": "center_name"
+    },
+    {
+     "source": "center_address",
+     "target": "center_address"
+    },
+    {
+     "source": "seminar_date",
+     "target": "seminar_date"
+    },
+    {
+     "source": "entry_window",
+     "target": "entry_window"
+    },
+    {
+     "source": "seminar_start_time",
+     "target": "seminar_start_time"
+    },
+    {
+     "source": "sms_sent",
+     "target": "sms_sent"
+    },
+    {
+     "source": "sms_number_masked",
+     "target": "sms_number_masked"
+    },
+    {
+     "source": "scholarship_note",
+     "target": "scholarship_note"
+    }
+   ],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": [
+  {
+   "id": "rcs_271471dac894",
+   "name": "Campaign & seminar facts",
+   "test_payload": {
+    "lead_city": "Ahmedabad",
+    "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+    "lead_source": "website enquiry",
+    "seat_policy": "non-cancellable and non-transferable",
+    "seminar_cost": "free",
+    "student_name": "Rohan Mehta",
+    "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+    "inbound_helpline": "1800 258 7332",
+    "entry_requirement": "Aadhaar card of the student and accompanying parents plus the appointment number",
+    "identity_confirmed": false,
+    "seminar_start_time": "11:40 AM",
+    "parents_scholarship": "exclusive scholarship up to Rs 40,000 when parents attend, first come first serve",
+    "seminar_entry_window": "10:15 AM to 11:30 AM",
+    "highest_salary_offered": "Rs 2,47,000 per month — highest offered to a Frankfinn student after training, as international-airline cabin crew",
+    "seminar_duration_minutes": 45,
+    "course_graduate_or_final_year": "8-month certificate course",
+    "course_12th_pass_or_undergraduate": "11-month certificate course"
+   },
+   "fields": []
+  }
+ ]
+}

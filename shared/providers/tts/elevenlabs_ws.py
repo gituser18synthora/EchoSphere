@@ -35,7 +35,12 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.protocol import State
 
 from shared.providers.base import ProviderError
-from shared.providers.languages import to_provider_language
+from shared.providers.languages import (
+    ELEVENLABS_LANGUAGE_ENFORCING_MODELS,
+    elevenlabs_language_code,
+    elevenlabs_supports_language,
+    tts_unsupported_language_message,
+)
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
     TTSStreamEvent,
@@ -48,14 +53,44 @@ logger = logging.getLogger("providers.tts.elevenlabs_ws")
 # and mocked end-to-end verification.
 _WS_BASE = os.environ.get("ELEVENLABS_WS_BASE", "wss://api.elevenlabs.io")
 _KEEPALIVE_SECONDS = 10
-_MAX_CONNECT_ATTEMPTS = 3
+# Connect attempts happen inline on the reply path: two short attempts, then
+# error/fallback — never tens of seconds of handshake retries while the
+# caller waits in silence.
+_MAX_CONNECT_ATTEMPTS = 2
+_CONNECT_TIMEOUT_S = 3.0
 _CLOSE_HANDSHAKE_TIMEOUT = 2.0
 
-# Models that accept the language_code enforcement query parameter.
-_LANGUAGE_ENFORCING_MODELS = {"eleven_flash_v2_5", "eleven_turbo_v2_5"}
+# Which models accept the language_code enforcement query parameter, and
+# which languages each one speaks, both live in shared.providers.languages —
+# the one place that knows ElevenLabs' wire spelling (bare ISO 639-1).
+_LANGUAGE_ENFORCING_MODELS = ELEVENLABS_LANGUAGE_ENFORCING_MODELS
+
+# Models the ElevenLabs realtime WebSocket does not accept (official docs:
+# "That endpoint does not support the eleven_v3 model"). Configurations with
+# these models must run the REST adapter (shared/providers/tts/elevenlabs.py);
+# rejecting here turns a misrouted config into a clear error instead of a
+# cryptic server-side close.
+# eleven_v3_conversational streams, but on the Text-to-Dialogue endpoint
+# (shared/providers/tts/elevenlabs_v3_ws.py). Probed 2026-09-22: BOTH v3 model
+# ids are rejected here with an HTTP 400 at the handshake, so a misroute is
+# named rather than surfacing as an opaque connection failure.
+_WS_UNSUPPORTED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 
 _VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style",
                        "use_speaker_boost", "speed")
+
+
+def _unsupported_language_error(provider: str, model: str, language: str) -> ProviderError:
+    """Refusal for a model that provably cannot speak the language.
+
+    Omitting ``language_code`` is NOT a workaround: the model still cannot
+    produce that language. The guidance comes from shared.providers.languages
+    so every call site names the same, actually-selectable alternative.
+    """
+    return ProviderError(
+        provider, "invalid_input",
+        tts_unsupported_language_message("elevenlabs", model, language),
+    )
 
 
 def _output_format(codec: str, sample_rate: int) -> str:
@@ -75,60 +110,86 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._receive_task: asyncio.Task | None = None
         self._keepalive_task: asyncio.Task | None = None
         self._initialized_contexts: set[str] = set()
+        # Bytes delivered per live generation. ElevenLabs reports some
+        # account-level failures (e.g. an unpaid invoice) by simply closing
+        # the generation with no audio instead of an error frame, so a final
+        # carrying zero bytes has to be treated as a failure, not a success.
+        self._generation_bytes: dict[str, int] = {}
         self._send_lock = asyncio.Lock()
+        # Serializes concurrent connect() calls (a background warm-up racing
+        # the next dispatch) so only one socket is opened.
+        self._connect_lock = asyncio.Lock()
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> None:
         if self._closed:
             raise RuntimeError("provider is closed")
-        if self._ws is not None and self._ws.state is State.OPEN:
-            return
-        url = self._build_url()
-        last_category = "timeout"
-        for attempt in range(_MAX_CONNECT_ATTEMPTS):
-            try:
-                self._ws = await asyncio.wait_for(
-                    websocket_connect(
-                        url,
-                        additional_headers={"xi-api-key": self._settings.api_key},
-                        max_size=16 * 1024 * 1024,
-                    ),
-                    timeout=self._settings.timeout_seconds,
-                )
-                break
-            except InvalidStatus as exc:
-                status = exc.response.status_code
-                category = self.categorize_close(status)
-                await self._emit_error(
-                    category, f"ElevenLabs handshake rejected ({status})"
-                )
-                if category == "auth":
-                    raise ProviderError(self.name, "auth",
-                                        "ElevenLabs rejected the API key") from exc
-                last_category = category
-            except (TimeoutError, OSError, ConnectionClosed):
-                last_category = "timeout"
-                await asyncio.sleep(0.2 * (attempt + 1))
-        else:
-            await self._emit_error(last_category, "Could not connect to ElevenLabs")
-            raise ProviderError(self.name, last_category, "Could not connect to ElevenLabs")
+        model = self._settings.model or ""
+        language = self._settings.language or ""
+        if language and elevenlabs_supports_language(model, language) is False:
+            error = _unsupported_language_error(self.name, model, language)
+            await self._emit_error(error.category, str(error))
+            raise error
+        if model in _WS_UNSUPPORTED_MODELS:
+            message = (
+                f"ElevenLabs model '{model}' is not supported on the "
+                "text-to-speech realtime WebSocket — eleven_v3_conversational "
+                "streams over the Text-to-Dialogue adapter, and eleven_v3 is "
+                "REST-only"
+            )
+            await self._emit_error("invalid_input", message)
+            raise ProviderError(self.name, "invalid_input", message)
+        async with self._connect_lock:
+            if self._ws is not None and self._ws.state is State.OPEN:
+                return
+            url = self._build_url()
+            last_category = "timeout"
+            for attempt in range(_MAX_CONNECT_ATTEMPTS):
+                try:
+                    self._ws = await asyncio.wait_for(
+                        websocket_connect(
+                            url,
+                            additional_headers={"xi-api-key": self._settings.api_key},
+                            max_size=16 * 1024 * 1024,
+                        ),
+                        timeout=min(_CONNECT_TIMEOUT_S, self._settings.timeout_seconds),
+                    )
+                    break
+                except InvalidStatus as exc:
+                    status = exc.response.status_code
+                    category = self.categorize_close(status)
+                    await self._emit_error(
+                        category, f"ElevenLabs handshake rejected ({status})"
+                    )
+                    if category == "auth":
+                        raise ProviderError(self.name, "auth",
+                                            "ElevenLabs rejected the API key") from exc
+                    last_category = category
+                except (TimeoutError, OSError, ConnectionClosed):
+                    last_category = "timeout"
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            else:
+                await self._emit_error(last_category, "Could not connect to ElevenLabs")
+                raise ProviderError(self.name, last_category, "Could not connect to ElevenLabs")
 
-        self._initialized_contexts.clear()
-        if self._receive_task is None or self._receive_task.done():
-            self._receive_task = asyncio.create_task(self._receive_loop())
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            self._initialized_contexts.clear()
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = asyncio.create_task(self._receive_loop())
+            if self._keepalive_task is None or self._keepalive_task.done():
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def configure(self, settings: TTSStreamSettings) -> None:
-        """Apply new settings. A voice or URL-level change forces a reconnect."""
-        needs_reconnect = (
-            settings.voice != self._settings.voice
-            or settings.model != self._settings.model
-            or settings.codec != self._settings.codec
-            or settings.sample_rate != self._settings.sample_rate
-            or settings.language != self._settings.language
-        )
+        """Apply new settings. Reconnect only when the connection itself — the
+        wire URL (voice/model/codec/rate, and language only on enforcing
+        models) or the handshake credential — actually changes; anything else
+        (e.g. a language flip on a non-enforcing model, per-context
+        voice_settings) applies without dropping the socket."""
+        old_url = self._build_url()
+        old_key = self._settings.api_key
         self._settings = settings
+        needs_reconnect = (
+            self._build_url() != old_url or settings.api_key != old_key
+        )
         if needs_reconnect and self._ws is not None:
             await self._teardown_socket()
 
@@ -161,6 +222,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
 
     async def cancel(self, generation_id: str) -> None:
         self._end_generation(generation_id)
+        self._generation_bytes.pop(generation_id, None)
         if generation_id in self._initialized_contexts:
             self._initialized_contexts.discard(generation_id)
             if self._ws is not None and self._ws.state is State.OPEN:
@@ -173,6 +235,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._closed = True
         self._live_generations.clear()
         self._initialized_contexts.clear()
+        self._generation_bytes.clear()
         ws = self._ws
         if ws is not None and ws.state is State.OPEN:
             # Two-step close: ask the server to close, then wait briefly so we
@@ -203,9 +266,9 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         if params.get("sync_alignment"):
             url += "&sync_alignment=true"
         if s.language and model in _LANGUAGE_ENFORCING_MODELS:
-            iso = to_provider_language("elevenlabs", s.language)
+            iso = elevenlabs_language_code(model, s.language)
             if iso:
-                url += f"&language_code={iso.split('-')[0]}"
+                url += f"&language_code={iso}"
         return url
 
     def _context_init(self, context_id: str) -> dict:
@@ -276,8 +339,23 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
 
         if is_final:
             if self.generation_alive(context):
+                delivered = self._generation_bytes.pop(context, 0)
                 self._end_generation(context)
                 self._initialized_contexts.discard(context)
+                if not delivered:
+                    # No audio at all: the server ended the generation without
+                    # telling us why. The REST endpoint does report the reason
+                    # (auth/payment/quota), so say that rather than emitting a
+                    # "successful" final that renders as silence.
+                    await self._emit_error(
+                        "upstream",
+                        "ElevenLabs ended the generation without returning any "
+                        "audio. The REST text-to-speech endpoint reports the "
+                        "underlying reason (account, quota or voice/model "
+                        "configuration).",
+                        generation_id=context,
+                    )
+                    return
                 await self._emit(TTSStreamEvent(kind="final", generation_id=context))
             return
 
@@ -292,6 +370,9 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
                 logger.warning("elevenlabs: discarding invalid base64 audio chunk")
                 return
             if audio:
+                self._generation_bytes[context] = (
+                    self._generation_bytes.get(context, 0) + len(audio)
+                )
                 await self._emit(TTSStreamEvent(
                     kind="audio", generation_id=context, audio=audio,
                 ))
@@ -322,6 +403,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._receive_task = None
         self._keepalive_task = None
         self._initialized_contexts.clear()
+        self._generation_bytes.clear()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:

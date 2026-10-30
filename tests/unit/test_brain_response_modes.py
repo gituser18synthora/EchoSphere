@@ -1,0 +1,569 @@
+"""Workflow response modes in the live voice brain.
+
+The workflow engine decides WHAT happened; the node's response mode decides
+only how the reply is worded. Pinned here:
+- fixed replies speak the authored text with ZERO generation calls;
+- exact replies are never paraphrased or language-adapted;
+- grounded informational replies stream through normal generation (one call)
+  with the authored text as the provider-failure fallback;
+- grounded replies that pause on a question use ONE constrained validated
+  call: filler that drops the pending ask, missing must-include literals, a
+  wrong-language reply or a provider failure all fall back to the authored
+  text — never silence, never an unasked question;
+- a grounded turn never makes more than one response-generation call.
+"""
+
+import asyncio
+
+from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.speech_style import EVERYDAY_SPEECH_INSTRUCTION
+from shared.providers.base import ProviderError
+from voice_runtime.brain import ConversationBrain
+
+
+class _RecorderStub:
+    def __init__(self):
+        self.events = []
+        self.session_id = "s-test"
+        self.usage = {"kb_searches": 0, "llm_output_tokens": 0,
+                      "llm_input_tokens": 0}
+        self.turns = []
+        self.language = "en-IN"
+
+    def add_event(self, kind, **data):
+        self.events.append((kind, data))
+
+    def add_turn(self, turn):
+        self.turns.append(turn)
+
+    async def flush_event(self, kind, **data):
+        self.events.append((kind, data))
+
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+    def event_kinds(self):
+        return [kind for kind, _ in self.events]
+
+
+class _WorkflowStub:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def handle_turn_detailed(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+class _LLMStub:
+    """Counts constrained generate() and streamed stream() calls."""
+
+    def __init__(self, generate_reply="", stream_reply="Generated reply.",
+                 fail_generate=False, fail_stream=False):
+        self.generate_reply = generate_reply
+        self.stream_reply = stream_reply
+        self.fail_generate = fail_generate
+        self.fail_stream = fail_stream
+        self.generate_calls = []
+        self.stream_systems = []
+
+    async def generate(self, messages, *, system=None, temperature=None,
+                       max_tokens=None, tools=None):
+        self.generate_calls.append({"messages": messages, "system": system})
+        if self.fail_generate:
+            raise RuntimeError("provider down")
+        reply = self.generate_reply
+
+        class _Result:
+            text = reply
+            input_tokens = 80
+            output_tokens = 30
+
+        return _Result()
+
+    def stream(self, history, *, system, temperature, max_tokens):
+        self.stream_systems.append(system)
+        reply = self.stream_reply
+        fail = self.fail_stream
+
+        async def _gen():
+            if fail:
+                raise ProviderError("stub", "timeout", "provider down")
+            yield reply
+
+        return _gen()
+
+
+def make_brain(workflow_engine, llm, language="en-IN") -> ConversationBrain:
+    config = ResolvedBotConfig(
+        tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
+        published=True, language="en-IN", languages=["en-IN", "hi-IN"],
+        stt={"provider": "sarvam"}, system_prompt="You are Test.",
+    )
+    brain = ConversationBrain(
+        config=config, llm=llm, recorder=_RecorderStub(),
+        workflow_engine=workflow_engine, finalize_grace=0.05,
+    )
+    brain._pushed = []
+    brain._notified = []
+
+    async def _push(frame, direction=None):
+        brain._pushed.append(frame)
+
+    async def _notify(payload):
+        brain._notified.append(payload)
+
+    brain.push_frame = _push
+    brain._notify_client = _notify
+
+    def _create_task(coro, name=None):
+        return asyncio.get_event_loop().create_task(coro)
+
+    async def _cancel_task(task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    brain.create_task = _create_task
+    brain.cancel_task = _cancel_task
+    brain._conversation_language = language
+    brain._active_workflow = "modes_flow"
+    return brain
+
+
+def wf_result(reply, *, mode="fixed", directives=(), must_include=(),
+              node_prompt=None, done=True):
+    return {
+        "reply": reply, "done": done,
+        "status": "done" if done else "collecting",
+        "source": "definition", "workflowId": "wf_1", "trace": ["n_x"],
+        "slots": {}, "handoffQueue": None,
+        "offScript": False, "nodePrompt": node_prompt, "signal": None,
+        "responseMode": mode,
+        "responseDirectives": list(directives),
+        "responseMustInclude": list(must_include),
+    }
+
+
+AUTHORED = "Your booking is confirmed in our system. Details or voucher?"
+GOAL = "Confirm the booking is confirmed and offer details or voucher."
+
+
+class TestFixedAndExact:
+    async def test_fixed_reply_makes_no_generation_call(self):
+        llm = _LLMStub()
+        brain = make_brain(_WorkflowStub(wf_result("Authored text.")), llm)
+
+        await brain._handle_turn("hello")
+
+        assert llm.generate_calls == [] and llm.stream_systems == []
+        assert brain._history[-1]["content"] == "Authored text."
+
+    async def test_exact_reply_is_never_adapted_even_cross_language(self):
+        """An exact node spoken to a Hindi caller stays verbatim: no
+        constrained translation, no generation — wording integrity wins."""
+        llm = _LLMStub()
+        exact = "Never share your OTP, CVV or PIN on this call."
+        brain = make_brain(
+            _WorkflowStub(wf_result(exact, mode="exact")), llm, language="hi-IN",
+        )
+
+        await brain._handle_turn("ठीक है")
+
+        assert llm.generate_calls == [] and llm.stream_systems == []
+        assert brain._history[-1]["content"] == exact
+
+
+class TestGroundedInformational:
+    async def test_streams_once_with_directive_and_script(self):
+        llm = _LLMStub(stream_reply="Great news — your booking is confirmed!")
+        brain = make_brain(
+            _WorkflowStub(wf_result(AUTHORED, mode="llm_grounded",
+                                    directives=[GOAL])),
+            llm,
+        )
+
+        await brain._handle_turn("is my booking okay?")
+
+        assert llm.generate_calls == []          # constrained path unused
+        assert len(llm.stream_systems) == 1      # exactly ONE generation call
+        system = llm.stream_systems[0]
+        assert system.count(EVERYDAY_SPEECH_INSTRUCTION) == 1
+        assert "Deliver the call flow's outcome" in system
+        assert GOAL in system
+        assert AUTHORED in system
+        assert "Never claim an action succeeded" in system
+        assert brain._history[-1]["content"] == (
+            "Great news — your booking is confirmed!"
+        )
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_reply_grounded", {}).get("mode") == "generation"
+
+    async def test_provider_failure_speaks_the_authored_fallback(self):
+        llm = _LLMStub(fail_stream=True)
+        brain = make_brain(
+            _WorkflowStub(wf_result(AUTHORED, mode="llm_grounded",
+                                    directives=[GOAL])),
+            llm,
+        )
+
+        await brain._handle_turn("is my booking okay?")
+
+        assert brain._history[-1]["content"] == AUTHORED
+        assert "orchestration_fallback_reply" in brain._recorder.event_kinds()
+
+
+class TestGroundedConstrained:
+    PROMPT = "Is there anything else I can help you with today?"
+    SCRIPT = ("Done! I've emailed your booking voucher. "
+              "Is there anything else I can help you with today?")
+
+    def _brain(self, llm, must_include=(), language="en-IN"):
+        return make_brain(
+            _WorkflowStub(wf_result(
+                self.SCRIPT, mode="llm_grounded",
+                directives=["Tell the caller the voucher email succeeded."],
+                must_include=must_include,
+                node_prompt=self.PROMPT, done=False,
+            )),
+            llm, language=language,
+        )
+
+    async def test_valid_generation_is_spoken_once(self):
+        llm = _LLMStub(
+            generate_reply="Your voucher is on its way to your email — "
+                           "anything else I can help with?",
+        )
+        brain = self._brain(llm)
+
+        await brain._handle_turn("yes send it")
+
+        assert len(llm.generate_calls) == 1
+        assert llm.stream_systems == []          # exactly ONE generation call
+        system = llm.generate_calls[0]["system"]
+        assert self.PROMPT in system
+        assert "MUST end by asking" in system
+        assert brain._history[-1]["content"].startswith("Your voucher is on its way")
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_reply_grounded", {}).get("mode") == "constrained"
+
+    async def test_filler_that_drops_the_question_falls_back(self):
+        llm = _LLMStub(generate_reply="Please wait, I am sending it now.")
+        brain = self._brain(llm)
+
+        await brain._handle_turn("yes send it")
+
+        assert brain._history[-1]["content"] == self.SCRIPT
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_grounded_fallback", {}).get("reason") == "validation"
+
+    async def test_missing_must_include_literal_falls_back(self):
+        llm = _LLMStub(generate_reply="All sent — anything else?")
+        brain = self._brain(llm, must_include=["voucher"])
+
+        await brain._handle_turn("yes send it")
+
+        assert brain._history[-1]["content"] == self.SCRIPT
+
+    async def test_provider_failure_falls_back_to_authored(self):
+        llm = _LLMStub(fail_generate=True)
+        brain = self._brain(llm)
+
+        await brain._handle_turn("yes send it")
+
+        assert brain._history[-1]["content"] == self.SCRIPT
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_grounded_fallback", {}).get("reason") == "provider"
+
+    async def test_english_caller_gets_hindi_authored_ask_in_english(self):
+        """Regression for cv_cc0a08046e2f (Zepto MDND handover step).
+
+        The caller switched to English mid-workflow; the node is
+        ``llm_grounded`` with a Hindi authored question. The instruction must
+        name English BEFORE the authored text and must not demand the Hindi
+        question "exactly", so a valid English rewrite is spoken instead of
+        falling back to Hindi (which then pulled the caller back to Hindi).
+        """
+        hindi_ask = "ये order आपने किसको सौंपा था — customer को, guard को, या किसी और को?"
+        english = "Who did you hand the order over to — the customer, the guard, or someone else?"
+        llm = _LLMStub(generate_reply=english)
+        brain = make_brain(
+            _WorkflowStub(wf_result(
+                hindi_ask, mode="llm_grounded",
+                directives=["Ask only for the actual handover recipient. "
+                            "Natural Hinglish, one short question only."],
+                node_prompt=hindi_ask, done=False,
+            )),
+            llm, language="en-IN",
+        )
+
+        await brain._handle_turn("Yes, I called and customer told me leave my product.")
+
+        assert len(llm.generate_calls) == 1
+        system = llm.generate_calls[0]["system"]
+        assert system.index("conversation language is English") < system.index(hindi_ask)
+        assert "expressed in natural spoken English" in system
+        assert "asking exactly this" not in system
+        assert system.rstrip().endswith("Respond in natural spoken English.") or \
+            "Respond in natural spoken English." in system
+        assert brain._history[-1]["content"] == english
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_reply_grounded", {}).get("mode") == "constrained"
+
+    async def test_hindi_caller_gets_hindi_or_the_authored_text(self):
+        """A Hindi-language turn accepts a Devanagari grounded reply; a
+        wrong-language one fails the check and speaks the authored text."""
+        hindi = _LLMStub(
+            generate_reply="आपका वाउचर ईमेल कर दिया गया है — और कुछ मदद चाहिए?",
+        )
+        brain = self._brain(hindi, language="hi-IN")
+        await brain._handle_turn("हाँ भेज दीजिए")
+        assert brain._history[-1]["content"].startswith("आपका वाउचर")
+
+        english = _LLMStub(generate_reply="Sent it — anything else?")
+        brain2 = self._brain(english, language="hi-IN")
+        await brain2._handle_turn("हाँ भेज दीजिए")
+        assert brain2._history[-1]["content"] == self.SCRIPT
+
+
+class TestHeardNodeTracking:
+    """The brain tells the engine which workflow replies the caller heard.
+
+    A reply speaks for the nodes the engine reports in ``spokenNodes``; it is
+    heard once the TTS router reports the marked generation complete AND the
+    bot has stopped speaking. A barge-in before that abandons (or un-marks)
+    it, and a grounded fallback never counts.
+    """
+
+    def _result(self, nodes, **kwargs):
+        result = wf_result("Your ticket shows a deduction. What happened?",
+                           done=False, node_prompt="What happened?", **kwargs)
+        result["spokenNodes"] = list(nodes)
+        return result
+
+    async def test_workflow_reply_is_marked_and_heard_nodes_are_reported(self):
+        from voice_runtime.frames import ReplyMarkerFrame, ReplyTTSCompleteFrame
+
+        llm = _LLMStub()
+        stub = _WorkflowStub(self._result(["readout"]))
+        brain = make_brain(stub, llm)
+
+        await brain._handle_turn("hello")
+
+        assert stub.calls[-1]["heard_nodes"] == []
+        markers = [f for f in brain._pushed if isinstance(f, ReplyMarkerFrame)]
+        assert len(markers) == 1 and markers[0].marker == brain._reply_marker
+        assert brain._reply_nodes == ["readout"]
+
+        # Synthesis complete while audio is still playing → wait for stop.
+        brain._bot_speaking = True
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == []
+        brain._bot_speaking = False
+        brain._mark_reply_heard()          # what the BotStoppedSpeaking branch does
+        assert brain._heard_nodes == ["readout"]
+        assert ("workflow_reply_heard", {"nodes": ["readout"]}) in brain._recorder.events
+
+        # The next turn carries the report to the engine.
+        stub.result = self._result(["verify"])
+        await brain._handle_turn("I delivered it")
+        assert stub.calls[-1]["heard_nodes"] == ["readout"]
+
+    async def test_completion_after_audio_ended_marks_heard_immediately(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == ["readout"]
+
+    async def test_stale_marker_or_failed_generation_never_counts(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker + 5))
+        assert brain._reply_nodes == ["readout"] and brain._heard_nodes == []
+        brain._on_reply_tts_complete(
+            ReplyTTSCompleteFrame(marker=brain._reply_marker, failed=True)
+        )
+        assert brain._reply_nodes == [] and brain._heard_nodes == []
+
+    async def test_barge_in_before_completion_abandons_the_reply(self):
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = True
+        brain._on_reply_interrupted()
+        assert brain._reply_nodes == [] and brain._heard_nodes == []
+        assert any(kind == "workflow_reply_interrupted" and data.get("nodes") == ["readout"]
+                   for kind, data in brain._recorder.events)
+
+    async def test_barge_in_during_the_tail_unmarks_a_reply_marked_at_completion(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False        # a gap: synthesis done, tail buffered
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == ["readout"]
+        brain._bot_speaking = True         # tail plays, caller talks over it
+        brain._on_reply_interrupted()
+        assert brain._heard_nodes == []
+
+    async def test_speech_after_a_fully_played_reply_keeps_it_heard(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        brain._on_reply_interrupted()      # caller speaks after the reply ended
+        assert brain._heard_nodes == ["readout"]
+
+    async def test_grounded_fallback_drops_the_nodes(self):
+        """The authored fallback is not the directive's utterance (a readout
+        fallback carries no ticket facts): it can never count as heard."""
+        from voice_runtime.frames import ReplyMarkerFrame
+
+        llm = _LLMStub(fail_generate=True)
+        result = self._result(["readout"], mode="llm_grounded",
+                              directives=["Read the ticket facts, then ask."])
+        brain = make_brain(_WorkflowStub(result), llm)
+        await brain._handle_turn("hello")
+        assert "workflow_grounded_fallback" in brain._recorder.event_kinds()
+        assert brain._reply_nodes == []
+        assert not [f for f in brain._pushed if isinstance(f, ReplyMarkerFrame)]
+
+    async def test_new_turn_resets_the_tracking_state(self):
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._begin_reply_tracking()
+        assert brain._reply_nodes == [] and not brain._reply_marker_pushed
+        assert not brain._reply_tts_complete and not brain._reply_heard
+
+
+class TestOffScriptInstructionCarriesCollectedFacts:
+    def test_paused_flow_instruction_lists_the_slots(self):
+        brain = make_brain(_WorkflowStub(wf_result("x")), _LLMStub())
+        result = {"nodePrompt": "ये order आपने किसको सौंपा था?",
+                  "slots": {"m_reached_location": "yes (reached the location)",
+                            "m_called_customer": "yes (called the customer)",
+                            "m_issue_description": "a very long story " * 10,
+                            "mock": {"nested": True}}}
+        text = brain._workflow_context_instruction(result)
+        assert "ALREADY collected" in text
+        assert "m_reached_location: yes (reached the location)" in text
+        assert "m_called_customer: yes (called the customer)" in text
+        assert "m_issue_description" not in text and "nested" not in text
+        assert "never ask for these again" in text
+        assert brain._workflow_context_instruction({"nodePrompt": "q", "slots": {}}).startswith("\n\n# Paused call flow")
+
+
+class TestPartiallyHeardReply:
+    """A barge-in during the reply's LAST sentence (the question) still means
+    the content sentences were heard (cv_fd720f2e9024: ticket facts played,
+    only "बताइए — क्या हुआ था?" was cut)."""
+
+    def _cut_brain(self, played):
+        from voice_runtime.frames import ReplyTTSInterruptedFrame
+
+        brain = make_brain(_WorkflowStub(wf_result("x")), _LLMStub())
+        brain._reply_marker = 3
+        brain._reply_cut = {"marker": 3, "nodes": ["n_ask_issue_desc"], "played": played}
+        return brain, ReplyTTSInterruptedFrame
+
+    def test_all_but_the_last_sentence_played_counts_as_heard(self):
+        brain, Frame = self._cut_brain(played=7.2)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(80, 4.3), (60, 2.7), (20, 1.5)]))
+        assert brain._heard_nodes == ["n_ask_issue_desc"]
+        assert ("workflow_reply_heard", {"nodes": ["n_ask_issue_desc"], "partial": True,
+                                         "sentences_heard": 2, "sentences_total": 3}) in brain._recorder.events
+
+    def test_cut_during_the_facts_is_not_heard(self):
+        brain, Frame = self._cut_brain(played=3.0)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(80, 4.3), (60, 2.7), (20, 1.5)]))
+        assert brain._heard_nodes == []
+
+    def test_single_sentence_reply_is_heard_only_in_full(self):
+        brain, Frame = self._cut_brain(played=9.0)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(120, 6.0)]))
+        assert brain._heard_nodes == []
+
+    def test_stale_marker_is_ignored(self):
+        brain, Frame = self._cut_brain(played=9.0)
+        brain._on_reply_tts_interrupted(Frame(marker=99, sentences=[(80, 4.3), (20, 1.5)]))
+        assert brain._heard_nodes == []
+
+
+class TestWorkflowRollbackOnLateMerge:
+    async def test_rewinding_a_workflow_turn_rolls_the_engine_back(self):
+        class _RollbackStub(_WorkflowStub):
+            def __init__(self, result):
+                super().__init__(result)
+                self.rollbacks = []
+
+            async def rollback_last_turn(self, **kwargs):
+                self.rollbacks.append(kwargs)
+                return True
+
+        stub = _RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())          # active workflow "modes_flow"
+        brain._pending_workflow_question = "May we continue?"
+        await brain._handle_turn("okay")
+        assert brain._pending_workflow_question == "What happened?"
+        assert brain._open_turn_workflow == ("modes_flow", "modes_flow", "okay")
+        brain._open_turn_text = "okay"
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == [{"session_id": "s-test", "workflow_name": "modes_flow",
+                                   "user_text": "okay"}]
+        assert brain._active_workflow == "modes_flow"               # restored to the pre-turn value
+        assert brain._orchestration_state()["pending_question"] == "May we continue?"
+        assert "workflow_turn_rolled_back" in brain._recorder.event_kinds()
+        assert brain._pending_segments == ["okay"]
+
+
+class TestWorkflowRollbackMarkerBelongsToOneTurn:
+    """cv_edbfbb5141a4 / cv_2e2d8c7ce20d: the workflow marker of an EARLIER
+    turn survived and a late-final merge of a fragment that never reached the
+    workflow rolled the flow back by whole turns (ticket readout spoken twice)."""
+
+    class _RollbackStub(_WorkflowStub):
+        def __init__(self, result):
+            super().__init__(result)
+            self.rollbacks = []
+
+        async def rollback_last_turn(self, **kwargs):
+            self.rollbacks.append(kwargs)
+            return True
+
+    async def test_marker_carries_the_turn_text_and_is_cleared_by_a_non_merge_cancel(self):
+        stub = self._RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())
+        await brain._handle_turn("okay")
+        assert brain._open_turn_workflow == ("modes_flow", "modes_flow", "okay")
+        await brain._cancel_generation("barge_in")
+        assert brain._open_turn_workflow is None
+        brain._open_turn_text = "okay"
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == []                                  # nothing to rewind
+
+    async def test_new_dispatch_drops_the_previous_turn_marker(self):
+        stub = self._RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())
+        await brain._handle_turn("okay")
+        assert brain._open_turn_workflow is not None
+        # A new turn is dispatched; its generation is cancelled by a late-final
+        # merge BEFORE it reaches the workflow (classification still running).
+        brain._pending_segments = ["the product"]
+        await brain._consume_pending_turn()
+        assert brain._open_turn_workflow is None                     # marker belongs to no turn yet
+        await brain._cancel_generation("late_transcript_merge")
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == []                                  # the flow is NOT rewound
+        assert brain._active_workflow == "modes_flow"
+        assert brain._pending_segments == ["the product"]            # the text is merged, not lost
+        await brain.cleanup()

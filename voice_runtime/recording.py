@@ -8,11 +8,15 @@
 import asyncio
 import logging
 import time
+import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from shared.bot_config import ResolvedBotConfig
 from shared.db.mongo import Mongo
+from shared.ids import new_id
 from shared.knowledge.security import mask_pii
 
 logger = logging.getLogger(__name__)
@@ -33,30 +37,177 @@ class SessionRecorder:
     """Accumulates turns/events/usage for one call and persists them."""
 
     def __init__(self, session_id: str, config: ResolvedBotConfig, channel: str = "browser",
-                 caller: str | None = None) -> None:
+                 caller: str | None = None, call_id: str | None = None) -> None:
         self.session_id = session_id
         self.config = config
         self.channel = channel
         self.caller = caller
+        # The telephony provider's call id (webhook callId / CallSid): the
+        # handle an integrator holds, persisted on the conversation row.
+        self.call_id = (str(call_id)[:64] or None) if call_id else None
         self.started_at = time.time()
         self.turns: list[TurnRecord] = []
         self.events: list[dict] = []
         self.usage: dict[str, float] = {
             "stt_seconds": 0.0, "stt_requests": 0,
             "llm_input_tokens": 0, "llm_output_tokens": 0,
-            "llm_cached_tokens": 0, "llm_requests": 0, "llm_usage_estimated": 0,
+            "llm_cached_tokens": 0, "llm_reasoning_tokens": 0,
+            "llm_requests": 0, "llm_usage_estimated": 0,
+            # Goal Engine decision calls — billed under the decision model.
+            "decision_llm_requests": 0, "decision_llm_input_tokens": 0,
+            "decision_llm_output_tokens": 0, "decision_llm_cached_tokens": 0,
             "tts_characters": 0, "kb_searches": 0,
+            "stt_characters": 0,
         }
+        # Billable STT audio, accumulated as Decimal from what the provider
+        # actually reported (Sarvam finals carry metrics.audio_duration; the
+        # segmented REST path measures the exact PCM). The usage dict above
+        # mirrors it as float for the Mongo transcript document only.
+        self._stt_seconds = Decimal(0)
+        self._stt_basis: str | None = None  # provider_metrics | pcm
+        self._stt_request_ids: set[str] = set()
+        # Keep background event-persistence tasks alive until they complete.
+        self._background_flushes: set[asyncio.Task] = set()
         # Per-engine TTS breakdown ("provider|model|voice" → counters) so a
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
+        # Conversation-model calls of THIS call: the request options they
+        # sent (set at call start) and the service tier OpenAI reported per
+        # completed call ({"fast": 21}) — see ConversationBrain._note_llm_call.
+        self.llm_request_options: dict | None = None
+        self.llm_service_tiers: dict[str, int] = {}
         self.end_reason: str | None = None
+        # finalize() must run exactly once per call — a duplicate teardown
+        # path (or a replayed hangup signal) must never re-bill, re-summarize
+        # or re-enqueue post-call work.
+        self._finalized = False
+        # FreeSWITCH's account of the disconnect (raw Hangup-Cause plus the
+        # normalized reason), set exactly once by the hangup monitor.
+        self.hangup: dict | None = None
+        # True once a telephony transfer control actually reached the wire.
+        # Teardown branches on it: a transferred caller now belongs to the
+        # human agent, so the channel is never killed and the end reason is
+        # "transferred" rather than a generic shutdown.
+        self.transferred: bool = False
+        # Call outcome captured by the conversation policy (promise_to_pay,
+        # payment_claimed, wrong_number, account_disputed, callback_requested,
+        # complaint_recorded, escalated, …) — updated live by the brain.
+        self.disposition: str | None = None
+        # The customer_contexts row this call ran against, plus the
+        # call-state fields to write back to it at finalize.
+        self.customer_context_id: str | None = None
+        # The generic runtime_context_records row (tenant-defined context),
+        # when the call ran on one — call_state merges into its JSON blob.
+        self.runtime_context_record_id: str | None = None
+        self.call_state: dict = {}
+        # Latest workflow slot values (the brain replaces this after every
+        # workflow turn) — the authoritative, correction-aware answers the
+        # post-call structured summary is derived from.
+        self.workflow_slots: dict = {}
         # Conversation language, live: starts at the bot default and follows
         # the caller (the brain updates it on every detected switch).
         self.language: str = config.language
+        # Control-plane row id, fixed up front so the Mongo transcript and the
+        # MySQL conversation_sessions row are created already linked (the API
+        # looks the transcript up by this id).
+        self.control_plane_id: str = new_id("cv")
+        # The call's guardrail engine (set at call start). Owns transcript
+        # redaction and the trigger ledger persisted at finalize.
+        self.guardrails = None
+        self._guardrail_triggers_persisted = False
+        # Set by CallRecordingWriter when call audio was captured.
+        self.recording_info: dict | None = None
+        # The active audio writer (if recording is enabled) — finalized here
+        # because pipeline teardown does not reliably deliver Cancel/End frames
+        # to processors sitting after the output transport.
+        self.recording_writer: "CallRecordingWriter | None" = None
+
+    def set_recording(self, *, path: str, duration_sec: float, sample_rate: int,
+                      channels: int, size_bytes: int) -> None:
+        self.recording_info = {
+            "path": path,
+            "mimeType": "audio/wav",
+            "durationSec": round(duration_sec, 1),
+            "sampleRate": sample_rate,
+            "channels": channels,
+            "sizeBytes": size_bytes,
+        }
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
+
+    def stt_transcript_characters(self) -> int:
+        """Characters of accepted caller speech, from the final turn list.
+
+        Computed at billing time instead of accumulated per turn: barge-in
+        rewinds and fragment merges pop a user turn and re-run its text as
+        part of a merged turn, and a running counter double-counts exactly
+        those paths. The turn list holds the pre-redaction text, so this is
+        the actual STT output.
+        """
+        return sum(len(t.text or "") for t in self.turns if t.role == "user")
+
+    def _redact_for_transcript(self, text: str) -> str:
+        """Profile-driven redaction for stored turn text. Falls back to the
+        pre-profile PII masking when no engine was attached — stored
+        transcripts are never less protected than before."""
+        if self.guardrails is not None:
+            return self.guardrails.redact_for_persistence(text)
+        return mask_pii(text, kinds={"card_number", "aadhaar", "pan"})
+
+    def add_stt_usage(
+        self,
+        *,
+        seconds: "Decimal | float | str",
+        request_id: str | None = None,
+        basis: str = "provider_metrics",
+    ) -> bool:
+        """Fold one final STT result's billable audio duration into the call.
+
+        ``seconds`` is the provider-reported duration (Sarvam final
+        ``metrics.audio_duration``) or the exact PCM length on the segmented
+        REST path. Deduplicated by provider ``request_id`` so an SDK callback
+        replay or reconnect re-delivery of the same final never double-bills.
+        Returns True when the duration was counted.
+        """
+        if request_id:
+            if request_id in self._stt_request_ids:
+                return False
+            self._stt_request_ids.add(request_id)
+        try:
+            duration = Decimal(str(seconds))
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+        if duration <= 0:
+            return False
+        self._stt_seconds += duration
+        self._stt_basis = self._stt_basis or basis
+        self.usage["stt_seconds"] = float(self._stt_seconds)
+        self.usage["stt_requests"] = int(self.usage.get("stt_requests", 0)) + 1
+        return True
+
+    def configured_models(self) -> dict:
+        """provider/model of each engine in this call's config snapshot."""
+        def label(conf: dict | None) -> str | None:
+            conf = conf or {}
+            if not conf.get("model"):
+                return None
+            return f"{conf.get('provider') or '?'}/{conf['model']}"
+
+        llm = self.config.llm or {}
+        models = {
+            "stt": label(self.config.stt),
+            "tts": label(self.config.tts),
+            "llm": label(llm),
+            "decision": label(llm.get("orchestration")) or label(llm),
+        }
+        # What the conversation-model calls (replies, rewrites, extractors,
+        # classifier) actually sent, and the tier OpenAI reported for them.
+        if self.llm_request_options:
+            models["llm_options"] = dict(self.llm_request_options)
+        if self.llm_service_tiers:
+            models["llm_service_tiers"] = dict(self.llm_service_tiers)
+        return models
 
     def add_tts_usage(self, *, provider: str, model: str, voice: str, characters: int) -> None:
         """Called by the TTS router once per completed generation."""
@@ -69,6 +220,15 @@ class SessionRecorder:
         entry["characters"] += characters
         entry["requests"] += 1
 
+    def set_hangup(self, info: dict) -> bool:
+        """Record how FreeSWITCH says the call ended. First writer wins —
+        duplicate event deliveries can never rewrite the disconnect verdict.
+        Returns True when this call stored it."""
+        if self.hangup is not None:
+            return False
+        self.hangup = dict(info)
+        return True
+
     def add_event(self, kind: str, **data) -> None:
         self.events.append({
             "kind": kind,
@@ -79,6 +239,29 @@ class SessionRecorder:
     async def flush_event(self, kind: str, **data) -> None:
         """Persist a single event immediately (barge-in, handoff, errors)."""
         self.add_event(kind, **data)
+        await self._persist_event(kind, data)
+
+    def flush_event_soon(self, kind: str, **data) -> None:
+        """Record the event now, persist it in the background.
+
+        For events emitted on the realtime path (interruption handling, the
+        window between a transcript final and the reply's first audio): the
+        in-memory record still reaches the transcript at finalize, but the
+        Mongo round trip must never sit ahead of caller-audible work — a
+        degraded Mongo (serverSelectionTimeoutMS) otherwise stalls the call
+        for seconds per event.
+        """
+        self.add_event(kind, **data)
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._persist_event(kind, data)
+            )
+        except RuntimeError:
+            return  # no running loop (sync tests) — the in-memory event stands
+        self._background_flushes.add(task)
+        task.add_done_callback(self._background_flushes.discard)
+
+    async def _persist_event(self, kind: str, data: dict) -> None:
         try:
             await Mongo.voice_events().insert_one({
                 "session_id": self.session_id,
@@ -92,13 +275,28 @@ class SessionRecorder:
             logger.warning("voice event write failed (%s)", kind)
 
     async def finalize(self, reason: str = "completed") -> None:
-        """Persist transcript + session summary. Called once at call end."""
+        """Persist transcript + session summary. Runs exactly once: a second
+        call (another teardown path, a duplicate hangup signal) is a no-op —
+        the first reason stands and nothing is re-billed or re-enqueued."""
+        if self._finalized:
+            return
+        self._finalized = True
         self.end_reason = reason
         duration = int(time.time() - self.started_at)
+        if self._background_flushes:
+            # Drain deferred event writes so nothing scheduled during the call
+            # races the transcript write or is cancelled by teardown.
+            await asyncio.gather(
+                *list(self._background_flushes), return_exceptions=True
+            )
+        if self.recording_writer is not None:
+            # Flush the audio tail and wrap the WAV — idempotent with the
+            # pipeline's own stop hook, whichever fires first.
+            await self.recording_writer.close()
         transcript = [
             {
                 "role": t.role,
-                "text": mask_pii(t.text, kinds={"card_number", "aadhaar", "pan"}),
+                "text": self._redact_for_transcript(t.text),
                 "ts": t.timestamp,
                 "route": t.route,
                 "kbUsed": t.kb_used,
@@ -108,25 +306,41 @@ class SessionRecorder:
             for t in self.turns
         ]
         try:
+            payload = {
+                "session_id": self.session_id,
+                "control_plane_id": self.control_plane_id,
+                "call_id": self.call_id,
+                "tenant_id": self.config.tenant_id,
+                "bot_id": self.config.bot_id,
+                "channel": self.channel,
+                "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc),
+                "duration_sec": duration,
+                "end_reason": reason,
+                "turns": transcript,
+                "events": self.events,
+                "usage": self.usage,
+                "tts_usage": list(self.tts_usage.values()),
+                "bot_version": self.config.version,
+                # The engines this call was configured with (metrics: STT model
+                # per call, decision model); per-turn TTS engines are on
+                # turn_timing.tts_model, per-engine characters on tts_usage.
+                "models": self.configured_models(),
+                "language": self.language,
+                "disposition": self.disposition,
+                "customer_context_id": self.customer_context_id,
+                "runtime_context_record_id": self.runtime_context_record_id,
+                # Which published prompt version this call actually spoke from.
+                "prompt_id": self.config.prompt_id or None,
+                "prompt_version": self.config.prompt_version,
+                "prompt_mode": self.config.prompt_mode or None,
+            }
+            if self.recording_info:
+                payload["recording"] = self.recording_info
+            if self.hangup:
+                payload["hangup"] = self.hangup
             await Mongo.transcripts().update_one(
                 {"session_id": self.session_id},
-                {
-                    "$set": {
-                        "session_id": self.session_id,
-                        "tenant_id": self.config.tenant_id,
-                        "bot_id": self.config.bot_id,
-                        "channel": self.channel,
-                        "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc),
-                        "duration_sec": duration,
-                        "end_reason": reason,
-                        "turns": transcript,
-                        "events": self.events,
-                        "usage": self.usage,
-                        "tts_usage": list(self.tts_usage.values()),
-                        "bot_version": self.config.version,
-                        "language": self.language,
-                    }
-                },
+                {"$set": payload},
                 upsert=True,
             )
         except Exception:  # noqa: BLE001
@@ -134,22 +348,83 @@ class SessionRecorder:
 
         await asyncio.to_thread(self._write_control_plane_row, duration, reason)
 
+        # Tenant-scoped guardrail-trigger ledger (MySQL), written once —
+        # includes the transcript-redaction hits recorded just above.
+        if (
+            self.guardrails is not None
+            and self.guardrails.hits
+            and not self._guardrail_triggers_persisted
+        ):
+            self._guardrail_triggers_persisted = True
+            from shared.guardrails import persist_triggers_sync
+
+            await asyncio.to_thread(
+                persist_triggers_sync,
+                list(self.guardrails.hits),
+                tenant_id=self.config.tenant_id,
+                bot_id=self.config.bot_id,
+                session_id=self.session_id,
+                channel=self.channel,
+                effective=self.guardrails.effective,
+            )
+
+        if self.customer_context_id and self.call_state:
+            # Record verification/dispute/complaint/payment/callback state
+            # back onto the customer context row (whitelisted fields only).
+            from shared.customer_context import record_call_state_sync
+
+            await asyncio.to_thread(
+                record_call_state_sync,
+                self.customer_context_id,
+                last_call_id=self.session_id,
+                **self.call_state,
+            )
+        if self.runtime_context_record_id and self.call_state:
+            # Same state, generic path: merged into the record's call_state
+            # JSON — never into the tenant-owned data payload.
+            from shared.runtime_context import record_context_call_state
+
+            await record_context_call_state(
+                self.runtime_context_record_id,
+                {**self.call_state, "last_call_id": self.session_id},
+            )
+
+        # Durable post-call intelligence: enqueue the (idempotent) analysis
+        # job AFTER everything above is persisted so the processor always
+        # finds the transcript. The heavy work runs in the background worker
+        # — teardown is never delayed, and a repeated finalize/hangup finds
+        # the existing row and does nothing.
+        try:
+            from shared.post_call.processor import (
+                enqueue_post_call,
+                notify_post_call_worker,
+            )
+
+            enqueued = await asyncio.to_thread(enqueue_post_call, self)
+            if enqueued:
+                notify_post_call_worker()
+        except Exception:  # noqa: BLE001 — teardown must never fail on this
+            logger.exception("post-call enqueue failed for %s", self.session_id)
+
     def _write_control_plane_row(self, duration: int, reason: str) -> None:
         from decimal import Decimal
 
         from shared.billing.metering import record_usage_event, rollup_call
         from shared.db.mysql import get_sessionmaker
-        from shared.ids import new_id
         from shared.models import ConversationSession
 
         session = get_sessionmaker()()
         try:
-            existing = session.get(ConversationSession, self.session_id)
+            existing = session.get(ConversationSession, self.control_plane_id)
             if existing is not None:
                 return  # finalize already persisted this call — never re-bill
             escalated = any(e.get("kind") == "handoff" for e in self.events)
             row = ConversationSession(
-                id=new_id("cv"),
+                id=self.control_plane_id,
+                # The link to this call's usage events — without it the stored
+                # cost cannot be audited or recomputed later.
+                session_id=self.session_id,
+                call_id=self.call_id,
                 tenant_id=self.config.tenant_id,
                 bot_id=self.config.bot_id,
                 channel="voice" if self.channel != "browser" else "web",
@@ -160,13 +435,18 @@ class SessionRecorder:
                 escalation_reason="human_handoff" if escalated else None,
                 language=self.language,
                 status="completed",
+                disposition=self.disposition,
+                prompt_id=self.config.prompt_id or None,
+                prompt_version=self.config.prompt_version,
             )
             session.add(row)
 
-            ai_cost = self._record_usage_events(
+            # Every billable component of the call, telephony included: the
+            # stored total must equal the sum of this call's usage events or the
+            # list view and the auditable breakdown disagree.
+            row.cost_usd = self._record_usage_events(
                 session, record_usage_event, duration
             )
-            row.cost_usd = ai_cost
 
             occurred = datetime.fromtimestamp(self.started_at, tz=timezone.utc)
             rollup_call(
@@ -224,29 +504,58 @@ class SessionRecorder:
                 input_tokens=int(usage.get("llm_input_tokens") or 0),
                 output_tokens=int(usage.get("llm_output_tokens") or 0),
                 cached_tokens=int(usage.get("llm_cached_tokens") or 0),
+                reasoning_tokens=int(usage.get("llm_reasoning_tokens") or 0),
                 usage_source="estimated" if usage.get("llm_usage_estimated") else "provider",
+            )
+            if event is not None:
+                total += Decimal(str(event.cost_usd))
+        if usage.get("decision_llm_requests"):
+            # The decision model usually differs from the conversation model
+            # (platform default gpt-6-luna). Priced at the model's standard
+            # rates: the fast-tier premium is not modelled in provider_pricing.
+            decision_conf = llm_conf.get("orchestration") or {}
+            event = _record(
+                capability="llm",
+                provider_code=decision_conf.get("provider") or llm_conf.get("provider") or "openai",
+                model_code=decision_conf.get("model") or llm_conf.get("model") or "",
+                request_id=f"{self.session_id}:llm-decision",
+                requests=int(usage.get("decision_llm_requests") or 1),
+                input_tokens=int(usage.get("decision_llm_input_tokens") or 0),
+                output_tokens=int(usage.get("decision_llm_output_tokens") or 0),
+                cached_tokens=int(usage.get("decision_llm_cached_tokens") or 0),
+                usage_source="provider",
             )
             if event is not None:
                 total += Decimal(str(event.cost_usd))
 
         stt_conf = self.config.stt or {}
-        stt_seconds = float(usage.get("stt_seconds") or 0)
-        stt_source = "provider"
+        stt_seconds = self._stt_seconds
+        stt_source, stt_basis = "provider", self._stt_basis
         if stt_seconds <= 0 and any(t.role == "user" for t in self.turns):
-            # Realtime WS STT streams audio for the whole call; the connection
-            # duration is the documented billing estimate when the provider
-            # reports no per-utterance duration.
-            stt_seconds = float(duration)
-            stt_source = "estimated"
+            # Fallback of last resort: transcripts exist but no final ever
+            # carried a usable duration (and no PCM was measured). Bill the
+            # connection duration and mark the event clearly as estimated.
+            stt_seconds = Decimal(duration)
+            stt_source, stt_basis = "estimated", "connection_duration"
+            logger.warning(
+                "stt usage fallback for %s: no provider-reported audio "
+                "duration; billing connection duration (%ss)",
+                self.session_id, duration,
+            )
         if stt_seconds > 0:
+            # Mirrored into the usage dict so the transcript document carries
+            # the same figure the usage event bills.
+            self.usage["stt_characters"] = self.stt_transcript_characters()
             event = _record(
                 capability="stt",
                 provider_code=stt_conf.get("provider") or "sarvam",
                 model_code=stt_conf.get("model") or "",
                 request_id=f"{self.session_id}:stt",
                 requests=int(usage.get("stt_requests") or 1),
-                audio_seconds=round(stt_seconds, 3),
+                audio_seconds=stt_seconds.quantize(Decimal("0.001")),
+                characters=self.stt_transcript_characters(),
                 usage_source=stt_source,
+                usage_metadata={"basis": stt_basis} if stt_basis else None,
             )
             if event is not None:
                 total += Decimal(str(event.cost_usd))
@@ -266,8 +575,12 @@ class SessionRecorder:
                 total += Decimal(str(event.cost_usd))
 
         if self.channel not in ("browser", "web") and duration > 0:
-            # Telephony minutes are tracked/priced separately from AI usage.
-            _record(
+            # Telephony minutes are metered on the connection duration (not on
+            # speech), and are folded into the same total as AI usage — a
+            # self-hosted trunk simply prices to zero. Excluding them here made
+            # the stored conversation total silently differ from the sum of its
+            # own usage events the moment a telephony rate was configured.
+            event = _record(
                 capability="telephony",
                 provider_code=self.channel,
                 model_code="",
@@ -275,5 +588,237 @@ class SessionRecorder:
                 audio_seconds=duration,
                 usage_metadata={"direction": "inbound"},
             )
+            if event is not None:
+                total += Decimal(str(event.cost_usd))
 
         return total
+
+
+class CallRecordingWriter:
+    """Streams the call's merged audio to disk and registers the finished WAV.
+
+    Fed by an AudioBufferProcessor at the end of the pipeline (stereo: caller
+    left, bot right). Chunks are appended to a ``.pcm.part`` file off the audio
+    path (thread executor); on stop the raw PCM is wrapped into a WAV next to
+    it and the reference is handed to the SessionRecorder, which persists it on
+    the transcript document. Any failure disables the writer for the rest of
+    the call — recording must never break audio.
+    """
+
+    def __init__(self, recorder: SessionRecorder) -> None:
+        from shared.config import get_settings
+
+        self._recorder = recorder
+        self._relative = f"{recorder.config.tenant_id}/{recorder.session_id}.wav"
+        self._wav_path = Path(get_settings().voice_recordings_dir) / self._relative
+        self._part_path = self._wav_path.with_suffix(".pcm.part")
+        self._sample_rate = 0
+        self._channels = 1
+        self._bytes = 0
+        self._failed = False
+        self._finalized = False
+        # Serializes appends against finalize — the buffer processor delivers
+        # events as detached tasks, so ordering is enforced here.
+        self._lock = asyncio.Lock()
+        # The AudioBufferProcessor feeding this writer; used by close() to
+        # flush its tail buffer, since pipeline teardown does not reliably
+        # deliver Cancel/End frames past the output transport.
+        self.audiobuffer = None
+
+    def _append_sync(self, audio: bytes) -> None:
+        self._part_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._part_path, "ab") as fh:
+            fh.write(audio)
+
+    async def append(self, audio: bytes, sample_rate: int, num_channels: int) -> None:
+        async with self._lock:
+            if self._failed or self._finalized or not audio:
+                return
+            self._sample_rate = sample_rate
+            self._channels = num_channels
+            try:
+                await asyncio.to_thread(self._append_sync, audio)
+                self._bytes += len(audio)
+            except Exception:  # noqa: BLE001
+                self._failed = True
+                logger.warning("call recording write failed for %s — recording disabled",
+                               self._recorder.session_id, exc_info=True)
+
+    def _wrap_wav_sync(self) -> None:
+        with wave.open(str(self._wav_path), "wb") as wav:
+            wav.setnchannels(self._channels)
+            wav.setsampwidth(2)
+            wav.setframerate(self._sample_rate)
+            with open(self._part_path, "rb") as raw:
+                while chunk := raw.read(1 << 20):
+                    wav.writeframes(chunk)
+        self._part_path.unlink(missing_ok=True)
+
+    async def close(self) -> None:
+        """Flush the processor's tail audio, then finalize the WAV.
+
+        Called by SessionRecorder.finalize() at call end (the authoritative
+        path); the processor's own on_recording_stopped hook finalizes too
+        when a graceful EndFrame reaches it first — both are idempotent.
+        """
+        buffer = self.audiobuffer
+        if buffer is not None:
+            try:
+                # Emits the remaining buffered audio through on_audio_data and
+                # fires on_recording_stopped. Handlers are pinned to sync
+                # dispatch in the pipeline, so this awaits the actual writes.
+                await buffer.stop_recording()
+            except Exception:  # noqa: BLE001
+                logger.warning("audio buffer stop failed for %s",
+                               self._recorder.session_id, exc_info=True)
+        await self.finalize()
+
+    async def finalize(self) -> None:
+        """Wrap the streamed PCM into a WAV. Idempotent."""
+        async with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            if self._failed or self._bytes == 0 or self._sample_rate <= 0:
+                await asyncio.to_thread(self._part_path.unlink, missing_ok=True)
+                return
+            try:
+                await asyncio.to_thread(self._wrap_wav_sync)
+                frame_bytes = 2 * self._channels
+                duration = self._bytes / (self._sample_rate * frame_bytes)
+                self._recorder.set_recording(
+                    path=self._relative,
+                    duration_sec=duration,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    size_bytes=self._wav_path.stat().st_size,
+                )
+                logger.info("call recording saved for %s (%.1fs)",
+                            self._recorder.session_id, duration)
+            except Exception:  # noqa: BLE001
+                logger.warning("call recording finalize failed for %s",
+                               self._recorder.session_id, exc_info=True)
+
+
+class AlignedStereoRecorder:
+    """Wall-clock-aligned stereo call audio (caller left, bot right).
+
+    Replaces pipecat's AudioBufferProcessor for call recording. That
+    processor advances the timeline on the ARRIVAL clock of bot audio; output
+    transports that push TTS downstream faster than real time (the browser
+    WebSocket — the client buffers and paces playback itself) made every
+    reply burst inflate the timeline: both tracks were padded up to the burst
+    position, so recordings ran materially longer than the session and the
+    tracks drifted apart (observed: 113.8 s recording for an 86 s call).
+
+    Here the CALLER (microphone) stream is the master clock — it is captured
+    in real time on every transport. Bot audio queues as it arrives and is
+    laid onto the timeline no faster than the caller clock advances, starting
+    at the wall-clock position where its burst began (which is when the
+    client starts playing it). Real input gaps are silence-filled exactly
+    once, every aligned region is emitted exactly once (stop is idempotent),
+    and file writes run on a dedicated task so disk latency never touches the
+    audio path. The processor only observes frames — the audio sent to STT
+    and to the caller is byte-identical with or without it.
+
+    Framework-facing: subclasses FrameProcessor lazily (pipecat import kept
+    inside pipeline assembly) — see :func:`build_aligned_recorder`.
+    """
+
+    # Implemented in voice_runtime.pipeline via build_aligned_recorder, which
+    # binds this logic into a FrameProcessor. Kept here as the single home of
+    # the alignment algorithm so it is unit-testable without pipecat frames.
+
+    def __init__(self, *, sample_rate: int, chunk_seconds: float = 10.0,
+                 max_bot_backlog_seconds: float = 120.0) -> None:
+        self._rate = int(sample_rate)
+        self._chunk_bytes = int(self._rate * 2 * chunk_seconds)
+        self._bot_backlog_cap = int(self._rate * 2 * max_bot_backlog_seconds)
+        self._user = bytearray()
+        self._bot = bytearray()
+        self._bot_queue = bytearray()
+        self._last_user_at: float | None = None
+        self._stopped = False
+
+    @property
+    def sample_rate(self) -> int:
+        return self._rate
+
+    @staticmethod
+    def _interleave(left: bytes, right: bytes) -> bytes:
+        out = bytearray(len(left) * 2)
+        out[0::4] = left[0::2]
+        out[1::4] = left[1::2]
+        out[2::4] = right[0::2]
+        out[3::4] = right[1::2]
+        return bytes(out)
+
+    def add_user_audio(self, audio: bytes, *, now: float | None = None) -> bytes:
+        """Fold one caller frame in; returns a ready stereo chunk (or b"")."""
+        if self._stopped or not audio:
+            return b""
+        now = time.monotonic() if now is None else now
+        if self._last_user_at is not None:
+            # Real capture gap (muted mic, transport stall): silence, once.
+            elapsed = now - self._last_user_at
+            gap = elapsed - len(audio) / (self._rate * 2)
+            if gap > 0.2:
+                pad = int(gap * self._rate * 2)
+                self._user.extend(b"\x00" * (pad - pad % 2))
+        self._last_user_at = now
+        self._user.extend(audio)
+        self._place_bot_backlog()
+        return self._take_chunk()
+
+    def add_bot_audio(self, audio: bytes) -> bytes:
+        """Fold one bot frame in; returns a ready stereo chunk (or b"")."""
+        if self._stopped or not audio:
+            return b""
+        if not self._bot_queue and len(self._bot) < len(self._user):
+            # A new utterance starts NOW (current caller-clock position);
+            # the stretch before it was genuine silence on the bot track.
+            self._bot.extend(b"\x00" * (len(self._user) - len(self._bot)))
+        self._bot_queue.extend(audio)
+        if len(self._bot_queue) > self._bot_backlog_cap:
+            del self._bot_queue[: len(self._bot_queue) - self._bot_backlog_cap]
+        self._place_bot_backlog()
+        return self._take_chunk()
+
+    def _place_bot_backlog(self) -> None:
+        """Move queued bot audio onto the already-elapsed caller timeline."""
+        need = len(self._user) - len(self._bot)
+        if need <= 0 or not self._bot_queue:
+            return
+        take = min(need, len(self._bot_queue))
+        self._bot.extend(self._bot_queue[:take])
+        del self._bot_queue[:take]
+
+    def _align_bot_to_user(self) -> None:
+        self._place_bot_backlog()
+        need = len(self._user) - len(self._bot)
+        if need > 0:  # backlog exhausted → the remainder was real silence
+            self._bot.extend(b"\x00" * need)
+
+    def _take_chunk(self, *, force: bool = False) -> bytes:
+        if len(self._user) < self._chunk_bytes and not force:
+            return b""
+        self._align_bot_to_user()
+        n = min(len(self._user), len(self._bot))
+        if n <= 0:
+            return b""
+        chunk = self._interleave(bytes(self._user[:n]), bytes(self._bot[:n]))
+        del self._user[:n]
+        del self._bot[:n]
+        return chunk
+
+    def stop(self) -> bytes:
+        """Final chunk: place the remaining bot backlog (audio the caller was
+        still hearing when the call ended — bounded) and close. Idempotent."""
+        if self._stopped:
+            return b""
+        self._stopped = True
+        self._bot.extend(self._bot_queue)
+        self._bot_queue.clear()
+        if len(self._user) < len(self._bot):
+            self._user.extend(b"\x00" * (len(self._bot) - len(self._user)))
+        return self._take_chunk(force=True)

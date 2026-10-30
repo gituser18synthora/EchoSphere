@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
-from backend.core.deps import get_current_user, require_tenant_admin, resolve_tenant_id
+from backend.core.deps import require_permission, require_tenant_admin, resolve_tenant_id
 from shared.errors import NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
@@ -22,7 +22,7 @@ router = APIRouter(tags=["Integrations"])
 @router.get("/integrations")
 def list_integrations(
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("integrations.manage", "tenants.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)

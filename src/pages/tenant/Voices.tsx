@@ -12,11 +12,13 @@ import {
   setVoiceCloneStatus,
   updateVoiceClone,
 } from "@/services/api";
-import type { ApiRequestError } from "@/services/http";
+import { getToken, type ApiRequestError } from "@/services/http";
 import type {
   VoiceCloneConfig,
   VoiceCloneParamSpec,
   VoiceCloneProviderInfo,
+  VoiceCloneRecordingConfig,
+  VoiceCloneSourceAudio,
   VoiceProfile,
 } from "@/types/domain";
 import {
@@ -37,6 +39,76 @@ const DEFAULT_SAMPLE_TEXT = "Hello! This is a preview of my cloned voice on Echo
 
 const fmtFileSize = (bytes: number) =>
   bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+/** Fallbacks when /voice-clones/config predates the recording block. */
+const DEFAULT_RECORDING_CONFIG: VoiceCloneRecordingConfig = {
+  minSeconds: 5,
+  recommendedMinSeconds: 30,
+  recommendedMaxSeconds: 40,
+  maxSeconds: 300,
+};
+
+/** Read-aloud scripts (~30–40s at a natural pace). Recording guidance only —
+ *  never submitted with the voice. */
+const RECORDING_SCRIPTS = [
+  {
+    id: "hi",
+    label: "हिन्दी (Hindi)",
+    text:
+      "नमस्कार, मेरा नाम आपके वॉइस सैंपल के लिए रिकॉर्ड किया जा रहा है। आज का दिन शांत और सुखद है। " +
+      "मैं स्पष्ट और स्वाभाविक आवाज़ में अलग-अलग प्रकार के वाक्य बोल रहा हूँ, ताकि मेरी आवाज़ की गति, " +
+      "उच्चारण और भावनाओं को सही तरीके से समझा जा सके। कभी हम धीरे बोलते हैं, कभी उत्साह के साथ, " +
+      "और कभी किसी महत्वपूर्ण जानकारी को गंभीरता से बताते हैं। उम्मीद है कि यह रिकॉर्डिंग साफ़ है और " +
+      "मेरी आवाज़ बिना किसी शोर या रुकावट के सुनाई दे रही है। धन्यवाद।",
+  },
+  {
+    id: "en",
+    label: "English",
+    text:
+      "Hello, this recording is being created as a sample of my natural voice. Today is calm and " +
+      "pleasant, and I am speaking clearly at a comfortable pace. This sample includes different " +
+      "sentence lengths, expressions, and speaking styles so that my pronunciation, tone, rhythm, " +
+      "and emotions can be understood accurately. Sometimes we speak softly, sometimes with " +
+      "excitement, and sometimes we explain important information in a serious and confident " +
+      "manner. I hope this recording is clear and free from background noise or interruptions. " +
+      "Thank you.",
+  },
+] as const;
+
+type ScriptId = (typeof RECORDING_SCRIPTS)[number]["id"];
+
+/** Best-effort client-side duration of an audio file (metadata only). Uses a
+ *  detached <audio> element (not `new Audio()`) so recorder previews and this
+ *  probe never share constructor state. */
+const probeFileDuration = (file: File): Promise<number | null> =>
+  new Promise((resolve) => {
+    if (typeof URL.createObjectURL !== "function") {
+      resolve(null);
+      return;
+    }
+    let url = "";
+    let settled = false;
+    let timer: number | undefined;
+    const done = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (url) URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    timer = window.setTimeout(() => done(null), 5000);
+    try {
+      url = URL.createObjectURL(file);
+      const audio = document.createElement("audio");
+      audio.preload = "metadata";
+      audio.onloadedmetadata = () =>
+        done(Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null);
+      audio.onerror = () => done(null);
+      audio.src = url;
+    } catch {
+      done(null);
+    }
+  });
 
 export default function Voices() {
   const { hasPermission } = useApp();
@@ -159,8 +231,10 @@ function VoiceRow({ voice, canManage, onPreview, onEdit, onDelete, onChanged }: 
 }) {
   const { toast } = useApp();
   const [busy, setBusy] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const active = voice.status === "active";
   const samples = voice.cloneMetadata?.samples ?? [];
+  const sources = voice.sourceAudio ?? [];
 
   const toggleStatus = async () => {
     setBusy(true);
@@ -194,6 +268,25 @@ function VoiceRow({ voice, canManage, onPreview, onEdit, onDelete, onChanged }: 
             {samples.length > 0 && <> · {samples.length} sample{samples.length > 1 ? "s" : ""}</>}
             {voice.usageCount ? <> · used by {voice.usageCount} bot config{voice.usageCount > 1 ? "s" : ""}</> : null}
           </span>
+          {sources.length > 0 ? (
+            <div className="col gap-6" style={{ marginTop: 4 }}>
+              <span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={showSources ? "chevron-up" : "chevron-down"}
+                  onClick={() => setShowSources((s) => !s)}
+                >
+                  Source audio ({sources.length})
+                </Button>
+              </span>
+              {showSources && sources.map((s) => <SourceAudioItem key={s.id} audio={s} />)}
+            </div>
+          ) : (
+            <span className="t-micro" style={{ marginTop: 2 }}>
+              Source audio unavailable — this voice was created before source-audio retention.
+            </span>
+          )}
         </div>
         <span className="row gap-6" style={{ flexShrink: 0 }}>
           <Button size="sm" variant="ghost" icon="play" onClick={onPreview} disabled={!active}>
@@ -214,12 +307,117 @@ function VoiceRow({ voice, canManage, onPreview, onEdit, onDelete, onChanged }: 
   );
 }
 
+/* ---------- stored source audio ---------- */
+
+function SourceAudioItem({ audio }: { audio: VoiceCloneSourceAudio }) {
+  return (
+    <div className="file-row">
+      <span className="icon-tile neutral" style={{ width: 30, height: 30, flexShrink: 0 }}>
+        <Icon name={audio.sourceType === "live_recording" ? "mic" : "file"} size={14} />
+      </span>
+      <div className="file-row-main col gap-4" style={{ minWidth: 0 }}>
+        <div className="row gap-8" style={{ minWidth: 0, flexWrap: "wrap" }}>
+          <span className="file-row-name" title={audio.originalFilename}>{audio.originalFilename}</span>
+          <span className="t-micro t-num" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+            {fmtFileSize(audio.sizeBytes)}
+            {audio.durationSec ? <> · {fmtSeconds(Math.round(audio.durationSec))}</> : null}
+          </span>
+          <span className="tag" style={{ flexShrink: 0 }}>
+            {audio.sourceType === "live_recording" ? "Recorded live" : "Uploaded file"}
+          </span>
+        </div>
+        <SourceAudioPlayer url={audio.url} label={`Play source audio ${audio.originalFilename}`} />
+      </div>
+    </div>
+  );
+}
+
+/** Authenticated audio playback: <audio src> cannot carry the JWT, so the
+ *  file is fetched with the token and played from an object URL (same
+ *  pattern as the conversation recording player). */
+function SourceAudioPlayer({ url, label }: { url: string; label: string }) {
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [error, setError] = useState("");
+  const [src, setSrc] = useState<string | null>(null);
+  const [retrySeq, setRetrySeq] = useState(0);
+  const objectUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState("loading");
+    setError("");
+    setSrc(null);
+    void (async () => {
+      try {
+        const headers: Record<string, string> = {};
+        const token = getToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) {
+          throw new Error(resp.status === 404
+            ? "The source audio file is no longer available."
+            : `Could not load the source audio (HTTP ${resp.status}).`);
+        }
+        const contentType = resp.headers.get("content-type")?.toLowerCase() ?? "";
+        if (contentType.includes("json")) throw new Error("The server did not return audio.");
+        const blob = await resp.blob();
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(blob);
+        objectUrlRef.current = objectUrl;
+        setSrc(objectUrl);
+        setState("ready");
+      } catch (e) {
+        if (!cancelled) {
+          setState("error");
+          setError(e instanceof Error ? e.message : "Could not load the source audio.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, [url, retrySeq]);
+
+  if (state === "loading") {
+    return <span className="t-micro">Loading audio…</span>;
+  }
+  if (state === "error") {
+    return (
+      <span className="row gap-6" style={{ flexWrap: "wrap" }}>
+        <span className="t-micro" style={{ color: "var(--status-critical)" }}>{error}</span>
+        <Button size="sm" variant="ghost" icon="refresh" onClick={() => setRetrySeq((n) => n + 1)}>
+          Retry
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <audio
+      controls
+      controlsList="nodownload"
+      src={src ?? undefined}
+      preload="metadata"
+      aria-label={label}
+      style={{ width: "100%", maxWidth: 420, height: 32 }}
+    />
+  );
+}
+
 /* ---------- clone modal ---------- */
+
+type SampleSource = "live_recording" | "file_upload";
 
 interface SampleRow {
   id: number;
   file: File;
   error?: string;
+  sourceType: SampleSource;
+  /** Known duration in seconds — recorder wall clock, or probed metadata. */
+  durationSec?: number | null;
 }
 
 function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
@@ -241,6 +439,46 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const rowSeq = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [previewFileId, setPreviewFileId] = useState<number | null>(null);
+  const filePreviewRef = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
+
+  const stopFilePreview = () => {
+    const current = filePreviewRef.current;
+    if (current) {
+      current.audio.pause();
+      URL.revokeObjectURL(current.url);
+      filePreviewRef.current = null;
+    }
+    setPreviewFileId(null);
+  };
+
+  // Listen to any sample — uploaded or recorded — before creating the clone.
+  const toggleFilePreview = (row: SampleRow) => {
+    if (previewFileId === row.id) {
+      stopFilePreview();
+      return;
+    }
+    stopFilePreview();
+    const url = URL.createObjectURL(row.file);
+    const audio = new Audio(url);
+    audio.onended = () => stopFilePreview();
+    filePreviewRef.current = { audio, url };
+    setPreviewFileId(row.id);
+    void audio.play().catch(() => {
+      stopFilePreview();
+      toast("Could not play this audio sample.", "error");
+    });
+  };
+
+  useEffect(() => () => {
+    // Unmount: never leave a sample playing.
+    const current = filePreviewRef.current;
+    if (current) {
+      current.audio.pause();
+      URL.revokeObjectURL(current.url);
+      filePreviewRef.current = null;
+    }
+  }, []);
 
   const providers = config?.providers ?? [];
   const cloneable = providers.filter((p) => p.supportsCloning);
@@ -258,6 +496,8 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
     setSubmitting(false);
     setError("");
     setFieldErrors({});
+    stopFilePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, config]);
 
   const pickProvider = (code: string) => {
@@ -267,7 +507,13 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
     setFieldErrors((fe) => ({ ...fe, provider: "" }));
   };
 
-  const addFiles = (list: FileList | File[]) => {
+  const recording = config?.recording ?? DEFAULT_RECORDING_CONFIG;
+
+  const addFiles = (
+    list: FileList | File[],
+    sourceType: SampleSource = "file_upload",
+    knownDurationSec?: number,
+  ) => {
     if (!config) return;
     const allowed = config.allowedExtensions;
     const next = Array.from(list).map((file): SampleRow => {
@@ -280,10 +526,38 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
       } else if (file.size > config.maxFileMb * 1024 * 1024) {
         err = `File is larger than the ${config.maxFileMb} MB limit`;
       }
-      return { id: ++rowSeq.current, file, error: err || undefined };
+      return {
+        id: ++rowSeq.current,
+        file,
+        error: err || undefined,
+        sourceType,
+        durationSec: knownDurationSec ?? null,
+      };
     });
     if (next.length) setFiles((rows) => [...rows, ...next].slice(0, config.maxFiles));
     setFieldErrors((fe) => ({ ...fe, files: "" }));
+    // Uploaded files: read the duration from the audio metadata so it can be
+    // shown, validated and stored alongside the sample.
+    for (const row of next) {
+      if (row.error || row.durationSec != null) continue;
+      void probeFileDuration(row.file).then((duration) => {
+        if (duration == null) return;
+        setFiles((rows) =>
+          rows.map((r) =>
+            r.id === row.id
+              ? {
+                  ...r,
+                  durationSec: duration,
+                  error:
+                    duration < recording.minSeconds
+                      ? `Audio is shorter than ${recording.minSeconds} seconds — record or pick a longer sample`
+                      : r.error,
+                }
+              : r,
+          ),
+        );
+      });
+    }
   };
 
   const validFiles = files.filter((f) => !f.error);
@@ -307,6 +581,15 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
         if (spec.type === "boolean") form.append(spec.name, value ? "true" : "false");
         else if (typeof value === "string" && value.trim()) form.append(spec.name, value.trim());
       }
+      // Per-file provenance, aligned with the files order — the backend
+      // stores it with each retained source-audio sample.
+      form.append(
+        "samplesMeta",
+        JSON.stringify(validFiles.map((row) => ({
+          sourceType: row.sourceType,
+          durationSec: row.durationSec != null ? Math.round(row.durationSec * 10) / 10 : null,
+        }))),
+      );
       for (const row of validFiles) form.append("files", row.file, row.file.name);
       const created = await createVoiceClone(form);
       toast(`Voice '${created.name}' cloned`, "good");
@@ -398,6 +681,10 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
             <Field
               label="Reference audio"
               required
+              // plain: a <label> here forwards clicks to its first button (the
+              // "Upload Audio File" segment) whenever a recorder button unmounts
+              // mid-click, silently kicking the user out of record mode.
+              plain
               hint={config
                 ? `Clear speech, no background music. ${config.allowedExtensions.map((e) => `.${e}`).join(", ")} · up to ${config.maxFiles} files, ${config.maxFileMb} MB each`
                 : undefined}
@@ -456,7 +743,8 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
                 ) : (
                   <LiveRecorder
                     disabled={submitting}
-                    onUse={(file) => addFiles([file])}
+                    recording={recording}
+                    onUse={(file, durationSec) => addFiles([file], "live_recording", durationSec)}
                   />
                 )}
               </div>
@@ -474,16 +762,31 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
                         <span className="file-row-name" title={f.file.name}>{f.file.name}</span>
                         <span className="t-micro t-num" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
                           {fmtFileSize(f.file.size)}
+                          {f.durationSec != null && <> · {fmtSeconds(Math.round(f.durationSec))}</>}
                         </span>
+                        {f.sourceType === "live_recording" && (
+                          <span className="tag" style={{ flexShrink: 0 }}>Recorded live</span>
+                        )}
                       </div>
                       {f.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{f.error}</span>}
                     </div>
                     <span className="row gap-6" style={{ flexShrink: 0 }}>
                       <StatusChip status={f.error ? "error" : "available"} label={f.error ? "invalid" : "ready"} />
+                      {!f.error && (
+                        <Button
+                          size="sm" variant="ghost" icon={previewFileId === f.id ? "pause" : "play"}
+                          aria-label={previewFileId === f.id ? `Stop preview of ${f.file.name}` : `Play ${f.file.name}`}
+                          title={previewFileId === f.id ? "Stop preview" : "Play sample"}
+                          onClick={() => toggleFilePreview(f)}
+                        />
+                      )}
                       <Button
                         size="sm" variant="ghost" icon="x"
                         aria-label={`Remove ${f.file.name}`} title="Remove" disabled={submitting}
-                        onClick={() => setFiles((rows) => rows.filter((r) => r.id !== f.id))}
+                        onClick={() => {
+                          if (previewFileId === f.id) stopFilePreview();
+                          setFiles((rows) => rows.filter((r) => r.id !== f.id));
+                        }}
                       />
                     </span>
                   </div>
@@ -497,7 +800,8 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
             )}
             {submitting && (
               <Callout tone="info" title="Creating your voice">
-                Uploading samples and waiting for the provider to build the clone — this can take a moment.
+                Uploading samples, saving the source audio and waiting for the provider to build
+                the clone — this can take a moment.
               </Callout>
             )}
           </>
@@ -505,8 +809,9 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
 
         {error && <Callout tone="critical" title="Voice cloning failed">{error}</Callout>}
         <span className="t-micro">
-          Only clone voices you have the rights to use. Samples are sent to the provider to build the
-          voice and are not stored by EchoSphere.
+          Only clone voices you have the rights to use. Samples are sent to the provider to build
+          the voice; a copy stays securely in your workspace so you can replay the source audio
+          later.
         </span>
       </div>
     </Modal>
@@ -548,7 +853,6 @@ function CloneParamField({ spec, value, error, disabled, onChange }: {
 
 /* ---------- live voice recorder ---------- */
 
-const REC_MAX_SECONDS = 300;
 const REC_MIME_CANDIDATES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -588,20 +892,82 @@ interface RecordedClip {
   blob: Blob;
   url: string;
   mime: string;
+  /** Display duration, whole seconds. */
   seconds: number;
+  /** Wall-clock take length — authoritative for the usability check. */
+  durationMs: number;
 }
 
-function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: File) => void }) {
-  const [phase, setPhase] = useState<"idle" | "requesting" | "recording" | "recorded">("idle");
+type RecorderPhase = "idle" | "requesting" | "recording" | "processing" | "recorded";
+type PreviewState = "stopped" | "playing" | "paused";
+
+/** Language tabs + copy button for the read-aloud scripts. Pure guidance —
+ *  the selected script is never sent anywhere. */
+function RecordingScripts({ recording }: { recording: VoiceCloneRecordingConfig }) {
+  const [scriptId, setScriptId] = useState<ScriptId>("hi");
+  const [copied, setCopied] = useState(false);
+  const script = RECORDING_SCRIPTS.find((s) => s.id === scriptId) ?? RECORDING_SCRIPTS[0];
+
+  const copyScript = async () => {
+    try {
+      await navigator.clipboard.writeText(script.text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="col gap-8" style={{ width: "100%", textAlign: "left", marginTop: 4 }}>
+      <div className="row gap-8" style={{ flexWrap: "wrap", justifyContent: "space-between" }}>
+        <div className="segmented" role="group" aria-label="Recording script language">
+          {RECORDING_SCRIPTS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              aria-pressed={scriptId === s.id}
+              onClick={() => { setScriptId(s.id); setCopied(false); }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <Button size="sm" variant="ghost" icon={copied ? "check" : "copy"} onClick={() => void copyScript()}>
+          {copied ? "Copied" : "Copy Script"}
+        </Button>
+      </div>
+      <p
+        className="t-body"
+        style={{ margin: 0, maxHeight: 132, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.65 }}
+      >
+        {script.text}
+      </p>
+      <span className="t-micro">
+        Read the script aloud at a natural pace — it takes about {recording.recommendedMinSeconds}–
+        {recording.recommendedMaxSeconds} seconds. Record in a quiet room without background noise
+        or music. The script is a reading guide only; it is not saved with your voice.
+      </span>
+    </div>
+  );
+}
+
+function LiveRecorder({ disabled, recording, onUse }: {
+  disabled?: boolean;
+  recording: VoiceCloneRecordingConfig;
+  onUse: (file: File, durationSec: number) => void;
+}) {
+  const [phase, setPhase] = useState<RecorderPhase>("idle");
   const [error, setError] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [clip, setClip] = useState<RecordedClip | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>("stopped");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const elapsedRef = useRef(0);
+  const startedAtRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const stopTimer = () => {
@@ -616,16 +982,48 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
     streamRef.current = null;
   };
 
-  const stopPreview = () => {
+  // One audio element per clip so pause keeps its position (resume works).
+  const previewAudio = (): HTMLAudioElement | null => {
+    if (!clip) return null;
+    if (!audioRef.current) {
+      const audio = new Audio(clip.url);
+      audio.onended = () => setPreview("stopped");
+      audioRef.current = audio;
+    }
+    return audioRef.current;
+  };
+
+  const startPlayback = async (fromStart: boolean) => {
+    const audio = previewAudio();
+    if (!audio) return;
+    if (fromStart) audio.currentTime = 0;
+    setPreview("playing");
+    try {
+      await audio.play();
+    } catch {
+      setPreview("stopped");
+      setError("Could not play the recording preview.");
+    }
+  };
+
+  const pausePreview = () => {
     audioRef.current?.pause();
-    audioRef.current = null;
-    setPlaying(false);
+    setPreview("paused");
   };
 
   const discardClip = () => {
-    stopPreview();
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPreview("stopped");
     if (clip) URL.revokeObjectURL(clip.url);
     setClip(null);
+  };
+
+  const deleteClip = () => {
+    discardClip();
+    setPhase("idle");
+    setElapsed(0);
+    setError("");
   };
 
   useEffect(() => () => {
@@ -663,23 +1061,31 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
         releaseStream();
         const type = recorder.mimeType || chunksRef.current[0]?.type || "audio/webm";
         const blob = new Blob(chunksRef.current, { type });
+        const durationMs = Math.max(0, Date.now() - startedAtRef.current);
         if (blob.size === 0) {
           setPhase("idle");
           setError("No audio was captured — check your microphone and try again.");
           return;
         }
-        setClip({ blob, url: URL.createObjectURL(blob), mime: type, seconds: elapsedRef.current });
+        setClip({
+          blob,
+          url: URL.createObjectURL(blob),
+          mime: type,
+          seconds: Math.round(durationMs / 1000),
+          durationMs,
+        });
         setPhase("recorded");
       };
       recorder.start();
       recorderRef.current = recorder;
+      startedAtRef.current = Date.now();
       elapsedRef.current = 0;
       setElapsed(0);
       setPhase("recording");
       timerRef.current = window.setInterval(() => {
         elapsedRef.current += 1;
         setElapsed(elapsedRef.current);
-        if (elapsedRef.current >= REC_MAX_SECONDS) stopRecording();
+        if (elapsedRef.current >= recording.maxSeconds) stopRecording();
       }, 1000);
     } catch (e) {
       releaseStream();
@@ -690,8 +1096,13 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
 
   const stopRecording = () => {
     stopTimer();
+    const recorder = recorderRef.current;
+    if (recorder?.state !== "recording") return;
+    // "processing" until onstop delivers the final blob (set first — a
+    // synchronously-firing onstop must win with "recorded").
+    setPhase("processing");
     try {
-      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      recorder.stop();
     } catch {
       releaseStream();
       setPhase("idle");
@@ -699,29 +1110,16 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
     }
   };
 
-  const togglePreview = async () => {
-    if (!clip) return;
-    if (playing) {
-      stopPreview();
-      return;
-    }
-    const audio = new Audio(clip.url);
-    audioRef.current = audio;
-    audio.onended = () => setPlaying(false);
-    setPlaying(true);
-    try {
-      await audio.play();
-    } catch {
-      setPlaying(false);
-      setError("Could not play the recording preview.");
-    }
-  };
+  const tooShort = clip !== null && clip.durationMs < recording.minSeconds * 1000;
+  const reachedRecommended = clip !== null && clip.durationMs >= recording.recommendedMinSeconds * 1000;
 
   const useRecording = () => {
-    if (!clip) return;
+    if (!clip || tooShort) return;
     const ext = recordingExtension(clip.mime);
     const file = new File([clip.blob], `recording-${Date.now()}.${ext}`, { type: clip.mime });
-    onUse(file); // from here on it is treated exactly like an uploaded sample
+    // From here on it is treated exactly like an uploaded sample, except the
+    // wall-clock duration travels along (webm blobs carry no duration header).
+    onUse(file, clip.durationMs / 1000);
     discardClip();
     setPhase("idle");
     setElapsed(0);
@@ -740,10 +1138,15 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
         <>
           <span className="dropzone-icon"><Icon name="mic" size={20} /></span>
           <span className="t-strong" style={{ fontSize: 13 }}>Record your voice with the microphone</span>
-          <span className="t-micro">Speak clearly for 30–60 seconds in a quiet room, no background music.</span>
+          <span className="t-micro">
+            Find a quiet spot and read one of the scripts below aloud — aim for{" "}
+            {recording.recommendedMinSeconds}–{recording.recommendedMaxSeconds} seconds
+            (minimum {recording.minSeconds} seconds).
+          </span>
           <Button icon="mic" disabled={disabled} onClick={() => void startRecording()}>
             Start Recording
           </Button>
+          <RecordingScripts recording={recording} />
         </>
       )}
       {phase === "requesting" && (
@@ -751,6 +1154,7 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
           <span className="dropzone-icon"><Icon name="mic" size={20} /></span>
           <span className="t-strong" style={{ fontSize: 13 }}>Waiting for microphone access…</span>
           <span className="t-micro">Allow microphone access in the browser prompt to start recording.</span>
+          <RecordingScripts recording={recording} />
         </>
       )}
       {phase === "recording" && (
@@ -759,9 +1163,31 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
             <Icon name="mic" size={20} />
           </span>
           <span className="t-strong t-num" style={{ fontSize: 13 }} role="timer" aria-label="Recording time">
-            Recording… {fmtSeconds(elapsed)} / {fmtSeconds(REC_MAX_SECONDS)}
+            Recording… {fmtSeconds(elapsed)} / {fmtSeconds(recording.maxSeconds)}
           </span>
+          {elapsed < recording.minSeconds ? (
+            <span className="t-micro">
+              Keep going — at least {recording.minSeconds} seconds needed,{" "}
+              {recording.recommendedMinSeconds}–{recording.recommendedMaxSeconds}s recommended.
+            </span>
+          ) : elapsed < recording.recommendedMinSeconds ? (
+            <span className="t-micro">
+              Minimum reached — keep reading until {recording.recommendedMinSeconds}–
+              {recording.recommendedMaxSeconds}s for the best clone quality.
+            </span>
+          ) : (
+            <span className="t-micro t-good">
+              ✓ Recommended length reached — stop whenever you finish the script.
+            </span>
+          )}
           <Button icon="pause" onClick={stopRecording}>Stop</Button>
+          <RecordingScripts recording={recording} />
+        </>
+      )}
+      {phase === "processing" && (
+        <>
+          <span className="dropzone-icon"><Icon name="refresh" size={20} /></span>
+          <span className="t-strong" style={{ fontSize: 13 }}>Processing recording…</span>
         </>
       )}
       {phase === "recorded" && clip && (
@@ -771,16 +1197,36 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
             Recording ready · {fmtSeconds(clip.seconds)} · {fmtFileSize(clip.blob.size)}
           </span>
           <span className="row gap-6" style={{ flexWrap: "wrap", justifyContent: "center" }}>
-            <Button size="sm" variant="ghost" icon={playing ? "pause" : "play"} onClick={() => void togglePreview()}>
-              {playing ? "Stop preview" : "Play"}
+            {preview === "playing" ? (
+              <Button size="sm" variant="ghost" icon="pause" onClick={pausePreview}>Pause</Button>
+            ) : (
+              <Button size="sm" variant="ghost" icon="play" onClick={() => void startPlayback(false)}>
+                {preview === "paused" ? "Resume" : "Play"}
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" icon="undo" onClick={() => void startPlayback(true)}>
+              Replay
             </Button>
             <Button size="sm" variant="ghost" icon="refresh" disabled={disabled} onClick={reRecord}>
               Re-record
             </Button>
-            <Button size="sm" variant="primary" icon="check" disabled={disabled} onClick={useRecording}>
+            <Button size="sm" variant="danger-ghost" icon="trash" disabled={disabled} onClick={deleteClip}>
+              Delete
+            </Button>
+            <Button size="sm" variant="primary" icon="check" disabled={disabled || tooShort} onClick={useRecording}>
               Use Recording
             </Button>
           </span>
+          {tooShort && (
+            <span className="t-micro" style={{ color: "var(--status-critical)" }}>
+              Recording is too short — record at least {recording.minSeconds} seconds
+              ({recording.recommendedMinSeconds}–{recording.recommendedMaxSeconds}s recommended),
+              then use it or re-record.
+            </span>
+          )}
+          {!tooShort && reachedRecommended && (
+            <span className="t-micro t-good">✓ Recommended length reached.</span>
+          )}
         </>
       )}
       {error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{error}</span>}

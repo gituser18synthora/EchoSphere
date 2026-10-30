@@ -1,0 +1,95 @@
+<svg viewBox="0 0 1160 640" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="q-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+    <marker id="q-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2563EB"/></marker>
+    <style>
+      .life { stroke: #B9C2D4; stroke-width: 1; stroke-dasharray: 4 4; }
+      .head { rx: 8; stroke-width: 1.5; }
+      .ht { font-size: 11.5px; font-weight: 700; fill: #1F2937; }
+      .hs { font-size: 8.6px; fill: #55607A; }
+      .m { stroke: #475569; stroke-width: 1.4; fill: none; }
+      .mr { stroke: #2563EB; stroke-width: 1.4; fill: none; stroke-dasharray: 6 3; }
+      .ml { font-size: 9.2px; fill: #1F2937; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+      .note { font-size: 8.6px; fill: #55607A; }
+      .nbox { fill: #FEF8EA; stroke: #D97706; stroke-width: 0.8; rx: 4; }
+      .step { font-size: 9.2px; font-weight: 700; fill: #FFFFFF; }
+    </style>
+  </defs>
+
+  <!-- lifeline heads -->
+  <g>
+    <rect class="head" x="20" y="20" width="170" height="52" fill="#DBEAFE" stroke="#2563EB"/>
+    <text class="ht" x="105" y="42" text-anchor="middle">Browser SPA</text>
+    <text class="hs" x="105" y="58" text-anchor="middle">src/services/http.ts</text>
+    <rect class="head" x="230" y="20" width="180" height="52" fill="#E0E7FF" stroke="#4F46E5"/>
+    <text class="ht" x="320" y="42" text-anchor="middle">FastAPI :9001</text>
+    <text class="hs" x="320" y="58" text-anchor="middle">CORS &#8594; /api/v1 route match</text>
+    <rect class="head" x="450" y="20" width="190" height="52" fill="#E0E7FF" stroke="#4F46E5"/>
+    <text class="ht" x="545" y="42" text-anchor="middle">Auth dependencies</text>
+    <text class="hs" x="545" y="58" text-anchor="middle">backend/core/deps.py</text>
+    <rect class="head" x="680" y="20" width="180" height="52" fill="#E0E7FF" stroke="#4F46E5"/>
+    <text class="ht" x="770" y="42" text-anchor="middle">Router handler</text>
+    <text class="hs" x="770" y="58" text-anchor="middle">33 routers &#183; 208 endpoints</text>
+    <rect class="head" x="900" y="20" width="150" height="52" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="ht" x="975" y="42" text-anchor="middle">MySQL</text>
+    <text class="hs" x="975" y="58" text-anchor="middle">control plane ORM</text>
+  </g>
+  <line class="life" x1="105" y1="72" x2="105" y2="600"/>
+  <line class="life" x1="320" y1="72" x2="320" y2="600"/>
+  <line class="life" x1="545" y1="72" x2="545" y2="600"/>
+  <line class="life" x1="770" y1="72" x2="770" y2="600"/>
+  <line class="life" x1="975" y1="72" x2="975" y2="600"/>
+
+  <!-- 1 request -->
+  <circle cx="105" cy="102" r="9" fill="#2563EB"/><text class="step" x="105" y="105.5" text-anchor="middle">1</text>
+  <path class="m" d="M118 102 L 316 102" marker-end="url(#q-a)"/>
+  <text class="ml" x="130" y="96">GET/POST /api/v1/&#8230; &#183; Authorization: Bearer &lt;JWT from localStorage&gt;</text>
+  <text class="note" x="130" y="114">dev: Vite proxy &#8594; 127.0.0.1:9001 &#183; prod: same origin</text>
+
+  <!-- 2 auth -->
+  <circle cx="320" cy="146" r="9" fill="#4F46E5"/><text class="step" x="320" y="149.5" text-anchor="middle">2</text>
+  <path class="m" d="M333 146 L 541 146" marker-end="url(#q-a)"/>
+  <text class="ml" x="345" y="140">Depends(get_current_user / require_*)</text>
+
+  <circle cx="545" cy="188" r="9" fill="#4F46E5"/><text class="step" x="545" y="191.5" text-anchor="middle">3</text>
+  <path class="m" d="M558 188 L 971 188" marker-end="url(#q-a)"/>
+  <text class="ml" x="570" y="182">decode HS256 JWT &#8594; load User row (role read from DB, never from token)</text>
+  <path class="mr" d="M971 214 L 558 214" marker-end="url(#q-b)"/>
+  <text class="ml" x="570" y="208">checks: deleted / deactivated &#8594; 401 &#183; iat &lt; password_changed_at &#8594; 401</text>
+  <text class="note" x="570" y="228">side effect on every request: last_active_at write + commit (deps.py:55)</text>
+
+  <circle cx="545" cy="252" r="9" fill="#4F46E5"/><text class="step" x="545" y="255.5" text-anchor="middle">4</text>
+  <text class="ml" x="570" y="246">role guard (require_tenant_admin &#8230;) OR permission guard (require_permission)</text>
+  <text class="note" x="570" y="266">tenant scope: resolve_tenant_id (lists, never trusts client) &#183; assert_tenant_access (by-id &#8594; 404, not 403)</text>
+
+  <!-- 5 handler -->
+  <circle cx="545" cy="296" r="9" fill="#4F46E5"/><text class="step" x="545" y="299.5" text-anchor="middle">5</text>
+  <path class="m" d="M558 296 L 766 296" marker-end="url(#q-a)"/>
+  <text class="ml" x="576" y="290">authorized User injected</text>
+
+  <circle cx="770" cy="336" r="9" fill="#4F46E5"/><text class="step" x="770" y="339.5" text-anchor="middle">6</text>
+  <path class="m" d="M783 336 L 971 336" marker-end="url(#q-a)"/>
+  <text class="ml" x="795" y="330">pydantic body validation (422 + field errors) &#8594; ORM query / mutation</text>
+
+  <circle cx="770" cy="378" r="9" fill="#4F46E5"/><text class="step" x="770" y="381.5" text-anchor="middle">7</text>
+  <path class="m" d="M783 378 L 971 378" marker-end="url(#q-a)"/>
+  <text class="ml" x="795" y="372">record_audit(&#8230;) &#8212; same transaction, sensitive keys masked</text>
+  <path class="mr" d="M971 404 L 783 404" marker-end="url(#q-b)"/>
+  <text class="ml" x="795" y="398">commit &#183; refresh</text>
+
+  <!-- 8 serialize -->
+  <circle cx="770" cy="440" r="9" fill="#4F46E5"/><text class="step" x="770" y="443.5" text-anchor="middle">8</text>
+  <path class="mr" d="M757 440 L 324 440" marker-end="url(#q-b)"/>
+  <text class="ml" x="340" y="434">serialize_* &#8594; camelCase dict &#8594; ok() / paginated() envelope</text>
+
+  <circle cx="320" cy="482" r="9" fill="#2563EB"/><text class="step" x="320" y="485.5" text-anchor="middle">9</text>
+  <path class="mr" d="M307 482 L 109 482" marker-end="url(#q-b)"/>
+  <text class="ml" x="126" y="476">{ "success": true, "data": &#8230;, "meta": {page,&#8230;} }</text>
+
+  <!-- error contract note -->
+  <rect class="nbox" x="230" y="512" width="700" height="76"/>
+  <text class="note" x="248" y="532" font-weight="700" fill="#B45D09">Error contract (shared/errors.py — 8 exception handlers)</text>
+  <text class="note" x="248" y="548">ApiError &#8594; {"success": false, "message", "errors":[{field,message}]} &#183; 401 auth &#183; 403 role/permission &#183; 404 not-found AND cross-tenant-by-id</text>
+  <text class="note" x="248" y="562">409 IntegrityError &#183; 422 validation/policy &#183; 500 DB/unhandled (driver text never surfaced) &#183; 503 DB unavailable / provider governance fail-closed</text>
+  <text class="note" x="248" y="576">SPA: http.ts unwraps envelope, builds fieldErrors map; any 401 clears token + session and hard-redirects to /login</text>
+</svg>

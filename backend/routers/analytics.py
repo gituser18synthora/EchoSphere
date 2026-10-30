@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.core.deps import get_current_user, require_super_admin, resolve_tenant_id
+from backend.core.deps import (
+    can_view_costs,
+    get_current_user,
+    require_super_admin,
+    resolve_tenant_id,
+)
 from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import (
@@ -20,6 +25,7 @@ from shared.models import (
     Subscription,
     Tenant,
     UsageRecord,
+    UsageEvent,
     User,
     VoiceBot,
 )
@@ -100,6 +106,25 @@ def _kpi(label: str, value: str, delta: float | None, spark: list, intent: str) 
     return out
 
 
+def _avg_call_sec(minutes: float, calls: int) -> int | None:
+    """Average call length in whole seconds, or None when nothing was answered."""
+    if calls <= 0:
+        return None
+    return int(round(minutes * 60 / calls))
+
+
+def _mmss(seconds: int | float | None) -> str:
+    """Zero-padded mm:ss (h:mm:ss past an hour); an em dash when there is no call."""
+    if seconds is None:
+        return "—"
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes:02d}:{secs:02d}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
 @router.get("/analytics/tenant")
 def tenant_analytics(
     days: int = Query(30, ge=7, le=90),
@@ -126,22 +151,67 @@ def tenant_analytics(
     total_contained = int(_sum(daily, "contained"))
     total_escalations = int(_sum(daily, "escalations"))
     containment = round(total_contained / total_calls * 100, 1) if total_calls else 0.0
-    csat_values = [d["csat"] for d in daily.values() if d.get("csat")]
-    avg_csat = round(sum(csat_values) / len(csat_values), 1) if csat_values else 0.0
+    # Average call length = talk minutes ÷ answered calls over the whole
+    # window (ratio of sums), from the same daily rollups as "Total calls".
+    avg_call_sec = _avg_call_sec(_sum(daily, "minutes"), total_calls)
+    avg_call_series = [
+        _avg_call_sec(daily.get(d, {}).get("minutes", 0), daily.get(d, {}).get("calls", 0)) or 0
+        for d in dates
+    ]
     ai_cost = _ai_cost_sum(daily)
     total_cost = ai_cost + _sum(daily, "telephony")
     cost_per_call = round(total_cost / total_calls, 3) if total_calls else 0.0
+
+    # Character rates use ratio-of-sums (not an average of per-call ratios).
+    # Numeric usage counters are sufficient; transcript text is never read.
+    duration_stmt = select(func.coalesce(func.sum(ConversationSession.duration_sec), 0)).where(
+        ConversationSession.tenant_id == tid,
+        # Browser voice sessions are stored as channel="web" while telephony
+        # calls use channel="voice". Both produce STT/TTS usage events and
+        # therefore belong in the character-rate denominator.
+        ConversationSession.channel.in_(("voice", "web")),
+        ConversationSession.is_deleted.is_(False),
+        func.date(ConversationSession.started_at) >= start,
+        func.date(ConversationSession.started_at) <= end,
+    )
+    # The character totals join back to the sessions with the SAME filters as
+    # the minute denominator (channel, deletion, session start date) so both
+    # sides of the ratio cover exactly the same calls. usage_events.session_id
+    # holds the voice-runtime id (conversation_sessions.session_id, vs_…), not
+    # the control-plane row id.
+    chars_stmt = select(
+        UsageEvent.capability, func.coalesce(func.sum(UsageEvent.characters), 0)
+    ).join(
+        ConversationSession,
+        ConversationSession.session_id == UsageEvent.session_id,
+    ).where(
+        UsageEvent.tenant_id == tid,
+        UsageEvent.capability.in_(("stt", "tts")),
+        ConversationSession.channel.in_(("voice", "web")),
+        ConversationSession.is_deleted.is_(False),
+        func.date(ConversationSession.started_at) >= start,
+        func.date(ConversationSession.started_at) <= end,
+    ).group_by(UsageEvent.capability)
+    if bot_id:
+        duration_stmt = duration_stmt.where(ConversationSession.bot_id == bot_id)
+        chars_stmt = chars_stmt.where(UsageEvent.bot_id == bot_id)
+    relevant_minutes = float(db.scalar(duration_stmt) or 0) / 60
+    character_totals = {capability: int(chars) for capability, chars in db.execute(chars_stmt)}
+    stt_chars_per_min = round(character_totals.get("stt", 0) / relevant_minutes, 1) if relevant_minutes else 0.0
+    tts_chars_per_min = round(character_totals.get("tts", 0) / relevant_minutes, 1) if relevant_minutes else 0.0
 
     prev_calls = int(_sum(prev, "calls"))
     prev_contained = int(_sum(prev, "contained"))
     prev_containment = (prev_contained / prev_calls * 100) if prev_calls else 0
     prev_ai_cost = _ai_cost_sum(prev)
     prev_escalations = int(_sum(prev, "escalations"))
+    prev_avg_call_sec = _avg_call_sec(_sum(prev, "minutes"), prev_calls)
 
     # Sentiment / language / intents from conversation metadata in the window.
     conv_stmt = select(
+        ConversationSession.started_at,
         ConversationSession.sentiment, ConversationSession.language,
-        ConversationSession.intents,
+        ConversationSession.intents, ConversationSession.csat,
     ).where(
         ConversationSession.tenant_id == tid,
         ConversationSession.is_deleted.is_(False),
@@ -153,13 +223,27 @@ def tenant_analytics(
     sentiments: Counter = Counter()
     languages: Counter = Counter()
     intent_counts: Counter = Counter()
-    for sentiment, language, intents in db.execute(conv_stmt).all():
+    csat_sum_by_day: dict[date, int] = {}
+    csat_count_by_day: dict[date, int] = {}
+    csat_sum = 0
+    csat_count = 0
+    for started_at, sentiment, language, intents, csat in db.execute(conv_stmt).all():
         sentiments[sentiment] += 1
         if language:
             languages[language] += 1
         for name in intents or []:
             intent_counts[name] += 1
+        if csat is not None:
+            csat_sum += csat
+            csat_count += 1
+            csat_day = started_at.date()
+            csat_sum_by_day[csat_day] = csat_sum_by_day.get(csat_day, 0) + csat
+            csat_count_by_day[csat_day] = csat_count_by_day.get(csat_day, 0) + 1
     total_conv = sum(sentiments.values())
+    avg_csat = round(csat_sum / csat_count, 1) if csat_count else 0.0
+    daily_csat = {
+        day: total / csat_count_by_day[day] for day, total in csat_sum_by_day.items()
+    }
 
     def pct(n: int) -> int:
         return round(n / total_conv * 100) if total_conv else 0
@@ -181,22 +265,37 @@ def tenant_analytics(
 
     recommendations = _tenant_recommendations(db, tid)
 
-    return ok({
-        "kpis": [
-            _kpi("Total calls", f"{total_calls:,}", _delta(total_calls, prev_calls),
-                 calls_series[-14:], "up-good"),
-            _kpi("Containment rate", f"{containment}%",
-                 _delta(containment, prev_containment), rate_series[-14:], "up-good"),
-            _kpi("Escalations", f"{total_escalations:,}",
-                 _delta(total_escalations, prev_escalations),
-                 [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
-            _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
-                 [round((daily.get(d, {}).get("csat") or 0) * 10) for d in dates][-14:], "up-good"),
+    # Financial KPIs and the cost series are only served to roles holding
+    # costs.view — the API response is the boundary, not hidden UI cards.
+    include_costs = can_view_costs(user)
+    kpis = [
+        _kpi("Total calls", f"{total_calls:,}", _delta(total_calls, prev_calls),
+             calls_series[-14:], "up-good"),
+        _kpi("Containment rate", f"{containment}%",
+             _delta(containment, prev_containment), rate_series[-14:], "up-good"),
+        _kpi("Escalations", f"{total_escalations:,}",
+             _delta(total_escalations, prev_escalations),
+             [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
+        _kpi("Avg call duration", _mmss(avg_call_sec),
+             _delta(avg_call_sec or 0, prev_avg_call_sec or 0),
+             avg_call_series[-14:], "neutral"),
+        _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
+             [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
+        _kpi("Avg STT Input Characters / Min", f"{stt_chars_per_min:,.1f}", None,
+             [], "neutral"),
+        _kpi("Avg TTS Output Characters / Min", f"{tts_chars_per_min:,.1f}", None,
+             [], "neutral"),
+    ]
+    if include_costs:
+        kpis += [
             _kpi("AI cost", f"${ai_cost:,.0f}", _delta(ai_cost, prev_ai_cost),
                  [round(daily.get(d, {}).get("llm", 0)) for d in dates][-14:], "down-good"),
             _kpi("Avg cost / call", f"${cost_per_call:.3f}", None,
                  calls_series[-14:], "down-good"),
-        ],
+        ]
+
+    return ok({
+        "kpis": kpis,
         "callsSeries": [
             {"t": _label(d), "calls": calls_series[i], "contained": contained_series[i]}
             for i, d in enumerate(dates)
@@ -229,8 +328,15 @@ def tenant_analytics(
                 "telephony": round(daily.get(d, {}).get("telephony", 0), 2),
             }
             for d in dates
-        ],
+        ] if include_costs else [],
         "recommendations": recommendations,
+        "characterUsage": {
+            "sttInputCharactersPerMin": stt_chars_per_min,
+            "ttsOutputCharactersPerMin": tts_chars_per_min,
+            "sttInputCharacters": character_totals.get("stt", 0),
+            "ttsOutputCharacters": character_totals.get("tts", 0),
+            "relevantCallMinutes": round(relevant_minutes, 2),
+        },
     })
 
 
@@ -372,7 +478,11 @@ def platform_analytics(
     ).all()
 
     top_tenants = db.execute(
-        select(Tenant.name, func.coalesce(func.sum(UsageRecord.calls), 0).label("calls"))
+        select(
+            Tenant.name,
+            func.coalesce(func.sum(UsageRecord.calls), 0).label("calls"),
+            func.coalesce(func.sum(UsageRecord.minutes), 0).label("minutes"),
+        )
         .join(UsageRecord, UsageRecord.tenant_id == Tenant.id)
         .where(
             UsageRecord.date >= start,
@@ -409,7 +519,13 @@ def platform_analytics(
             for name, mrr in mrr_by_plan
         ],
         "topTenantsByCalls": [
-            {"label": name, "value": int(calls)} for name, calls in top_tenants if calls
+            {
+                "label": name,
+                "value": int(calls),
+                "avgDurationSec": _avg_call_sec(float(minutes), int(calls)),
+                "avgDuration": _mmss(_avg_call_sec(float(minutes), int(calls))),
+            }
+            for name, calls, minutes in top_tenants if calls
         ],
         "aiCostByProvider": [
             {"label": "LLM", "value": round(cost_llm)},

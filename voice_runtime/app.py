@@ -13,6 +13,7 @@ contained to that call's pipeline task.
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket
@@ -34,6 +35,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Mandatory secret-leakage guardrail at the logging boundary: no handler
+# (std logging or pipecat/loguru) can write a provider credential.
+from shared.logging_utils import install_log_redaction  # noqa: E402
+
+install_log_redaction()
 logger = logging.getLogger("voice_runtime.app")
 
 # Fail fast on missing mandatory configuration before serving any call.
@@ -44,12 +50,51 @@ validate_settings("voice-runtime")
 _active_sessions: dict[str, asyncio.Task] = {}
 
 
+async def _close_websocket(
+    websocket: WebSocket, code: int = 1000, reason: str | None = None
+) -> None:
+    """Idempotent WebSocket close — safe on every shutdown path.
+
+    The pipecat transport owns the socket during the call and usually sends
+    the close frame itself (client disconnect, cancellation, worker end).
+    Starlette raises ``RuntimeError: Cannot call "send" once a close message
+    has been sent`` on a second close, so this checks the server-side state
+    first and swallows the race where the transport closes in between.
+    """
+    if websocket.application_state == WebSocketState.DISCONNECTED:
+        return
+    try:
+        await websocket.close(code=code, reason=reason or "")
+    except RuntimeError:
+        # Close frame already sent (or the client vanished mid-close).
+        pass
+    except Exception:  # noqa: BLE001 — closing must never raise into teardown
+        logger.debug("websocket close failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await Mongo.connect()
+    # Post-call intelligence worker (summary / outcome / Next Best Action):
+    # the durable queue is the conversation_memories table, so an embedded
+    # poller per process is safe (single-row optimistic claims) and a restart
+    # loses nothing.
+    post_call_stop: asyncio.Event | None = None
+    post_call_task: asyncio.Task | None = None
+    if get_settings().post_call_worker_embedded:
+        from shared.post_call.processor import run_worker as run_post_call_worker
+
+        post_call_stop = asyncio.Event()
+        post_call_task = asyncio.create_task(run_post_call_worker(post_call_stop))
     yield
     for task in list(_active_sessions.values()):
         task.cancel()
+    if post_call_task is not None and post_call_stop is not None:
+        post_call_stop.set()
+        try:
+            await asyncio.wait_for(post_call_task, timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            post_call_task.cancel()
     await Mongo.disconnect()
 
 
@@ -100,18 +145,18 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
     from shared.telephony import SUPPORTED_PROVIDERS
 
     if provider not in SUPPORTED_PROVIDERS:
-        await websocket.close(code=4404, reason="unknown provider")
+        await _close_websocket(websocket, code=4404, reason="unknown provider")
         return
     session = await load_voice_session(session_id)
     if session is None:
-        await websocket.close(code=4401, reason="unknown or expired session")
+        await _close_websocket(websocket, code=4401, reason="unknown or expired session")
         return
     if session_id in _active_sessions:
         # Reject duplicates BEFORE the handshake read: a duplicate connection
         # that never sends `start` must not park inside receive_text() holding
         # a socket while the real stream is live. (_run_call re-checks.)
         await websocket.accept()
-        await websocket.close(code=4409, reason="session already active")
+        await _close_websocket(websocket, code=4409, reason="session already active")
         return
     await websocket.accept()
 
@@ -128,10 +173,10 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
                         start_message = message
                         break
         except Exception:  # noqa: BLE001 — timeout, disconnect or bad JSON
-            await websocket.close(code=4400, reason="invalid stream handshake")
+            await _close_websocket(websocket, code=4400, reason="invalid stream handshake")
             return
         if start_message is None:
-            await websocket.close(code=4400, reason="missing stream start message")
+            await _close_websocket(websocket, code=4400, reason="missing stream start message")
             return
     # Importing Pipecat and its serializers can take longer than the
     # mod_audio_stream WebSocket handshake timeout on the first call after a
@@ -146,7 +191,7 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
             transport=transport,
         )
     except ApiError as exc:
-        await websocket.close(code=4400, reason=exc.message[:100])
+        await _close_websocket(websocket, code=4400, reason=exc.message[:100])
         return
     await _run_call(
         websocket,
@@ -164,7 +209,7 @@ async def voice_session(websocket: WebSocket, session_id: str):
     tenant/bot mapping issued by the API."""
     session = await load_voice_session(session_id)
     if session is None:
-        await websocket.close(code=4401, reason="unknown or expired session")
+        await _close_websocket(websocket, code=4401, reason="unknown or expired session")
         return
     await websocket.accept()
     await _run_call(websocket, session_id, session)
@@ -181,7 +226,7 @@ async def _run_call(
 ):
     settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
-        await websocket.close(code=4429, reason="voice worker at capacity")
+        await _close_websocket(websocket, code=4429, reason="voice worker at capacity")
         return
     if session_id in _active_sessions:
         # A second live connection for the same session (telephony retry or
@@ -192,7 +237,7 @@ async def _run_call(
             "voice session %s already active — rejecting duplicate connection",
             session_id,
         )
-        await websocket.close(code=4409, reason="session already active")
+        await _close_websocket(websocket, code=4409, reason="session already active")
         return
     # Claim the session BEFORE any awaits so a concurrent connect can't slip
     # through between the check above and pipeline start.
@@ -208,20 +253,19 @@ async def _run_call(
     except Exception:  # noqa: BLE001
         logger.exception("bot config resolution failed for %s", session_id)
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4404, reason="bot configuration unavailable")
+        await _close_websocket(websocket, code=4404, reason="bot configuration unavailable")
         return
 
     # Defense-in-depth: the session's tenant must match the bot's tenant.
     if session["tenant_id"] != config.tenant_id:
         logger.error("tenant mismatch for session %s", session_id)
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4403, reason="forbidden")
+        await _close_websocket(websocket, code=4403, reason="forbidden")
         return
 
-    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.workers.runner import WorkerRunner
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
-        FastAPIWebsocketTransport,
     )
 
     from shared.knowledge.service import get_knowledge_service
@@ -234,16 +278,224 @@ async def _run_call(
         config,
         channel=telephony_provider or session.get("channel", "browser"),
         caller=session.get("caller"),
+        call_id=session.get("call_id"),
     )
 
-    transport = FastAPIWebsocketTransport(
+    # Effective guardrails for this bot (mandatory platform rules ∪ the bot's
+    # explicit profile, else the tenant default), plus the tenant's ACTIVE
+    # compliance policies, resolved server-side at call start. The guardrail
+    # loader FAILS CLOSED onto the built-in mandatory floor, so a
+    # control-plane outage can never run a call without PII/secret/tool/
+    # injection protection. Hits are buffered onto the recorder as they
+    # happen and the trigger ledger is persisted at finalize.
+    from shared.compliance import (
+        check_calling_window,
+        load_active_policies_sync,
+        record_policy_trigger_sync,
+    )
+    from shared.guardrails import (
+        GuardrailEngine,
+        load_effective_guardrails_sync,
+        register_session_engine,
+        release_session_engine,
+    )
+
+    # Independent control-plane reads; loading them serially added a full DB
+    # round trip to every call's time-to-greeting.
+    effective_guardrails, compliance_policies = await asyncio.gather(
+        asyncio.to_thread(
+            load_effective_guardrails_sync, config.tenant_id, config.bot_id
+        ),
+        asyncio.to_thread(load_active_policies_sync, config.tenant_id),
+    )
+
+    # Second deterministic checkpoint (the webhook already refused before the
+    # session was minted; this covers every other path to a live telephony
+    # pipeline): a development profile that disables telephony, or an active
+    # policy's calling window, closes the socket before any audio.
+    if telephony_provider:
+        blocked_reason = None
+        blocking_policy = None
+        if effective_guardrails.has("outbound_call_block"):
+            blocked_reason = ("outbound_call_block",
+                             "telephony disabled by the bot's guardrail profile")
+        else:
+            for policy in compliance_policies:
+                if not policy.applies(
+                    channel="phone",
+                    direction=policy.effective_direction(None),
+                ):
+                    continue
+                decision = check_calling_window(policy)
+                if not decision.allowed:
+                    blocked_reason = (
+                        "calling_window",
+                        f"{decision.reason} (local {decision.local_time})",
+                    )
+                    blocking_policy = policy
+                    break
+        if blocked_reason is not None:
+            rule, detail = blocked_reason
+            await recorder.flush_event(
+                "call_blocked_by_policy", rule=rule, detail=detail,
+            )
+            await asyncio.to_thread(
+                record_policy_trigger_sync,
+                tenant_id=config.tenant_id, bot_id=config.bot_id,
+                session_id=session_id, rule=rule, action="block",
+                stage="call", outcome="blocked", policy=blocking_policy,
+                channel=recorder.channel, detail=detail,
+            )
+            _active_sessions.pop(session_id, None)
+            await _close_websocket(websocket, code=4403, reason="call not permitted")
+            return
+
+    def _on_guardrail_hit(hit) -> None:
+        recorder.add_event(
+            "guardrail_trigger",
+            code=hit.rule.code,
+            action=hit.action,
+            stage=hit.stage,
+            detail=hit.detail,
+            policy_code=hit.policy_code,
+            policy_version=hit.policy_version,
+            outcome=hit.outcome,
+        )
+
+    guardrails = GuardrailEngine(
+        effective_guardrails, on_hit=_on_guardrail_hit,
+        compliance=compliance_policies,
+    )
+    recorder.guardrails = guardrails
+    # Deep call sites that only know the session id (workflow api nodes →
+    # ToolExecutor) resolve this engine from the registry.
+    register_session_engine(session_id, guardrails)
+    await recorder.flush_event(
+        "guardrails_loaded",
+        profile_id=effective_guardrails.profile_id,
+        profile_code=effective_guardrails.profile_code,
+        profile_version=effective_guardrails.profile_version,
+        rules=[r.code for r in effective_guardrails.rules],
+        policies=[f"{p.code}@v{p.version}" for p in compliance_policies],
+        degraded=effective_guardrails.degraded,
+    )
+
+    # Runtime context: the server-trusted user/customer details this call
+    # runs against. The GENERIC path (tenant-defined schema: User Details
+    # API, manual test JSON, or stored records — any domain) is tried first;
+    # bots without a schema fall back to the legacy loan-collection table so
+    # existing behavior is preserved bit-for-bit. Both paths are bounded and
+    # fail-open — a lookup failure degrades the call, never blocks it.
+    from collections import Counter
+
+    from shared.customer_context import load_customer_context
+    from shared.runtime_context import load_runtime_context
+
+    session_variables = session.get("variables") or {}
+    runtime_context = await load_runtime_context(
+        config.tenant_id,
+        config.bot_id,
+        phone=session.get("caller"),
+        record_id=(
+            session.get("customer_context_id")
+            or session_variables.get("customer_context_id")
+        ),
+        session_variables=session_variables,
+        system_values={
+            "call_channel": telephony_provider or session.get("channel", "browser"),
+            "bot_language": config.language,
+        },
+    )
+    customer_context = None
+    if runtime_context is None:
+        customer_context = await load_customer_context(
+            config.tenant_id,
+            config.bot_id,
+            context_id=(
+                session.get("customer_context_id")
+                or session_variables.get("customer_context_id")
+            ),
+            phone=session.get("caller"),
+        )
+    if customer_context is not None:
+        recorder.customer_context_id = customer_context.context_id
+        await recorder.flush_event(
+            "customer_context_loaded",
+            context_id=customer_context.context_id,
+            customer_verified=customer_context.customer_verified,
+            account_disputed=customer_context.account_disputed,
+            complaint_pending=customer_context.complaint_pending,
+            payment_status=customer_context.payment_status,
+        )
+    elif runtime_context is not None:
+        recorder.runtime_context_record_id = runtime_context.record_id
+        await recorder.flush_event(
+            "runtime_context_loaded",
+            schema_id=runtime_context.schema_id,
+            record_id=runtime_context.record_id,
+            source_mode=runtime_context.source_mode,
+            domain_policy=runtime_context.domain_policy,
+            identity_confirmation_mode=runtime_context.identity_confirmation_mode,
+            values=len(runtime_context.values),
+            # Per-source counts (session = signed dialer variables): shows at
+            # a glance whether the dialer's values or the API/fixture won.
+            sources=dict(Counter(
+                entry.source for entry in runtime_context.values.values()
+            )),
+            api_skipped=runtime_context.api_skipped,
+            load_error=runtime_context.load_error,
+        )
+
+    # Previous conversation memory: the customer's latest analyzed call for
+    # THIS tenant+bot, resolved exactly the way the customer themselves was
+    # (context record → legacy context → phone tail). Works for every
+    # direction combination — inbound and outbound both land here. Gated on
+    # the tenant's use_previous_call_summary switch, enforced inside
+    # load_previous_memory so stored history is never injected without the
+    # tenant's explicit opt-in. Bounded and fail-open: an immediately
+    # recalled customer whose previous call is still being summarized simply
+    # gets the memory before it, or none.
+    previous_memory = None
+    try:
+        from shared.post_call.recall import load_previous_memory
+
+        previous_memory = await load_previous_memory(
+            config.tenant_id,
+            config.bot_id,
+            runtime_context_record_id=recorder.runtime_context_record_id,
+            customer_context_id=recorder.customer_context_id,
+            phone=session.get("caller"),
+            exclude_session_id=session_id,
+        )
+    except Exception:  # noqa: BLE001 — memory must never block a call
+        logger.warning("previous-memory load failed for %s", session_id, exc_info=True)
+    if previous_memory is not None:
+        await recorder.flush_event(
+            "previous_memory_loaded",
+            previous_memory_source_conversation_id=previous_memory.conversation_id,
+            outcome=previous_memory.call_outcome,
+            next_best_action_type=previous_memory.next_action,
+            matched_by=previous_memory.matched_by,
+            memory_status=previous_memory.status,
+        )
+
+    media_serializer = serializer or RawPCMSerializer()
+    from voice_runtime.filler_transport import FillerWebsocketTransport
+
+    # A serializer that tracks the far end's playout gets its bot-ended calls
+    # held open until the last audio has played (FillerWebsocketOutputTransport
+    # ._play_out_before_end). Pipecat's default 2 s of end silence would only
+    # lengthen that wait: it goes out as one packet just before the close.
+    tracks_playout = hasattr(media_serializer, "playout_remaining_s")
+    transport = FillerWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
-            serializer=serializer or RawPCMSerializer(),
+            serializer=media_serializer,
             session_timeout=settings.voice_session_timeout,
+            **({"audio_out_end_silence_secs": 0} if tracks_playout else {}),
         ),
     )
 
@@ -259,15 +511,10 @@ async def _run_call(
     audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
     if telephony_provider:
         tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
-        # mod_audio_fork resamples the caller/read stream to 16 kHz. This also
-        # satisfies the Sarvam SDK's per-message audio contract. The legacy
-        # mod_audio_stream path remains 8 kHz.
-        stt_sample_rate = (
-            16000
-            if telephony_provider == "freeswitch"
-            and media_transport == "audio_fork"
-            else 8000
-        )
+        # Telephony input stays at its native 8 kHz rate end to end. In
+        # particular, the FreeSWITCH audio-fork serializer labels its raw PCM
+        # as 8 kHz and streaming STT receives the same rate without resampling.
+        stt_sample_rate = 8000
     else:
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
         stt_sample_rate = 16000
@@ -280,6 +527,7 @@ async def _run_call(
         locale: {
             "provider": engine.get("provider", ""),
             "voice": engine.get("voice_name") or engine.get("voice", ""),
+            "gender": engine.get("voice_gender", "neutral"),
         }
         for locale, engine in (tts_conf.get("language_map") or {}).items()
     }
@@ -292,6 +540,7 @@ async def _run_call(
         "defaultVoice": {
             "provider": tts_conf.get("provider", ""),
             "voice": tts_conf.get("voice_name") or tts_conf.get("voice", ""),
+            "gender": tts_conf.get("voice_gender", "neutral"),
         },
         "warnings": config.language_warnings or {},
     }
@@ -307,15 +556,75 @@ async def _run_call(
             stt_sample_rate=stt_sample_rate,
             idle_timeout_secs=float(config.silence_timeout) * 4,
             client_info=client_info,
-            call_context=session.get("variables") or None,
+            call_context=session_variables or None,
+            customer_context=customer_context,
+            runtime_context=runtime_context,
             transport_kind=transport_kind,
+            previous_memory=previous_memory,
+            guardrails=guardrails,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)
         await recorder.flush_event("pipeline_build_failed")
+        release_session_engine(session_id)
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4500, reason="voice engine configuration error")
+        await _close_websocket(websocket, code=4500, reason="voice engine configuration error")
         return
+
+    # FreeSWITCH call control: the fork serializer turns the brain's
+    # telephony_control transfer into the module's transfer message. The hook
+    # below fires at that exact moment — it records the request, marks the
+    # session transferred (so teardown neither kills the now-agent-owned
+    # channel nor reports a generic shutdown), and starts the ESL transfer
+    # monitor that follows the dialplan's bridge/hangup events.
+    call_uuid = session.get("call_id")
+    if telephony_provider == "freeswitch" and serializer is not None:
+        from voice_runtime.freeswitch import start_transfer_monitor
+
+        async def _on_freeswitch_control(message: dict) -> None:
+            if message.get("event") != "transfer":
+                return
+            recorder.transferred = True
+            # Background persistence: the hook runs inside serialize(), so a
+            # degraded Mongo must never delay the transfer message itself.
+            recorder.flush_event_soon(
+                "transfer_requested",
+                reason=message.get("reason") or "transfer",
+                call_uuid=call_uuid,
+                transport=media_transport or "audio_stream",
+            )
+            start_transfer_monitor(
+                session_id=session_id, call_uuid=call_uuid, recorder=recorder
+            )
+
+        serializer.on_telephony_control = _on_freeswitch_control
+
+    if telephony_provider == "freeswitch":
+        # Authoritative call-end detection, independent of the media socket:
+        # a per-call ESL monitor follows the channel's CHANNEL_HANGUP /
+        # CHANNEL_HANGUP_COMPLETE / CHANNEL_DESTROY events, records the raw
+        # Hangup-Cause plus the normalized disconnect reason on this call's
+        # event stream, and invokes the hook below on the first real hangup.
+        # Fail-open like the transfer monitor: without ESL the disconnect
+        # path below (on_client_disconnected) still ends the call.
+        from voice_runtime.freeswitch import start_hangup_monitor
+
+        async def _end_call_on_hangup(info: dict) -> None:
+            # The channel is gone: no further STT/LLM/TTS or queued bot
+            # audio may run for this call. Cancelling the worker tears the
+            # pipeline down exactly like a media-socket disconnect; the
+            # end_reason guard keeps a late or duplicate hangup signal from
+            # re-running teardown on an already-finalized call.
+            if recorder.end_reason is not None:
+                return
+            await worker.cancel()
+
+        start_hangup_monitor(
+            session_id=session_id,
+            call_uuid=call_uuid,
+            recorder=recorder,
+            on_hangup=_end_call_on_hangup,
+        )
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
@@ -323,38 +632,107 @@ async def _run_call(
             "call_started",
             channel=recorder.channel,
             call_id=session.get("call_id"),
+            # Dialer variables the webhook could not keep (names only) — the
+            # trace says so instead of a required field silently missing.
+            variables_dropped=session.get("variables_dropped") or None,
         )
         await brain.speak_greeting()
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        # The media peer (FreeSWITCH/dialer/browser) closed the socket first:
+        # caller hangup or provider-side teardown. Recorded so an unexpected
+        # end can be attributed without guessing.
+        recorder.flush_event_soon("client_disconnected")
         await worker.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(transport, client):
+        # Pipecat's session_timeout is ABSOLUTE call age, not inactivity: it
+        # fires once, voice_session_timeout seconds after connect, even while
+        # audio is streaming both ways. Cutting a live conversation at that
+        # mark presented as "the call just disconnected"; max_call_duration
+        # already bounds runaway calls, so only an abandoned socket (no
+        # caller media for 60s) is ended here.
+        last_media = getattr(media_serializer, "last_media_at", 0.0) or 0.0
+        if last_media and time.monotonic() - last_media < 60.0:
+            await recorder.flush_event("session_timeout_ignored_active_media")
+            logger.info(
+                "voice session %s passed the session timer with live media — "
+                "keeping the call (bounded by max_call_duration)", session_id,
+            )
+            return
         await recorder.flush_event("session_timeout")
         await worker.cancel()
 
-    runner = PipelineRunner(handle_sigint=False)
+    def _final_end_reason(default: str) -> str:
+        # Precedence: an on-the-wire transfer, then FreeSWITCH's own account
+        # of why the channel died (caller_hangup/app_hangup/provider_failure/
+        # media_failure), then the pipeline-shape default. A hangup event
+        # that lands after finalize still reaches the transcript through the
+        # monitor's direct writes — this only decides end_reason.
+        if recorder.transferred:
+            return "transferred"
+        hangup_reason = (recorder.hangup or {}).get("reason")
+        if hangup_reason and hangup_reason != "unknown":
+            return hangup_reason
+        return default
+
+    def _record_inbound_media_stats() -> None:
+        # Telephony ingress evidence (message size, cadence, stalls) on the
+        # call's own event stream, so a "caller not heard" report can be
+        # attributed to the line/module before the gate and VAD are blamed.
+        stats = getattr(media_serializer, "inbound_media_stats", None)
+        if stats is None:
+            return
+        try:
+            recorder.add_event("telephony_inbound_media", **stats())
+        except Exception:  # noqa: BLE001 — evidence must never fail teardown
+            logger.debug("inbound media stats unavailable", exc_info=True)
+
+    def _record_end_playout() -> None:
+        # How long a bot-ended call was held open for its last audio to play.
+        end_playout = getattr(transport.output(), "end_playout", None)
+        if end_playout:
+            recorder.add_event("end_call_playout_wait", **end_playout)
+
+    # pipecat >= 1.3: register the pipeline worker, then run; with the default
+    # auto_end the runner returns once this single root worker has finished
+    # (PipelineRunner and run(worker) are deprecated, removed in 2.0).
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
     # The session was already claimed in _active_sessions at connection time.
     max_duration_handle = asyncio.get_running_loop().call_later(
         config.max_call_duration, lambda: asyncio.ensure_future(worker.cancel())
     )
     try:
-        await runner.run(worker)
-        await recorder.finalize(reason="completed")
+        await runner.run()
+        _record_inbound_media_stats()
+        _record_end_playout()
+        await recorder.finalize(reason=_final_end_reason("completed"))
     except asyncio.CancelledError:
-        await recorder.finalize(reason="worker_shutdown")
+        _record_inbound_media_stats()
+        await recorder.finalize(reason=_final_end_reason("worker_shutdown"))
         raise
     except Exception:  # noqa: BLE001 - one call must not take down the worker
         logger.exception("voice session %s crashed", session_id)
         await recorder.finalize(reason="error")
     finally:
         max_duration_handle.cancel()
+        if telephony_provider == "freeswitch" and not recorder.transferred:
+            # The bot ending the call must end the PSTN leg too — the
+            # dialplan script cannot see the media socket close, and a
+            # transferred caller now belongs to the agent (never killed).
+            # Best-effort and silent when the caller already hung up.
+            from voice_runtime.freeswitch import hangup_channel_soon
+
+            hangup_channel_soon(call_uuid, session_id=session_id)
         _active_sessions.pop(session_id, None)
+        release_session_engine(session_id)
         await end_voice_session(session_id)
-        if websocket.client_state == WebSocketState.CONNECTED:
-            await websocket.close()
+        # _close_websocket is idempotent: it no-ops when the transport (or a
+        # client disconnect) already completed the close handshake.
+        await _close_websocket(websocket)
         logger.info("voice session %s ended (turns=%d)", session_id, len(recorder.turns))
 
 

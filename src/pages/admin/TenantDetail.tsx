@@ -2,19 +2,24 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  getOnboardingOptions, getTenant, getTenantAnalytics, listAudit, listBots,
-  listKnowledge, listReleases, listSubscriptions, listTeam, resetUserPassword,
-  updateTenant,
+  createRelease, getOnboardingOptions, getTenant, getTenantAnalytics, getTenantApiToken,
+  getTenantEffectiveGuardrails, listAudit, listBots, revokeTenantApiToken, rotateTenantApiToken,
+  listGuardrailProfiles, listKnowledge, listReleases, listSubscriptions,
+  listTeam, resetUserPassword, updateReleaseStage, updateTenant,
 } from "@/services/api";
+import { openRelease, suggestedVersion } from "@/services/releaseVersion";
+import { downloadTenantPackage } from "@/services/tenantTransfer";
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
   Health, KpiCard, Modal, PasswordInput, StatusChip, Tabs, Timeline, Avatar,
+  Toggle,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
+import { passwordPolicyError } from "@/services/password";
 import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
-import type { Release, Tenant, VoiceBot } from "@/types/domain";
+import type { Release, Tenant, TenantApiToken, VoiceBot } from "@/types/domain";
 import { useApp } from "@/state/AppContext";
 
 const tabs = [
@@ -34,7 +39,20 @@ export default function TenantDetail() {
   const { toast } = useApp();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const tenantQ = useAsync(() => getTenant(tenantId!), [tenantId]);
+
+  const exportTenantJson = async () => {
+    setExporting(true);
+    try {
+      const { filename } = await downloadTenantPackage(tenantId!);
+      toast(`${filename} downloaded — import it on the target environment to deploy this tenant with the same ids.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tenant export failed.", "error");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (tenantQ.error) return <ErrorState message={tenantQ.error} onRetry={tenantQ.reload} />;
   if (tenantQ.loading) return <div className="grid grid-2"><CardSkeleton rows={6} /><CardSkeleton rows={6} /></div>;
@@ -53,10 +71,14 @@ export default function TenantDetail() {
               {t.name}
               <StatusChip status={t.status} />
             </h1>
-            <p className="page-sub">{t.domain} · {t.industry} · {t.region} · customer since {new Date(t.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}</p>
+            <p className="page-sub">
+              {t.domain} · {t.industry} · {t.region} · customer since {new Date(t.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+              {" · "}{t.guardrailProfile ? `${t.guardrailProfile.name} guardrails${t.guardrailProfile.status !== "active" ? ` (${t.guardrailProfile.status})` : ""}` : "mandatory guardrails only"}
+            </p>
           </div>
         </div>
         <div className="page-actions">
+          <Button icon="download" busy={exporting} onClick={exportTenantJson}>Export Tenant JSON</Button>
           <Button icon="edit" onClick={() => setEditOpen(true)}>Edit tenant</Button>
           <Button icon="mail" onClick={() => toast(`Invite sent to ${t.adminEmail}`, "info")}>Contact admin</Button>
           <Button variant="primary" icon="external" onClick={() => toast("Impersonation requires a second approver (four-eyes policy).", "info")}>
@@ -89,17 +111,6 @@ export default function TenantDetail() {
   );
 }
 
-/* Mirrors the backend password policy (backend/core/security.py) so the Super
-   Admin gets instant feedback; the API remains the enforcement boundary. */
-function passwordPolicyError(password: string): string | null {
-  const missing: string[] = [];
-  if (password.length < 8) missing.push("at least 8 characters");
-  if (!/[a-z]/.test(password)) missing.push("a lowercase letter");
-  if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
-  if (!/\d/.test(password)) missing.push("a digit");
-  return missing.length ? `Password must contain ${missing.join(", ")}.` : null;
-}
-
 function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
   const { toast, hasPermission } = useApp();
   const canResetPassword = hasPermission("reset_user_password");
@@ -115,12 +126,18 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     region: tenant.region,
     industry: tenant.industry,
     aiProfile: tenant.aiProfileCode ?? "",
+    guardrailProfile: tenant.guardrailProfileId ?? "",
     adminEmail: tenant.adminEmail,
+    languages: [...(tenant.defaultLanguages ?? [])],
+    callSummaryEnabled: tenant.callSummaryEnabled ?? false,
+    usePreviousCallSummary: tenant.usePreviousCallSummary ?? false,
   });
-  const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
   const [pw, setPw] = useState({ next: "", confirm: "" });
   const [pwErr, setPwErr] = useState<{ next?: string; confirm?: string }>({});
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [languageErr, setLanguageErr] = useState("");
   const wantsPasswordReset = pw.next !== "" || pw.confirm !== "";
 
   /* Keep the tenant's current value selectable even if it's missing from the option catalog. */
@@ -136,11 +153,21 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     if (form.region !== tenant.region) diff.region = form.region;
     if (form.industry !== tenant.industry) diff.industry = form.industry;
     if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
+    if (form.guardrailProfile !== (tenant.guardrailProfileId ?? "")) diff.guardrailProfileId = form.guardrailProfile;
     if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
+    if (JSON.stringify(form.languages) !== JSON.stringify(tenant.defaultLanguages ?? [])) {
+      diff.defaultLanguages = form.languages;
+    }
+    if (form.callSummaryEnabled !== (tenant.callSummaryEnabled ?? false)) diff.callSummaryEnabled = form.callSummaryEnabled;
+    if (form.usePreviousCallSummary !== (tenant.usePreviousCallSummary ?? false)) diff.usePreviousCallSummary = form.usePreviousCallSummary;
     return diff;
   };
 
   const save = async () => {
+    if (form.languages.length === 0) {
+      setLanguageErr("Select at least one language for this tenant.");
+      return;
+    }
     /* Password reset happens ONLY when the Super Admin explicitly typed and
        confirmed a new password; empty fields leave the password untouched. */
     if (wantsPasswordReset) {
@@ -240,9 +267,80 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
                 {withCurrent(opts.aiProfiles, form.aiProfile).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
               </select>
             </Field>
+            <Field label="Guardrail profile" hint="Changing the industry never changes this — reassignment is always explicit. Mandatory platform guardrails apply regardless.">
+              <select className="select" value={form.guardrailProfile} onChange={(e) => set("guardrailProfile", e.target.value)}>
+                <option value="">— None (mandatory rules only) —</option>
+                {form.guardrailProfile !== "" &&
+                  !(opts.guardrailProfiles ?? []).some((p) => p.id === form.guardrailProfile) && (
+                    <option value={form.guardrailProfile}>
+                      {tenant.guardrailProfile?.name ?? form.guardrailProfile}
+                      {tenant.guardrailProfile?.status && tenant.guardrailProfile.status !== "active"
+                        ? ` (${tenant.guardrailProfile.status})` : " (unavailable)"}
+                    </option>
+                  )}
+                {(opts.guardrailProfiles ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Field>
             <Field label="Admin email">
               <input className="input" type="email" value={form.adminEmail} onChange={(e) => set("adminEmail", e.target.value)} />
             </Field>
+          </div>
+
+          <Field
+            label="Assigned languages"
+            required
+            error={languageErr}
+            hint="Bot and prompt language choices for this tenant are limited to this assignment."
+          >
+            <div className="row wrap gap-6" role="group" aria-label="Assigned languages">
+              {[
+                ...opts.languages,
+                ...form.languages
+                  .filter((code) => !opts.languages.some((language) => language.code === code))
+                  .map((code) => ({ code, name: `${code} — inactive` })),
+              ].map((language) => {
+                const selected = form.languages.includes(language.code);
+                return (
+                  <button
+                    key={language.code}
+                    type="button"
+                    className={`chip ${selected ? "chip-brand" : "chip-neutral"}`}
+                    aria-pressed={selected}
+                    aria-label={`${language.name} (${language.code})`}
+                    onClick={() => {
+                      set(
+                        "languages",
+                        selected
+                          ? form.languages.filter((code) => code !== language.code)
+                          : [...form.languages, language.code],
+                      );
+                      setLanguageErr("");
+                    }}
+                  >
+                    {selected && <Icon name="check" size={11} />}
+                    {language.name}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+
+          <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>
+            <div>
+              <div className="t-strong">Call Summary</div>
+              <p className="t-sub" style={{ marginTop: 4 }}>
+                Independent switches — summaries can be generated without being reused, and
+                already-stored summaries can be reused even while generation is off.
+              </p>
+            </div>
+            <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <div><div className="t-strong" style={{ fontSize: 13 }}>Generate call summary after calls</div><div className="t-micro">AI summary, outcome and next best action once each call ends</div></div>
+              <Toggle checked={form.callSummaryEnabled} onChange={(v) => set("callSummaryEnabled", v)} label="Generate call summary after calls" />
+            </div>
+            <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <div><div className="t-strong" style={{ fontSize: 13 }}>Use previous call summary on new calls</div><div className="t-micro">Give the bot the customer's latest stored summary when a call starts</div></div>
+              <Toggle checked={form.usePreviousCallSummary} onChange={(v) => set("usePreviousCallSummary", v)} label="Use previous call summary on new calls" />
+            </div>
           </div>
 
           {canResetPassword && (
@@ -332,7 +430,145 @@ function OverviewTab({ tenant: t }: { tenant: Tenant }) {
           </div>
         </div>
       </div>
+      <div className="mt-16">
+        <ApiTokenCard tenantId={t.id} />
+      </div>
     </>
+  );
+}
+
+/* The tenant's integration credential. The server stores only a hash, so the
+   card shows metadata (prefix, status, last use) and the full token appears
+   exactly once — in the reveal modal right after Generate/Rotate. */
+function ApiTokenCard({ tenantId }: { tenantId: string }) {
+  const { toast } = useApp();
+  const q = useAsync(() => getTenantApiToken(tenantId), [tenantId]);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [revealed, setRevealed] = useState<TenantApiToken | null>(null);
+  const [copied, setCopied] = useState(false);
+  const info = q.data;
+  const active = Boolean(info?.configured);
+
+  const rotate = async () => {
+    setBusy(true);
+    try {
+      const next = await rotateTenantApiToken(tenantId);
+      setConfirmRotate(false);
+      setCopied(false);
+      setRevealed(next);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not rotate the token.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async () => {
+    setBusy(true);
+    try {
+      await revokeTenantApiToken(tenantId);
+      setConfirmRevoke(false);
+      toast("Tenant API token revoked — integrations using it will now get 401.");
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not revoke the token.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = async () => {
+    if (!revealed?.token) return;
+    try {
+      await navigator.clipboard.writeText(revealed.token);
+      setCopied(true);
+      toast("Token copied to the clipboard.");
+    } catch {
+      toast("Clipboard unavailable — select the token and copy it manually.", "error");
+    }
+  };
+  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-title">Tenant API token</span>
+        {info && <StatusChip status={active ? "good" : "neutral"} label={active ? "Active" : info.status === "revoked" ? "Revoked" : "Not generated"} />}
+      </div>
+      <div className="col" style={{ padding: 18, gap: 12 }}>
+        {q.loading ? <CardSkeleton rows={3} /> : q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : (
+          <>
+            <span className="t-sub">
+              Read-only credential for the tenant's integrations (conversation list and details, analytics).
+              Send it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>X-API-Key</code>. Only its hash is stored:
+              the full token is shown once, when generated — rotate to get a new one.
+            </span>
+            {[
+              ["Token", info?.prefix ? <code key="p">{info.prefix}…</code> : "—"],
+              ["Created", fmt(info?.createdAt)],
+              ["Last used", fmt(info?.lastUsedAt)],
+              ["Acts as", info?.serviceAccountEmail ? <code key="s">{info.serviceAccountEmail}</code> : "—"],
+              ["Scope", `${info?.role ?? "tenant_user"} · read-only`],
+            ].map(([k, v], i) => (
+              <div className="row-between" key={i} style={{ borderBottom: i < 4 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 4 ? 10 : 0 }}>
+                <span className="t-sub">{k}</span>
+                <span className="t-body t-strong t-num">{v}</span>
+              </div>
+            ))}
+            <div className="row gap-8" style={{ justifyContent: "flex-end" }}>
+              {active && <Button icon="x" onClick={() => setConfirmRevoke(true)}>Revoke</Button>}
+              <Button variant="primary" icon="refresh" onClick={() => setConfirmRotate(true)}>
+                {active ? "Rotate token" : "Generate token"}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <ConfirmModal
+        open={confirmRotate}
+        onClose={() => setConfirmRotate(false)}
+        onConfirm={() => void rotate()}
+        title={active ? "Rotate the tenant API token?" : "Generate a tenant API token?"}
+        body={active
+          ? "A new token is generated and the current one stops working immediately. Integrations must be updated with the new token."
+          : "A new read-only token is generated for this tenant. It is shown once — copy it before closing."}
+        confirmLabel={active ? "Rotate" : "Generate"}
+        danger={active}
+        busy={busy}
+      />
+      <ConfirmModal
+        open={confirmRevoke}
+        onClose={() => setConfirmRevoke(false)}
+        onConfirm={() => void revoke()}
+        title="Revoke the tenant API token?"
+        body="Integrations using this token will be refused (401) until a new token is generated."
+        confirmLabel="Revoke"
+        danger
+        busy={busy}
+      />
+      <Modal
+        open={revealed !== null}
+        onClose={() => setRevealed(null)}
+        title="Copy the new API token"
+        sub="This is the only time the full token is shown. EchoSphere stores only its hash."
+        footer={<Button variant="primary" onClick={() => setRevealed(null)}>{copied ? "Done" : "I have copied it"}</Button>}
+      >
+        <div className="col gap-12">
+          <Callout tone="warning" title="Shown once">
+            Store it in your integration's secret store now. If it is lost, rotate the token to get a new one.
+          </Callout>
+          <div className="row gap-8">
+            <input className="input mono" readOnly value={revealed?.token ?? ""} aria-label="Tenant API token" onFocus={(e) => e.currentTarget.select()} style={{ flex: 1 }} />
+            <Button icon="copy" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</Button>
+          </div>
+          <span className="t-micro">
+            Example: <code>curl -H "Authorization: Bearer {revealed?.prefix ?? "esk_"}…" {window.location.origin}/api/v1/conversations?pageSize=20</code>
+          </span>
+        </div>
+      </Modal>
+    </div>
   );
 }
 
@@ -359,9 +595,18 @@ function UsersTab({ tenantId }: { tenantId: string }) {
 
 function BotsTab({ tenantId }: { tenantId: string }) {
   const q = useAsync(() => listBots(tenantId), [tenantId]);
+  const profilesQ = useAsync(listGuardrailProfiles, []);
+  const profileName = (id: string) =>
+    (profilesQ.data ?? []).find((p) => p.id === id)?.name ?? id;
   const cols: Column<VoiceBot>[] = [
     { key: "name", header: "Bot", sortValue: (b) => b.name, render: (b) => <div><div className="t-strong">{b.name}</div><div className="t-micro">{b.useCase}</div></div> },
     { key: "status", header: "Status", render: (b) => <StatusChip status={b.status} /> },
+    {
+      key: "guardrails", header: "Guardrails",
+      render: (b) => b.guardrailProfileId
+        ? <span className="chip chip-brand">{profileName(b.guardrailProfileId)}</span>
+        : <span className="t-micro">Inherited (tenant default)</span>,
+    },
     { key: "version", header: "Live version", render: (b) => <code>{b.liveVersion ?? "—"}</code> },
     { key: "health", header: "Health", render: (b) => <Health level={b.health} /> },
     { key: "calls", header: "Calls / mo", align: "right", sortValue: (b) => b.callsMonth, render: (b) => <span className="t-num">{fmtNum(b.callsMonth)}</span> },
@@ -473,43 +718,254 @@ function AiUsageTab({ tenantId }: { tenantId: string }) {
       <div className="card card-pad col gap-12">
         <span className="card-title">Governance notes</span>
         <p className="t-sub">Model routing, embedding configuration and token budgets for this tenant are managed centrally under <b>AI Governance</b>. Tenant admins see only approved voices and capabilities — never provider credentials or raw model settings.</p>
-        <div className="callout callout-info">
-          <Icon name="info" size={15} />
-          <div className="callout-body">This tenant uses the platform-default conversation model with the standard PII redaction and medical-advice guardrails enabled.</div>
-        </div>
+        <EffectiveGuardrailsPanel tenantId={tenantId} />
       </div>
     </div>
   );
 }
 
+/** The guardrails ACTUALLY enforced for this tenant at call start: mandatory
+    platform rules plus the assigned profile's rules — live API data, never a
+    static claim. */
+function EffectiveGuardrailsPanel({ tenantId }: { tenantId: string }) {
+  const q = useAsync(() => getTenantEffectiveGuardrails(tenantId), [tenantId]);
+  if (q.loading) return <CardSkeleton rows={3} />;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
+  const eff = q.data;
+  if (!eff) return null;
+  return (
+    <div className="col gap-8" aria-label="Effective guardrails">
+      <div className="row gap-8">
+        <span className="t-label">Guardrail profile</span>
+        {eff.profile ? (
+          <>
+            <span className="t-strong" style={{ fontSize: 13 }}>{eff.profile.name}</span>
+            <span className="t-micro">v{eff.profile.version}</span>
+            {eff.profile.status !== "active" && <StatusChip status={eff.profile.status} />}
+          </>
+        ) : (
+          <span className="t-sub">None assigned — mandatory platform rules only</span>
+        )}
+      </div>
+      <div className="col gap-4">
+        {eff.rules.map((r) => (
+          <div key={r.code} className="row-between" style={{ padding: "6px 0", borderBottom: "1px solid var(--hairline)" }}>
+            <span style={{ fontSize: 13 }}>
+              {r.name}
+              {r.mandatory && <span className="tag" style={{ marginLeft: 8 }}>Mandatory</span>}
+            </span>
+            <span className="chip chip-neutral" style={{ textTransform: "capitalize" }}>{r.action}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type BotReleases = { bot: VoiceBot; releases: Release[] };
+
+/** Super-admin publish desk: one row per bot with the action its pipeline
+    needs next (create → review → approve → publish), plus the tenant-wide
+    release history. Mirrors the tenant Publish tab, which super admins cannot
+    reach because /t routes are tenant-only. */
 function DeploymentsTab({ tenantId }: { tenantId: string }) {
-  const q = useAsync(async () => {
+  const { toast } = useApp();
+  const q = useAsync(async (): Promise<BotReleases[]> => {
     const bots = await listBots(tenantId);
-    const perBot = await Promise.all(
-      bots.slice(0, 6).map(async (b) => {
-        const rels = await listReleases(b.id);
-        return rels.map((r) => ({ release: r, botName: b.name }));
-      }),
-    );
-    return perBot.flat().sort((x, y) => (y.release.publishedAt ?? "").localeCompare(x.release.publishedAt ?? ""));
+    return Promise.all(bots.map(async (bot) => ({ bot, releases: await listReleases(bot.id) })));
   }, [tenantId]);
+  const [busyBot, setBusyBot] = useState<string | null>(null);
+  const [createFor, setCreateFor] = useState<BotReleases | null>(null);
+  const [version, setVersion] = useState("");
+  const [notes, setNotes] = useState("");
+  const [overrideFor, setOverrideFor] = useState<{ row: BotReleases; release: Release } | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+
+  const run = async (botId: string, fn: () => Promise<unknown>, okMsg: string) => {
+    setBusyBot(botId);
+    try {
+      await fn();
+      toast(okMsg);
+      q.reload();
+      return true;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Release update failed", "error");
+      return false;
+    } finally {
+      setBusyBot(null);
+    }
+  };
 
   if (q.loading) return <div className="card card-pad"><CardSkeleton rows={4} /></div>;
   if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
-  if (!q.data || q.data.length === 0) {
-    return <div className="card"><EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." /></div>;
+  const rows = q.data ?? [];
+  if (rows.length === 0) {
+    return <div className="card"><EmptyState icon="rocket" title="No bots" body="Create a bot for this tenant to start a release." /></div>;
   }
+  const history = rows
+    .flatMap(({ bot, releases }) => releases.map((r) => ({ release: r, botName: bot.name })))
+    .sort((x, y) => (y.release.publishedAt ?? "").localeCompare(x.release.publishedAt ?? ""));
+
   return (
-    <div className="card card-pad">
-      <Timeline
-        items={q.data.map(({ release: r, botName }: { release: Release; botName: string }) => ({
-          icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
-          tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
-          title: <>{botName} <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
-          meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
-          body: r.notes,
-        }))}
-      />
+    <div className="col gap-16">
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Publish desk</span>
+          <span className="t-micro">{rows.filter((r) => r.bot.status === "published").length}/{rows.length} bots live</span>
+        </div>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr><th>Bot</th><th>Status</th><th>Live</th><th>Release in progress</th><th>Checklist</th><th></th></tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const { bot, releases } = row;
+                const current = openRelease(releases);
+                const failing = current ? current.checklist.filter((c) => !c.ok) : [];
+                const busy = busyBot === bot.id;
+                return (
+                  <tr key={bot.id}>
+                    <td><div className="t-strong">{bot.name}</div><div className="t-micro">{bot.id}</div></td>
+                    <td><StatusChip status={bot.status} /></td>
+                    <td className="t-num">{bot.liveVersion ?? "—"}</td>
+                    <td>
+                      {current ? (
+                        <span className="row gap-6"><code>{current.version}</code><StatusChip status={current.stage} /></span>
+                      ) : <span className="t-sub">none</span>}
+                    </td>
+                    <td>
+                      {current ? (
+                        failing.length === 0
+                          ? <span className="chip chip-good">all passing</span>
+                          : <span className="chip chip-warning" title={failing.map((c) => c.label).join(" · ")}>{failing.length} failing</span>
+                      ) : <span className="t-sub">—</span>}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {!current && (
+                        <Button size="sm" icon="plus" busy={busy}
+                          onClick={() => { setCreateFor(row); setVersion(suggestedVersion(bot, releases)); setNotes(""); }}>
+                          Create release
+                        </Button>
+                      )}
+                      {current?.stage === "draft" && (
+                        <Button size="sm" icon="eye" busy={busy}
+                          onClick={() => run(bot.id, () => updateReleaseStage(current.id, "review"), `${current.version} submitted for review`)}>
+                          Submit for review
+                        </Button>
+                      )}
+                      {current?.stage === "review" && (
+                        <Button size="sm" variant="primary" icon="check" busy={busy}
+                          onClick={() => run(bot.id, () => updateReleaseStage(current.id, "approved", { note: "Approved from the admin publish desk" }), `${current.version} approved — ready to publish`)}>
+                          Approve
+                        </Button>
+                      )}
+                      {current?.stage === "approved" && (
+                        failing.length > 0 ? (
+                          <Button size="sm" variant="primary" icon="rocket" busy={busy}
+                            onClick={() => { setOverrideFor({ row, release: current }); setOverrideReason(""); }}>
+                            Publish with override
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="primary" icon="rocket" busy={busy}
+                            onClick={() => run(bot.id, () => updateReleaseStage(current.id, "published"), `${current.version} published — new calls pick it up within 60s`)}>
+                            Publish
+                          </Button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><span className="card-title">Release history</span></div>
+        {history.length === 0 ? (
+          <EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." />
+        ) : (
+          <div className="card-pad">
+            <Timeline
+              items={history.map(({ release: r, botName }) => ({
+                icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
+                tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
+                title: <>{botName} <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
+                meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
+                body: r.notes,
+              }))}
+            />
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={createFor !== null}
+        onClose={() => setCreateFor(null)}
+        title={createFor ? `Create release for ${createFor.bot.name}` : "Create release"}
+        sub="Starts in review. The checklist is evaluated from current bot state."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateFor(null)}>Cancel</Button>
+            <Button variant="primary" icon="rocket" busy={busyBot !== null} disabled={!version.trim()}
+              onClick={async () => {
+                if (!createFor) return;
+                if (await run(createFor.bot.id, () => createRelease(createFor.bot.id, { version: version.trim(), notes: notes.trim() || undefined }), `Release ${version.trim()} created for ${createFor.bot.name}`)) {
+                  setCreateFor(null);
+                }
+              }}>
+              Create release
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          <Field label="Version" required hint="Semantic version, e.g. v0.1.0">
+            <input className="input" value={version} onChange={(e) => setVersion(e.target.value)} maxLength={20} />
+          </Field>
+          <Field label="Release notes">
+            <textarea className="textarea" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={overrideFor !== null}
+        onClose={() => setOverrideFor(null)}
+        title={overrideFor ? `Publish ${overrideFor.release.version} with override?` : "Publish with override"}
+        sub="The justification and the failing checklist items are written to the audit log."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setOverrideFor(null)}>Cancel</Button>
+            <Button variant="primary" icon="rocket" busy={busyBot !== null} disabled={overrideReason.trim().length < 10}
+              onClick={async () => {
+                if (!overrideFor) return;
+                const { row, release } = overrideFor;
+                if (await run(row.bot.id, () => updateReleaseStage(release.id, "published", { overrideReason: overrideReason.trim() }), `${release.version} published with override`)) {
+                  setOverrideFor(null);
+                }
+              }}>
+              Publish anyway
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          {overrideFor && (
+            <Callout tone="critical" title="Failing checks">
+              <ul style={{ margin: "4px 0 0 16px", fontSize: 13 }}>
+                {overrideFor.release.checklist.filter((c) => !c.ok).map((c) => <li key={c.id}>{c.label}{c.detail ? ` — ${c.detail}` : ""}</li>)}
+              </ul>
+            </Callout>
+          )}
+          <Field label="Justification" required hint="At least 10 characters">
+            <textarea className="textarea" rows={3} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} maxLength={2000}
+              placeholder="e.g. Imported tenant — regression suite is being authored; supervised pilot approved by the customer." />
+          </Field>
+        </div>
+      </Modal>
     </div>
   );
 }

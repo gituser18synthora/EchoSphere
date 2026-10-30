@@ -32,6 +32,12 @@ from voice_runtime.recording import SessionRecorder
 from voice_runtime.tts_router import StreamingTTSRouter
 from tests.mock_tts_servers import API_KEY, MockElevenLabsServer, MockSarvamTTSServer
 
+
+async def _run_added(runner, worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    await runner.add_workers(worker)
+    await runner.run()
+
 pytestmark = pytest.mark.integration
 
 
@@ -85,7 +91,7 @@ async def run_router(router, collector, feeder, timeout=20):
     )
     runner = WorkerRunner(handle_sigint=False)
     feed_task = asyncio.create_task(feeder(worker))
-    await asyncio.wait_for(runner.run(worker), timeout=timeout)
+    await asyncio.wait_for(_run_added(runner, worker), timeout=timeout)
     await feed_task
 
 

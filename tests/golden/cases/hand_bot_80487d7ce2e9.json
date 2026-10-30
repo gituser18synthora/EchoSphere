@@ -1,0 +1,87 @@
+{
+ "bot": "bot_80487d7ce2e9",
+ "cases": [
+  {
+   "bot": "bot_80487d7ce2e9",
+   "name": "bot-dev: yes then hardship",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "paise nahi hai"
+    },
+    {
+     "text": "kal"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "short_signal",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_type"
+     ],
+     "reply": "क्या आप पूरा payment करेंगे, या अभी partial payment करेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "paise nahi hai",
+     "signal": "hardship",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Payment commitment",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_type"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "kal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Payment commitment",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_type"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

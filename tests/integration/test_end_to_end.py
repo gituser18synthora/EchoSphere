@@ -19,6 +19,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from shared.knowledge.ingestion.pipeline import IngestionPipeline
 from backend.main import app
+from shared.config import get_settings
 from shared.orchestration.workflow_engine import WorkflowEngine
 from shared.providers.base import ProviderConfig
 from shared.providers.factory import get_llm_provider, get_tts_provider
@@ -26,6 +27,12 @@ from tests.integration.test_voice_pipeline import Collector, make_config
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoTTSService
 from voice_runtime.recording import SessionRecorder
+
+
+async def _run_added(runner, worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    await runner.add_workers(worker)
+    await runner.run()
 
 pytestmark = pytest.mark.integration
 
@@ -92,6 +99,10 @@ async def test_full_flow(client, store, mock_embedder, knowledge_service, pg_cle
     assert session_response.status_code == 201
     session_payload = session_response.json()["data"]
     assert session_payload["wsPath"].startswith("/ws/voice/")
+    # wsBase is always present; empty means the browser derives the URL
+    # (wss:// on its own origin over HTTPS, host:workerPort over plain HTTP).
+    assert session_payload["wsBase"] == ""
+    assert session_payload["workerPort"] == get_settings().voice_worker_port
 
     # 12-25. Mocked voice call through the real Pipecat pipeline.
     config = make_config(kb_ids=[kb_id], tenant_id="tn-001", bot_id="bot-101")
@@ -128,11 +139,16 @@ async def test_full_flow(client, store, mock_embedder, knowledge_service, pg_cle
         # 16-17: greeting → KB skipped
         await worker.queue_frame(TranscriptionFrame("thank you", "caller", "t2"))
         await asyncio.sleep(0.5)
-        # 18-20: barge-in cancels active work (interrupt lands mid-retrieval —
-        # real pgvector retrieval takes tens of ms, so 20 ms in is in-flight)
+        # 18-20: barge-in cancels active work. Turn-taking debounces STT
+        # finals, so wait until the turn actually STARTS (its route_decision
+        # is recorded before retrieval), then interrupt while the pgvector
+        # retrieval (tens of ms) is still in flight.
         await worker.queue_frame(
             TranscriptionFrame("tell me about the renewal policy terms", "caller", "t3"))
-        await asyncio.sleep(0.02)
+        for _ in range(600):
+            await asyncio.sleep(0.002)
+            if sum(1 for e in recorder.events if e["kind"] == "route_decision") >= 3:
+                break
         await worker.queue_frame(InterruptionFrame())
         await asyncio.sleep(0.3)
         # 21-22: multi-step workflow with persisted state
@@ -150,7 +166,7 @@ async def test_full_flow(client, store, mock_embedder, knowledge_service, pg_cle
 
     runner = WorkerRunner(handle_sigint=False)
     feed_task = asyncio.create_task(feeder(worker))
-    await asyncio.wait_for(runner.run(worker), timeout=40)
+    await asyncio.wait_for(_run_added(runner, worker), timeout=40)
     await feed_task
 
     # Assertions over the call

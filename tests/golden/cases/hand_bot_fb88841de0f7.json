@@ -1,0 +1,89 @@
+{
+ "bot": "bot_fb88841de0f7",
+ "cases": [
+  {
+   "bot": "bot_fb88841de0f7",
+   "name": "0-07 male: callback",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "shaam ko call karna"
+    },
+    {
+     "text": "ok"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "wf_23573edf219e"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "आपके प्रोफ़ाइल पर एक लोन ओवरड्यू दिख रहा है, जिसका कुल बकाया ₹2,000 है और यह 5 दिनों से ओवरड्यू है। कॉल पर रहते हुए UPI के ज़रिए अभी पेमेंट पूरा कर दीजिए, ताकि आपका प्रोफ़ाइल तुरंत अपडेट हो जाए। क्या आप अभी पेमेंट करेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "shaam ko call karna",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:0 to 07 collection call (Male)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_callback"
+     ],
+     "reply": "कोई बात नहीं, हम आपको बाद में कॉल कर लेंगे। कृपया जितनी जल्दी संभव हो, एमपॉकेट ऐप से अपना पेमेंट पूरा कर दीजिए, ताकि अतिरिक्त चार्ज से बच सकें। धन्यवाद। आपका दिन शुभ हो!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ok",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "call_opening_response",
+      "action": "wf_23573edf219e"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "आपके प्रोफ़ाइल पर एक लोन ओवरड्यू दिख रहा है, जिसका कुल बकाया ₹2,000 है और यह 5 दिनों से ओवरड्यू है। कॉल पर रहते हुए UPI के ज़रिए अभी पेमेंट पूरा कर दीजिए, ताकि आपका प्रोफ़ाइल तुरंत अपडेट हो जाए। क्या आप अभी पेमेंट करेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

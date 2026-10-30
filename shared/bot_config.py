@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from shared.config import get_settings
 from shared.errors import NotFoundError, ProviderNotAvailableError
@@ -27,14 +27,50 @@ from shared.models import (
     Prompt,
     ProviderDef,
     ProviderModel,
+    TenantSetting,
     VoiceBot,
     VoiceBotSetting,
     VoiceProfile,
+    Workflow,
 )
+from shared.orchestration.naturalness import resolve_human_speech_with_sources
+from shared.orchestration.voice_identity import VoiceIdentity
+from shared.providers.tts.delivery import clamp_level, clamp_speed
+from shared.providers.stt_language_policy import (
+    AUTO_DETECT_KEY,
+    effective_languages,
+    resolve_auto_detect_language,
+)
+from shared.turn_detection import resolve_tenant_turn_detection
 
 logger = logging.getLogger(__name__)
 
+
+def _clamp_int(value, low: int, high: int, default: int) -> int:
+    """Clamp a stored delivery value; malformed rows fall back to the default."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(high, max(low, value))
+
+
+def _is_reasoning_class(model: str | None) -> bool:
+    """Reasoning-era chat models (deliberate pre-answer thinking).
+
+    Wrong latency profile for the per-turn structured decision call — used
+    only to pick a sensible default orchestration engine; the conversation
+    model itself is never overridden.
+    """
+    normalized = (model or "").lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
 _CACHE_TTL_SECONDS = 300
+
+# Preferred fast orchestration engine when the conversation model is
+# reasoning-class and neither the bot nor the platform default supplies a
+# usable non-reasoning model. Must stay inside the governed provider matrix.
+_FAST_ORCHESTRATION_ENGINE = ("openai", "gpt-4o-mini")
 
 DEFAULT_AUDIO_SETTINGS = {
     "browser": {"codec": "linear16", "sampleRate": 24000},
@@ -106,6 +142,26 @@ def _ensure_engine_allowed(session, kind: str, provider: str, model: str | None)
         raise ProviderNotAvailableError(f"Voice engine unavailable: {reason}.")
 
 
+def _model_streaming(session, kind: str, provider: str, model: str | None) -> bool:
+    """Whether the catalog marks the model as realtime-streaming capable.
+
+    Models without WebSocket support (ElevenLabs eleven_v3) synthesize over
+    REST instead. Unknown or unset models keep the streaming path (legacy
+    behavior; validation gates real configurations).
+    """
+    if not provider or not model:
+        return True
+    row = session.execute(
+        select(ProviderModel.streaming).where(
+            ProviderModel.capability == kind,
+            ProviderModel.provider_code == provider,
+            ProviderModel.code == model,
+            ProviderModel.is_deleted.is_(False),
+        )
+    ).scalar_one_or_none()
+    return True if row is None else bool(row)
+
+
 def _tenant_profile(session, voice: str | None, tenant_id: str | None):
     """Voice profile lookup honoring tenant ownership.
 
@@ -143,12 +199,85 @@ def _wire_voice(session, provider: str, voice: str | None, tenant_id: str | None
     return voice
 
 
-def _voice_display_name(session, voice: str | None, tenant_id: str | None = None) -> str:
-    """Human-readable voice name for UIs (falls back to the raw value)."""
+def _voice_profile_for_selection(
+    session, provider: str | None, voice: str | None, tenant_id: str | None,
+):
+    """Resolve catalog metadata from either a profile id or provider wire id."""
     if not voice:
-        return ""
+        return None
     profile = _tenant_profile(session, voice, tenant_id)
-    return profile.name if profile is not None else voice
+    if profile is not None and (not provider or profile.provider == provider):
+        return profile
+    if not provider:
+        return None
+    return session.scalar(
+        select(VoiceProfile).where(
+            VoiceProfile.provider == provider,
+            VoiceProfile.provider_voice_id == str(voice).strip(),
+            VoiceProfile.is_deleted.is_(False),
+            or_(
+                VoiceProfile.tenant_id.is_(None),
+                VoiceProfile.tenant_id == tenant_id,
+            ),
+        ).limit(1)
+    )
+
+
+def _voice_identity(
+    session, provider: str | None, voice: str | None, tenant_id: str | None,
+) -> VoiceIdentity:
+    """Catalog-driven name/gender for one selected voice (never an allowlist)."""
+    profile = _voice_profile_for_selection(session, provider, voice, tenant_id)
+    if profile is None:
+        return VoiceIdentity(name=str(voice or "").strip(), gender="neutral")
+    gender = str(profile.gender or "neutral").strip().lower()
+    if gender not in ("male", "female"):
+        gender = "neutral"
+    return VoiceIdentity(name=profile.name, gender=gender)
+
+
+def resolve_voice_identity_for_settings(
+    session,
+    voice_settings,
+    tenant_id: str,
+    locale: str | None,
+    *,
+    default_provider: str = "",
+    default_voice: str = "",
+) -> VoiceIdentity:
+    """Resolve prompt identity from the same saved selection as live TTS.
+
+    Used by text-only testing surfaces, where a full ``ResolvedBotConfig`` is
+    not otherwise needed. Per-language overrides apply only when the selected
+    model is realtime-streaming, matching the actual TTS router.
+    """
+    provider = (
+        voice_settings.tts_provider
+        if voice_settings is not None and voice_settings.tts_provider
+        else default_provider
+    )
+    voice = (
+        voice_settings.tts_voice
+        if voice_settings is not None and voice_settings.tts_voice
+        else (
+            voice_settings.voice_id
+            if voice_settings is not None and voice_settings.voice_id
+            else default_voice
+        )
+    )
+    language_map = (
+        (voice_settings.language_voice_map or {}) if voice_settings is not None else {}
+    )
+    selected_locale = locale or language_map.get("default")
+    model = voice_settings.tts_model if voice_settings is not None else None
+    if selected_locale and _model_streaming(session, "tts", provider, model):
+        entry = language_map.get(selected_locale)
+        if isinstance(entry, dict):
+            provider = entry.get("provider") or provider
+            voice = entry.get("voice") or ""
+        elif isinstance(entry, str):
+            voice = entry
+    return _voice_identity(session, provider, voice, tenant_id)
 
 
 def _profile_supports_language(profile, locale: str) -> bool:
@@ -167,12 +296,169 @@ def _profile_supports_language(profile, locale: str) -> bool:
     return locale in languages or locale.split("-")[0] in languages
 
 
+def _resolve_decision_engine(
+    session, settings, *, bot_id: str, llm_provider: str, llm_model: str,
+    llm_settings: dict,
+) -> dict | None:
+    """The Goal Engine decision engine for one bot (see comments inside)."""
+    # Goal Engine decision engine — always a DEDICATED engine, so the
+    # decision-only request options below never ride on reply calls.
+    # Candidate order:
+    # 1. the bot's own llm_settings.orchestration_provider/_model;
+    # 2. the platform decision default (settings.orchestration_model:
+    #    gpt-6-luna, benchmarked 2026-10-23 — see shared.config);
+    # 3. when the CONVERSATION model is reasoning-class (wrong latency
+    #    profile for a hard-deadline JSON call: gpt-5-mini measured 3-4 s
+    #    vs the 1.6 s budget): the platform's non-reasoning conversation
+    #    default, then the pinned fast engine;
+    # 4. the conversation model itself.
+    # Governance applies to every candidate; a refused one is skipped —
+    # decisions degrade, calls never drop.
+    orch_provider = str(llm_settings.get("orchestration_provider") or "").strip()
+    orch_model = str(llm_settings.get("orchestration_model") or "").strip()
+    # (provider, model) -> where the candidate came from; the post-call
+    # analyzer reuses only a bot-chosen or reasoning-fallback engine.
+    candidates: dict[tuple[str, str], str] = {}
+    if orch_provider:
+        candidates.setdefault((orch_provider, orch_model), "bot")
+    if settings.orchestration_model:
+        candidates.setdefault(
+            (settings.orchestration_provider or "openai", settings.orchestration_model),
+            "platform",
+        )
+    if _is_reasoning_class(llm_model):
+        if settings.llm_model and not _is_reasoning_class(settings.llm_model):
+            candidates.setdefault((settings.llm_provider, settings.llm_model), "reasoning_fallback")
+        candidates.setdefault(_FAST_ORCHESTRATION_ENGINE, "reasoning_fallback")
+    candidates.setdefault((llm_provider, llm_model), "conversation")
+    # Decision-only request options. service_tier: the bot's
+    # orchestration_service_tier wins (e.g. "default" opts out), else the
+    # platform default ("fast"). reasoning_effort "lowest": the lowest
+    # effort the model accepts (none for gpt-6-luna; ignored by
+    # non-reasoning models). prompt_cache_key: one per bot, so its calls
+    # share the cached system-prompt prefix.
+    decision_extra = {
+        k: v for k, v in {
+            "service_tier": str(
+                llm_settings.get("orchestration_service_tier")
+                or settings.orchestration_service_tier or ""
+            ).strip(),
+            "reasoning_effort": "lowest",
+            "prompt_cache_key": bot_id,
+        }.items() if v
+    }
+    for (candidate_provider, candidate_model), source in candidates.items():
+        reason = _engine_allowed(
+            session, "llm", candidate_provider, candidate_model or None
+        )
+        if reason is not None:
+            logger.warning(
+                "orchestration LLM %s/%s skipped for bot %s: %s",
+                candidate_provider, candidate_model, bot_id, reason,
+            )
+            continue
+        orchestration_engine = {
+            "provider": candidate_provider,
+            "model": candidate_model,
+            "source": source,
+            "extra": dict(decision_extra),
+            "api_key_reference": _secret_ref_for(
+                session, "llm", candidate_provider
+            ),
+        }
+        return orchestration_engine
+    return None
+
+
+def _reply_request_options(bot_id: str, llm_settings: dict) -> dict:
+    """Request options for the bot's conversation-model calls.
+
+    The conversation model serves replies AND everything else that runs on
+    it during a call: grounded workflow rewrites, the workflow's semantic
+    fact extractor (e.g. Zepto MDND's four parallel readers) and intent
+    classification. Always the bot's prompt-cache key (shared with its
+    decision calls); optionally ``llm_settings.reply_service_tier`` (OpenAI
+    service tier, e.g. "fast") and ``reply_reasoning_effort`` ("lowest" =
+    the lowest effort the model accepts — none for gpt-6-luna, whose default
+    medium effort is far too slow for a live call). Post-call analysis drops
+    the tier, as it does for the decision engine.
+    """
+    extra = {"prompt_cache_key": bot_id}
+    tier = str(llm_settings.get("reply_service_tier") or "").strip()
+    if tier:
+        extra["service_tier"] = tier
+    effort = str(llm_settings.get("reply_reasoning_effort") or "").strip().lower()
+    if effort:
+        extra["reasoning_effort"] = effort
+    return extra
+
+
+def _keep_unmapped_v4_locales_on_v3(
+    session, tts_engine: dict, locales: list[str], language_warnings: dict,
+    bot_id: str,
+) -> None:
+    """Keep a locale on bulbul:v3 when its voice has no bulbul:v4-flash persona.
+
+    bulbul:v4-flash speakers are persona ids and Sarvam rejects a v3 name. A
+    v3 voice maps through the reviewed table in
+    shared.providers.tts.sarvam_voices; a (voice, locale) pair the table does
+    not cover — e.g. "ashutosh" for en-IN, any voice for ml-IN/od-IN — would
+    fail on every reply. That locale stays on bulbul:v3 with the SAME voice,
+    loudly (ERROR log + a language warning surfaced to the test UI); another
+    speaker is never substituted.
+    """
+    from shared.orchestration.voice_identity import resolve_language_engine
+    from shared.providers.tts.sarvam_voices import is_v4_model, v4_persona_for
+
+    for locale in locales:
+        engine = resolve_language_engine(tts_engine.get("language_map"), locale, tts_engine)
+        if engine.get("provider") != "sarvam" or not is_v4_model(engine.get("model")):
+            continue
+        voice = str(engine.get("voice") or "").strip()
+        if not voice or v4_persona_for(voice, locale) is not None:
+            continue  # empty voice = Sarvam's default persona
+        reason = _engine_allowed(session, "tts", "sarvam", "bulbul:v3")
+        if reason is None:
+            is_default_engine = engine is tts_engine
+            tts_engine["language_map"][locale] = {
+                "provider": "sarvam",
+                "model": "bulbul:v3",
+                "voice": voice,
+                "voice_name": engine.get("voice_name") or voice,
+                "voice_gender": engine.get("voice_gender") or "neutral",
+                # v3 and v4-flash share one parameter contract (loudness
+                # included), so the default engine's validated settings
+                # carry over unchanged.
+                "params": dict(
+                    (engine.get("settings") if is_default_engine else engine.get("params"))
+                    or {}
+                ),
+                "api_key_reference": engine.get("api_key_reference") or "",
+            }
+            message = (
+                f"Voice '{voice}' has no bulbul:v4-flash persona for {locale}; "
+                "this language stays on bulbul:v3 with the same voice. Pick a "
+                "v4-flash persona for it to move it."
+            )
+        else:
+            message = (
+                f"Voice '{voice}' has no bulbul:v4-flash persona for {locale} and "
+                f"bulbul:v3 is unavailable ({reason}); replies in this language "
+                "will fail until a v4-flash persona is chosen."
+            )
+        language_warnings[locale] = message
+        logger.error("bot %s: %s", bot_id, message)
+
+
 def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | None = None) -> dict:
     """Normalize language_voice_map entries to engine dicts.
 
     Entries may be legacy voice_profiles id strings or objects
     {"provider","model","voice","params"?}. The reserved "default" key (the
     default locale) is excluded — it lives in ResolvedBotConfig.language.
+    Every locale runs on exactly the model stored for it — the entry's own
+    model, else the bot's tts_model — never one picked by language:
+    bulbul:v4-flash is opt-in.
     """
     mapping = {}
     for locale, entry in ((vbs.language_voice_map if vbs else None) or {}).items():
@@ -180,11 +466,13 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
             continue
         if isinstance(entry, dict):
             provider = entry.get("provider") or default_engine["provider"]
+            identity = _voice_identity(session, provider, entry.get("voice"), tenant_id)
             engine = {
                 "provider": provider,
                 "model": entry.get("model") or default_engine["model"],
                 "voice": _wire_voice(session, provider, entry.get("voice"), tenant_id),
-                "voice_name": _voice_display_name(session, entry.get("voice"), tenant_id),
+                "voice_name": identity.name,
+                "voice_gender": identity.gender,
                 "params": entry.get("params") or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -193,11 +481,25 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
             if profile is None:
                 continue
             provider = profile.provider or default_engine["provider"]
+            codes = list(profile.model_codes or [])
+            if provider == default_engine["provider"] and (
+                not codes or default_engine["model"] in codes
+            ):
+                # The bot's stored model whenever the voice runs on it: the
+                # order of a voice's model_codes never moves a bot to another
+                # model (bulbul:v4-flash is opt-in — a persona voice, which
+                # runs on nothing else, is the explicit choice).
+                model = default_engine["model"]
+            else:
+                model = codes[0] if codes else default_engine["model"]
             engine = {
                 "provider": provider,
-                "model": (profile.model_codes or [default_engine["model"]])[0],
+                "model": model,
                 "voice": profile.provider_voice_id or profile.name,
                 "voice_name": profile.name,
+                "voice_gender": (
+                    profile.gender if profile.gender in ("male", "female") else "neutral"
+                ),
                 "params": profile.provider_settings or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -220,10 +522,12 @@ class ResolvedBotConfig:
     API keys never enter this snapshot (it is cached in Redis).
 
     - stt:  {provider, model, language, settings, api_key_reference}
-    - tts:  {provider, model, voice, settings, api_key_reference,
+    - tts:  {provider, model, voice, voice_name, voice_gender, settings,
+             api_key_reference,
              language_map: {locale: {provider, model, voice, params}},
              fallback: {provider, model, voice, api_key_reference} | None}
-    - llm:  {provider, model, settings, api_key_reference}
+    - llm:  {provider, model, settings, api_key_reference,
+             orchestration: {provider, model, api_key_reference} | None}
     - audio_settings: {"browser": {"codec","sampleRate"},
                        "telephony": {"codec","sampleRate"}}
     """
@@ -233,22 +537,56 @@ class ResolvedBotConfig:
     bot_name: str
     version: str
     published: bool
+    use_case: str = ""
     language: str = "en"
     greeting: str = "Hello! How can I help you today?"
     system_prompt: str = ""
+    # Provenance of system_prompt: the published Prompt row/version the call
+    # runs on (stored per conversation for auditability), and its authoring
+    # mode. Empty/None when the generic fallback persona is in use.
+    prompt_id: str = ""
+    prompt_version: int | None = None
+    prompt_mode: str = ""
     stt: dict = field(default_factory=dict)
     tts: dict = field(default_factory=dict)
     llm: dict = field(default_factory=dict)
+    # Delivery tuning (voice_bot_settings): canonical speaking speed, sentence
+    # pause and the 0–100 empathy/energy levels. Cached snapshots written
+    # before these fields existed resolve to the dataclass defaults.
     speed: float = 1.0
+    pause_ms: int = 350
+    empathy: int = 50
+    energy: int = 50
     kb_ids: list[str] = field(default_factory=list)
     intents: list[dict] = field(default_factory=list)
+    # Authored Goal Engine configuration (voice_bot_settings.goal_policy).
+    # Empty → the runtime derives a safe default from the published prompt,
+    # intents and runtime-context domain policy (backward compatible).
+    goal_policy: dict = field(default_factory=dict)
+    # Fully-resolved human speech naturalness config (platform defaults +
+    # tenant override + bot override, already merged and clamped). Cached
+    # snapshots written before this field existed resolve to {} — the runtime
+    # re-applies platform defaults in that case.
+    human_speech: dict = field(default_factory=dict)
+    # Per-key provenance for privacy-safe runtime telemetry/UI inheritance.
+    human_speech_sources: dict = field(default_factory=dict)
+    # Fully-resolved tenant turn/noise settings for both transports. Loaded
+    # once with this call snapshot and then reused entirely in memory.
+    turn_detection: dict = field(default_factory=dict)
     silence_timeout: int = 12
     max_call_duration: int = 3600
+    # Tenant-configured IANA timezone (tenant_settings.timezone). Grounds the
+    # optional per-turn current date/time context; cached snapshots written
+    # before this field existed resolve to UTC.
+    timezone: str = "UTC"
     audio_settings: dict = field(default_factory=dict)
     # Languages the bot is configured for (bot_languages), and per-language
     # voice-configuration problems found at resolution time ({locale: message}).
     languages: list[str] = field(default_factory=list)
     language_warnings: dict = field(default_factory=dict)
+    # {workflow_id: version} pinned by the published release; {} = run the
+    # latest saved version (pre-pinning releases and cached snapshots).
+    workflow_pins: dict = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -289,6 +627,22 @@ def invalidate_bot_config_sync(tenant_id: str, bot_id: str) -> None:
         logger.warning("bot config cache invalidation failed for %s/%s", tenant_id, bot_id)
 
 
+def invalidate_tenant_bot_configs_sync(tenant_id: str, bot_ids: list[str]) -> None:
+    """Invalidate one tenant's bot snapshots using a single Redis connection."""
+    if not bot_ids:
+        return
+    import redis as redis_sync
+
+    try:
+        client = redis_sync.from_url(get_settings().redis_url)
+        keys = [key for bot_id in bot_ids for key in _all_keys(tenant_id, bot_id)]
+        for index in range(0, len(keys), 500):
+            client.delete(*keys[index : index + 500])
+        client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("tenant bot config cache invalidation failed for %s", tenant_id)
+
+
 def invalidate_all_bot_configs_sync() -> None:
     """Drop every cached bot-config snapshot.
 
@@ -312,6 +666,107 @@ def invalidate_all_bot_configs_sync() -> None:
         logger.warning("platform-wide bot config cache flush failed")
 
 
+def select_greeting_variant(variants, language: str | None) -> str | None:
+    """The greeting content for the call's opening language.
+
+    Exact locale first ("en-IN"), then the same base language ("en-*"), then
+    the first variant that has content. ``variants`` is the authored list of
+    ``{"language": locale, "content": text}``.
+    """
+    usable = [
+        v for v in (variants or [])
+        if isinstance(v, dict) and str(v.get("content") or "").strip()
+    ]
+    if not usable:
+        return None
+    wanted = str(language or "").strip()
+    if wanted:
+        for variant in usable:
+            if str(variant.get("language") or "").strip().lower() == wanted.lower():
+                return variant["content"]
+        base = wanted.split("-", 1)[0].lower()
+        for variant in usable:
+            if str(variant.get("language") or "").split("-", 1)[0].lower() == base:
+                return variant["content"]
+    return usable[0]["content"]
+
+
+def _derived_stt_keyterms(
+    session, bot, *, stt_model: str, stt_settings: dict, intents: list[dict],
+    goal_policy: dict | None, languages: list[str],
+) -> list[str]:
+    """Automatic Sarvam key terms for a bot with none configured.
+
+    Only for a model that accepts key terms (saaras:v4); an operator list in
+    ``stt_settings.keyterms`` always wins, and ``stt_settings.keyterms_auto =
+    false`` switches the derivation off. Sources: the bot's workflow option
+    labels and entity synonyms, its slot names and its intents' sample
+    phrases (shared.providers.stt.sarvam_keyterms.derive_keyterms). Never
+    raises — key terms are a recognition hint, not a call requirement.
+    """
+    from shared.providers.stt.sarvam_keyterms import (
+        KEYTERMS_AUTO_SETTING,
+        KEYTERMS_AUTO_YES_NO_SETTING,
+        KEYTERMS_SETTING,
+        derive_keyterms,
+        normalize_keyterms,
+        supports_keyterms,
+    )
+
+    settings = stt_settings or {}
+    if not supports_keyterms(stt_model) or normalize_keyterms(settings.get(KEYTERMS_SETTING)):
+        return []
+    if settings.get(KEYTERMS_AUTO_SETTING) is False:
+        return []
+    try:
+        rows = session.execute(
+            select(Workflow.nodes, Workflow.edges).where(
+                Workflow.tenant_id == bot.tenant_id,
+                Workflow.bot_id == bot.id,
+                Workflow.is_deleted.is_(False),
+            )
+        ).all()
+        workflows = [{"nodes": nodes or [], "edges": edges or []} for nodes, edges in rows]
+        slot_names = [
+            str(slot.get("name") or "") for slot in (goal_policy or {}).get("slots") or ()
+            if isinstance(slot, dict)
+        ]
+        for intent in intents or ():
+            for entity in list(intent.get("entities") or ()) + list(intent.get("optional_entities") or ()):
+                slot_names.append(str(entity.get("name") if isinstance(entity, dict) else entity or ""))
+        return derive_keyterms(
+            workflows=workflows, slot_names=slot_names, intents=intents,
+            languages=languages,
+            include_yes_no=settings.get(KEYTERMS_AUTO_YES_NO_SETTING) is True,
+        )
+    except Exception:  # noqa: BLE001 — a hint must never block config resolution
+        logger.exception("automatic STT key terms failed for bot %s", bot.id)
+        return []
+
+
+def _published_workflow_pins(session, bot) -> dict:
+    """{workflow_id: version} frozen by the bot's published release, when the
+    schema carries release pins (migration a1b2c3d4e5f6) and the release
+    recorded any; {} otherwise (= latest saved version, the historical rule)."""
+    from shared.db.schema_features import column_exists
+    from shared.models import Release
+
+    if bot.status != "published" or not column_exists("releases", "pinned_workflows"):
+        return {}
+    try:
+        release = session.execute(
+            select(Release).where(
+                Release.bot_id == bot.id, Release.stage == "published",
+                Release.is_deleted.is_(False),
+            ).order_by(Release.published_at.desc()).limit(1)
+        ).scalars().first()
+        pins = release.pinned_workflows if release is not None else None
+    except Exception:  # noqa: BLE001 — pins are an optimisation of safety, never a call blocker
+        logger.exception("could not read release workflow pins for bot %s", bot.id)
+        return {}
+    return {str(k): int(v) for k, v in (pins or {}).items() if str(v).isdigit()}
+
+
 def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig:
     settings = get_settings()
     session = get_sessionmaker()()
@@ -319,6 +774,10 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         bot = session.get(VoiceBot, bot_id)
         if bot is None or bot.is_deleted:
             raise NotFoundError("Bot")
+        if bot.status == "archived":
+            # Parked bots take no traffic on any channel — including browser
+            # test sessions, which otherwise bypass the published requirement.
+            raise NotFoundError("Active configuration for this archived bot")
         if require_published and bot.status != "published":
             raise NotFoundError("Bot has no published release")
 
@@ -340,18 +799,47 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             ).limit(1)
         ).scalar_one_or_none()
         if greeting_prompt is not None and greeting_prompt.versions:
-            variants = greeting_prompt.versions[0].variants or []
-            for variant in variants:
-                if variant.get("content"):
-                    greeting = variant["content"]
-                    break
+            # Keep an already-published greeting live while a newer version is
+            # being drafted or reviewed.  ``versions`` is ordered newest-first,
+            # so blindly taking index zero bypasses the prompt approval flow.
+            target = (
+                greeting_prompt.published_version
+                or greeting_prompt.active_version
+            )
+            version = next(
+                (v for v in greeting_prompt.versions if v.version == target),
+                None,
+            )
+            variants = (version.variants if version is not None else None) or []
+            # The variant is chosen by the bot's DEFAULT language (voice-map
+            # "default", else its first configured language) — never by the
+            # authoring order, which spoke a Hindi greeting on a bot whose
+            # default had been switched to English (cv_10dd1b13a5e1).
+            preferred = ((vbs.language_voice_map or {}).get("default") if vbs else None)
+            if not preferred:
+                first_language = session.scalars(
+                    select(BotLanguage.language_code)
+                    .where(BotLanguage.bot_id == bot_id)
+                    .order_by(BotLanguage.language_code)
+                ).first()
+                preferred = first_language or ""
+            greeting = select_greeting_variant(variants, preferred)
 
         intents = [
             {
                 "name": intent.name,
+                "description": intent.description or "",
                 "samples": intent.samples or [],
                 "route": intent.route,
                 "confidence_threshold": intent.confidence_threshold,
+                "fallback_behavior": intent.fallback_behavior,
+                # Entity slots + tool binding feed the hybrid intent pipeline:
+                # the classifier extracts these keys; the tool executor
+                # validates against the bound connection.
+                "entities": intent.entities or [],
+                "optional_entities": intent.optional_entities or [],
+                "api_connection_id": intent.api_connection_id,
+                "workflow_id": intent.workflow_id,
             }
             for intent in session.execute(
                 select(Intent).where(
@@ -377,14 +865,18 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             )
         ).scalars().all()
 
-        # Published structured system prompt wins; the generic fallback below
-        # covers bots that have not authored one yet.
+        # The published VERSION wins even while a newer active version is a
+        # draft/pending approval. Prompt.state describes the latest authoring
+        # lifecycle, so filtering on state="published" would make a saved
+        # draft hide the still-live published_version and silently fall back
+        # to the generic prompt.
         system_prompt = ""
+        prompt_id, prompt_version, prompt_mode = "", None, ""
         system_row = session.execute(
             select(Prompt).where(
                 Prompt.bot_id == bot_id,
                 Prompt.type == "system",
-                Prompt.state == "published",
+                Prompt.published_version.isnot(None),
                 Prompt.is_deleted.is_(False),
             ).limit(1)
         ).scalar_one_or_none()
@@ -393,6 +885,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             for version in system_row.versions:
                 if version.version == target and version.compiled_prompt:
                     system_prompt = version.compiled_prompt
+                    prompt_id = system_row.id
+                    prompt_version = version.version
+                    prompt_mode = version.prompt_mode or "structured"
                     break
         if not system_prompt:
             system_prompt = (
@@ -420,16 +915,35 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         _ensure_engine_allowed(session, "tts", tts_provider, tts_model)
         _ensure_engine_allowed(session, "llm", llm_provider, llm_model)
 
+        llm_settings_blob = (vbs.llm_settings if vbs else None) or {}
+        orchestration_engine = _resolve_decision_engine(
+            session, settings, bot_id=bot_id, llm_provider=llm_provider,
+            llm_model=llm_model, llm_settings=llm_settings_blob,
+        )
+
         default_voice_value = (
-            (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name
+            (
+                vbs.tts_voice
+                if vbs and vbs.tts_voice
+                else (vbs.voice_id if vbs and vbs.voice_id else bot.voice_id)
+            )
+            or settings.tts_voice
+            or voice_name
+        )
+        default_voice_identity = _voice_identity(
+            session, tts_provider, default_voice_value, bot.tenant_id
         )
         tts_engine = {
             "provider": tts_provider,
             "model": tts_model,
             "voice": _wire_voice(session, tts_provider, default_voice_value, bot.tenant_id),
-            "voice_name": _voice_display_name(session, default_voice_value, bot.tenant_id),
+            "voice_name": default_voice_identity.name,
+            "voice_gender": default_voice_identity.gender,
             "settings": (vbs.tts_settings if vbs else None) or {},
             "api_key_reference": _secret_ref_for(session, "tts", tts_provider),
+            # Realtime-capability of the selected model (catalog-driven): the
+            # runtime picks the WebSocket router or the segmented REST service.
+            "streaming": _model_streaming(session, "tts", tts_provider, tts_model),
         }
         tts_engine["language_map"] = _normalize_voice_map(session, vbs, tts_engine, bot.tenant_id)
         fallback = None
@@ -441,13 +955,17 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             if reason is not None:
                 logger.warning("fallback TTS engine skipped for bot %s: %s", bot_id, reason)
             else:
+                fallback_identity = _voice_identity(
+                    session, vbs.fallback_provider, vbs.fallback_voice, bot.tenant_id
+                )
                 fallback = {
                     "provider": vbs.fallback_provider,
                     "model": vbs.fallback_model or "",
                     "voice": _wire_voice(
                         session, vbs.fallback_provider, vbs.fallback_voice, bot.tenant_id
                     ),
-                    "voice_name": _voice_display_name(session, vbs.fallback_voice, bot.tenant_id),
+                    "voice_name": fallback_identity.name,
+                    "voice_gender": fallback_identity.gender,
                     "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
                 }
         tts_engine["fallback"] = fallback
@@ -493,6 +1011,50 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                           **(((vbs.audio_settings if vbs else None) or {}).get("telephony") or {})},
         }
 
+        # Human speech naturalness: platform defaults <- tenant override <-
+        # bot override, merged and clamped once here so the runtime and every
+        # cached snapshot carry the final effective config. The tenant's
+        # timezone rides along — it grounds the runtime's optional current
+        # date/time context (shared.orchestration.time_context).
+        tenant_settings_row = session.execute(
+            select(
+                TenantSetting.human_speech,
+                TenantSetting.timezone,
+                TenantSetting.turn_detection,
+                TenantSetting.default_languages,
+            ).where(
+                TenantSetting.tenant_id == bot.tenant_id
+            )
+        ).first()
+        tenant_human_speech = tenant_settings_row[0] if tenant_settings_row else None
+        tenant_default_languages = (
+            tenant_settings_row[3] if tenant_settings_row else None
+        ) or []
+        # A bot with no languages of its own inherits the tenant's defaults —
+        # the same list drives the default call language, the set the brain
+        # may switch to, and the STT auto-detect default below.
+        effective_langs = effective_languages(bot_languages, tenant_default_languages)
+        # STT language detection policy (shared.providers.stt_language_policy):
+        # explicit stt_settings.auto_detect_language wins, otherwise a bot
+        # with more than one effective language auto-detects and a
+        # single-language bot pins the recognizer to its default language.
+        # The effective value is stamped into the resolved settings so the
+        # runtime, the cache and the test tools all see one answer.
+        auto_detect = resolve_auto_detect_language(
+            vbs.stt_settings if vbs else None, bot_languages, tenant_default_languages,
+        )
+        stt_settings_effective = dict((vbs.stt_settings if vbs else None) or {})
+        stt_settings_effective[AUTO_DETECT_KEY] = auto_detect.enabled
+        tenant_timezone = (
+            tenant_settings_row[1] if tenant_settings_row else None
+        ) or "UTC"
+        tenant_turn_detection = resolve_tenant_turn_detection(
+            tenant_settings_row[2] if tenant_settings_row else None
+        )
+        human_speech, human_speech_sources = resolve_human_speech_with_sources(
+            tenant_human_speech, vbs.human_speech if vbs else None
+        )
+
         # Default call language: the explicit per-language voice map "default"
         # wins; otherwise the bot's own configured languages (bot_languages)
         # decide — a bare "en" here used to reach providers that only accept
@@ -500,38 +1062,67 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         # audio at all. Bot languages are DB-validated platform locale codes.
         default_language = ((vbs.language_voice_map or {}).get("default") if vbs else None)
         if not default_language:
-            default_language = bot_languages[0] if bot_languages else "en"
+            default_language = effective_langs[0] if effective_langs else "en"
+        _keep_unmapped_v4_locales_on_v3(
+            session, tts_engine,
+            list(dict.fromkeys([default_language, *bot_languages, *effective_langs])),
+            language_warnings, bot_id,
+        )
 
         return ResolvedBotConfig(
             tenant_id=bot.tenant_id,
             bot_id=bot.id,
             bot_name=bot.name,
+            use_case=bot.use_case or "",
             version=bot.live_version or bot.version or "draft",
+            workflow_pins=_published_workflow_pins(session, bot),
             published=bot.status == "published",
             language=default_language,
             greeting=greeting or f"Hello! You've reached {bot.name}. How can I help you today?",
             system_prompt=system_prompt,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            prompt_mode=prompt_mode,
             stt={
                 "provider": stt_provider,
                 "model": stt_model,
                 "language": (vbs.stt_language if vbs else None) or "",
-                "settings": (vbs.stt_settings if vbs else None) or {},
+                "settings": stt_settings_effective,
+                "auto_detect_language": auto_detect.as_dict(),
                 "api_key_reference": _secret_ref_for(session, "stt", stt_provider),
+                # Automatic key terms (saaras:v4, no operator list): resolved
+                # once per config snapshot, used by the Sarvam adapters.
+                "derived_keyterms": _derived_stt_keyterms(
+                    session, bot, stt_model=stt_model,
+                    stt_settings=stt_settings_effective, intents=intents,
+                    goal_policy=(vbs.goal_policy if vbs else None) or {},
+                    languages=list(effective_langs),
+                ) if stt_provider == "sarvam" else [],
             },
             tts=tts_engine,
             llm={
                 "provider": llm_provider,
                 "model": llm_model,
-                "settings": (vbs.llm_settings if vbs else None) or {},
+                "settings": llm_settings_blob,
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
+                "extra": _reply_request_options(bot_id, llm_settings_blob),
+                "orchestration": orchestration_engine,
             },
-            speed=vbs.speed if vbs else 1.0,
+            speed=clamp_speed(vbs.speed if vbs else None),
+            pause_ms=_clamp_int(vbs.pause_ms if vbs else None, 0, 5000, 350),
+            empathy=clamp_level(vbs.empathy if vbs else None),
+            energy=clamp_level(vbs.energy if vbs else None),
             kb_ids=list(kb_rows),
             intents=intents,
+            goal_policy=(vbs.goal_policy if vbs else None) or {},
+            human_speech=human_speech,
+            human_speech_sources=human_speech_sources,
+            turn_detection=tenant_turn_detection,
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
+            timezone=tenant_timezone,
             audio_settings=audio_settings,
-            languages=bot_languages,
+            languages=effective_langs,
             language_warnings=language_warnings,
         )
     finally:
@@ -568,6 +1159,17 @@ async def resolve_bot_config(
         except Exception:  # noqa: BLE001
             logger.warning("bot config cache write failed for %s", bot_id)
     return config
+
+
+# A dialer's ``To`` is either a DID (``+91…``) or a bot id. Bot ids are minted
+# as ``bot_<12 hex>`` (shared.ids.new_id) and no phone number can start with
+# that prefix, so the prefix alone discriminates the two without ambiguity.
+BOT_ID_PREFIX = "bot_"
+
+
+def is_bot_id(value: object) -> bool:
+    """Whether a dialer-supplied ``To`` names a bot directly rather than a DID."""
+    return isinstance(value, str) and value.strip().startswith(BOT_ID_PREFIX)
 
 
 def _phone_assignment_sync(phone_number: str) -> tuple[str | None, str | None]:
@@ -609,16 +1211,29 @@ async def resolve_bot_for_phone_number(phone_number: str) -> ResolvedBotConfig:
 
 
 async def resolve_bot_for_dialer(
-    called_number: str, requested_bot_id: str | None = None
+    called: str, requested_bot_id: str | None = None
 ) -> ResolvedBotConfig:
-    """Dialer routing: the dialed number anchors the tenant (trusted DB
-    mapping); the signed payload's ``botId`` may then select a different bot
-    *within that tenant* — per-campaign routing over a shared DID. Nothing
-    client-supplied ever picks the tenant, and a bot id from another tenant
-    resolves to a sanitized 404 (existence is not revealed)."""
-    default_bot_id, tenant_id = await asyncio.to_thread(
-        _phone_assignment_sync, called_number
-    )
+    """Dialer routing. ``called`` is the webhook's ``To`` value and anchors
+    the tenant in one of two ways:
+
+    - a DID → the trusted ``phone_numbers`` mapping names the tenant and the
+      number's assigned bot (the historical path, unchanged);
+    - a bot id (``bot_…``) → that bot is the target directly, no DID
+      assignment required. The signed webhook is the authorization to name
+      a bot; the bot must still exist, not be archived and have a published
+      release — exactly the gates a number's assigned bot passes.
+
+    Either way the signed payload's ``botId`` may then select a different bot
+    *within that tenant* — per-campaign routing over a shared DID. A bot id
+    from another tenant resolves to a sanitized 404 (existence is not
+    revealed)."""
+    if is_bot_id(called):
+        default_bot_id: str | None = called.strip()
+        tenant_id = await asyncio.to_thread(_bot_tenant_sync, default_bot_id)
+    else:
+        default_bot_id, tenant_id = await asyncio.to_thread(
+            _phone_assignment_sync, called
+        )
     if not requested_bot_id:
         if not default_bot_id:
             raise NotFoundError("A bot assignment for this number")

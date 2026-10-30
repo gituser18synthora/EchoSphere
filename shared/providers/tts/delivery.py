@@ -1,0 +1,334 @@
+"""Cross-provider delivery-tuning → provider-parameter mapping.
+
+Single source of truth for how the bot-level Delivery tuning controls
+(canonical speaking speed, Energy) translate into provider wire parameters.
+Both the live voice runtime (StreamingTTSRouter / pipeline REST path) and the
+backend voice preview call :func:`apply_delivery_params`, so preview and live
+calls can never diverge.
+
+Precedence rules (tested in tests/unit/test_delivery_tuning.py):
+
+- Canonical speed is authoritative: it OVERWRITES any legacy per-provider
+  ``pace``/``speed`` value still present in stored tts_settings. It is never
+  applied with ``setdefault``.
+- Energy is best-effort and conservative: it only fills provider fields the
+  operator has NOT explicitly configured, and only fields the selected model
+  documents (Sarvam pitch/loudness on bulbul:v2 only — never on bulbul:v3 or
+  bulbul:v4-flash — and never speed on eleven_v3). Unrelated provider settings
+  are passed through untouched.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+# Canonical delivery-speed range (matches the voice-settings API validation).
+SPEED_MIN, SPEED_MAX = 0.5, 2.0
+
+# Per-provider speed parameters that Delivery tuning owns. They are stripped
+# from stored/submitted provider settings (save AND preview) so a stale value
+# can never shadow the canonical speed after a provider/model change.
+LEGACY_SPEED_PARAMS = ("pace", "speed")
+
+# Documented per-provider/model speed-parameter ranges (catalog schemas).
+_SARVAM_PACE_RANGE = {"bulbul:v2": (0.3, 3.0)}
+_SARVAM_PACE_DEFAULT_RANGE = (0.5, 2.0)  # bulbul:v3 and newer
+_ELEVEN_SPEED_RANGE = (0.7, 1.2)
+# Deepgram /v1/speak ``speed`` query parameter (docs, verified 2026-09-21).
+_DEEPGRAM_SPEED_RANGE = (0.7, 1.5)
+# ElevenLabs models whose voice_settings reject ``speed`` (Eleven v3 alpha).
+_ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
+# ElevenLabs models whose voice_settings accept ONLY ``stability``. The
+# Text-to-Dialogue endpoint documents no other setting and the adapter drops
+# anything else, so Energy must not synthesize a ``style`` for them: the
+# operator would see an Energy control that provably changes nothing.
+_ELEVEN_STABILITY_ONLY_MODELS = {"eleven_v3_conversational"}
+# Sarvam models with the v2-only pitch control. Delivery Energy maps onto
+# pitch + loudness for these only: bulbul:v3 / v4-flash take loudness too,
+# but Energy never sets it there, so their bots keep the sound they had.
+_SARVAM_PITCH_MODELS = {"bulbul:v2"}
+#: Sarvam ``loudness``: a gain multiplier, API default 1.0, omitted on the
+#: wire at the default so a bot that never set it renders exactly as before.
+#: Offered on every bulbul model, each with its own range in its catalog
+#: schema, which is what validation reads: v2 0.3-3.0 (API reference), v3 and
+#: v4-flash 0.1-2.5 (the API 400s outside it: "For the Bulbul V3 and V4
+#: models, loudness should be between 0.1 and 2.5"). The reference calls it
+#: v2-only; measured 2026-10-26, REST and WebSocket alike, v3 and v4-flash
+#: render 0.1 about 20 dB quieter and 2.5 about 6 dB louder (peaks limited
+#: just under 0 dBFS).
+SARVAM_LOUDNESS_DEFAULT = 1.0
+_SARVAM_LOUDNESS_MODELS = {"bulbul:v2", "bulbul:v3", "bulbul:v4-flash"}
+
+
+def sarvam_accepts_loudness(model: str | None) -> bool:
+    """Whether a Sarvam bulbul model takes the ``loudness`` parameter."""
+    return str(model or "").strip() in _SARVAM_LOUDNESS_MODELS
+
+
+def effective_loudness(
+    provider: str | None, model: str | None, params: dict | None,
+) -> float | None:
+    """Loudness a reply is rendered with: the configured value, else the API
+    default — None when the engine has no loudness control at all."""
+    if (provider or "") != "sarvam" or not sarvam_accepts_loudness(model):
+        return None
+    value = (params or {}).get("loudness")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return SARVAM_LOUDNESS_DEFAULT
+
+
+def omit_default_loudness(params: dict) -> dict:
+    """Drop ``loudness`` when it equals the API default (no wire change)."""
+    value = params.get("loudness")
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and float(value) == SARVAM_LOUDNESS_DEFAULT):
+        params = {k: v for k, v in params.items() if k != "loudness"}
+    return params
+
+# Conservative native Energy mappings, keyed by the band's upper bound.
+# ElevenLabs: ``style`` is the documented expressiveness control; kept well
+# below the instability zone. Sarvam v2: mild pitch/loudness shifts inside the
+# documented ranges. The 41–60 band is neutral — nothing is sent.
+_ELEVEN_ENERGY_STYLE = ((20, 0.0), (40, 0.0), (60, None), (80, 0.2), (100, 0.4))
+_SARVAM_V2_ENERGY = (
+    (20, {"pitch": -0.1, "loudness": 0.85}),
+    (40, {"pitch": -0.05, "loudness": 0.95}),
+    (60, None),
+    (80, {"pitch": 0.05, "loudness": 1.15}),
+    (100, {"pitch": 0.1, "loudness": 1.3}),
+)
+
+
+@dataclass(frozen=True)
+class DeliveryCapabilities:
+    """Native delivery controls safe for one provider/model transport.
+
+    ``per_segment_*`` is deliberately stricter than basic support: it is true
+    only when a setting can change between already-segmented sentences without
+    reconnecting or force-flushing a live socket. Unsupported dimensions stay
+    in the provider-neutral speech plan and degrade to phrase segmentation and
+    bounded pauses; adapters never receive guessed wire parameters.
+    """
+
+    speaking_rate: bool = False
+    per_segment_rate: bool = False
+    emphasis: bool = False
+    pitch: bool = False
+    energy: bool = False
+    question_style: bool = False
+    emotional_style: bool = False
+    phrase_boundaries: bool = False
+
+
+def delivery_capabilities(
+    provider: str,
+    model: str = "",
+    *,
+    streaming: bool = False,
+) -> DeliveryCapabilities:
+    """Return conservative, documented capabilities for the selected path."""
+    provider = (provider or "").strip().lower()
+    model = (model or "").strip()
+    if provider == "elevenlabs":
+        has_rate = speed_param_name(provider, model) is not None
+        # Eleven v3 dialogue models accept only ``stability``: there is no
+        # native Energy target, so the capability must report False rather
+        # than advertise a control the wire silently ignores.
+        has_energy = model not in _ELEVEN_STABILITY_ONLY_MODELS
+        # Every REST sentence is an independent request. ElevenLabs WS may
+        # vary settings safely only because pause mode creates independent
+        # multi-context sub-generations on the existing socket.
+        return DeliveryCapabilities(
+            speaking_rate=has_rate,
+            per_segment_rate=has_rate,
+            energy=has_energy,
+            emotional_style=True,
+            phrase_boundaries=True,
+        )
+    if provider == "deepgram":
+        # Aura exposes exactly one native delivery control: the ``speed``
+        # query parameter. REST sends it per request; the realtime socket
+        # carries it in the connection URL, so it cannot change between the
+        # sentences of one reply without reconnecting.
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            per_segment_rate=not streaming,
+            phrase_boundaries=True,
+        )
+    if provider == "sarvam":
+        v2 = model in _SARVAM_PITCH_MODELS
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            # Re-sending Sarvam WS config force-flushes the socket. REST calls
+            # are independent and can safely carry their own pace.
+            per_segment_rate=not streaming,
+            pitch=v2,
+            energy=v2,
+            phrase_boundaries=True,
+        )
+    if provider in ("google", "openai"):
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            per_segment_rate=not streaming,
+            phrase_boundaries=True,
+        )
+    # Azure and unknown/custom adapters expose no safe native delivery knobs
+    # through EchoSphere's current contract. Sentence segmentation still
+    # preserves phrase boundaries without sending unsupported parameters.
+    return DeliveryCapabilities(phrase_boundaries=not streaming)
+
+
+def strip_speed_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop the Delivery-owned per-provider speed duplicates from settings."""
+    return {k: v for k, v in (params or {}).items() if k not in LEGACY_SPEED_PARAMS}
+
+
+def speed_range(provider: str, model: str = "") -> tuple[float, float] | None:
+    """Documented speed range for the model, or None when it has no control.
+
+    Exposed so the API can tell the UI which bounds to render for the
+    canonical speaking-speed control instead of hardcoding provider ranges.
+    """
+    if speed_param_name(provider, model) is None:
+        return None
+    if provider == "sarvam":
+        return _SARVAM_PACE_RANGE.get(model, _SARVAM_PACE_DEFAULT_RANGE)
+    if provider == "elevenlabs":
+        return _ELEVEN_SPEED_RANGE
+    if provider == "deepgram":
+        return _DEEPGRAM_SPEED_RANGE
+    return None
+
+
+def clamp_speed(value: float | int | None, default: float = 1.0) -> float:
+    """Clamp a canonical delivery speed into the supported range."""
+    try:
+        speed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(SPEED_MAX, max(SPEED_MIN, speed))
+
+
+def clamp_level(value: int | float | None, default: int = 50) -> int:
+    """Clamp a 0–100 delivery level (empathy/energy)."""
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(100, max(0, level))
+
+
+def speed_param_name(provider: str, model: str = "") -> str | None:
+    """The wire parameter the provider uses for speaking speed, if any."""
+    if provider == "sarvam":
+        return "pace"
+    if provider == "elevenlabs":
+        return None if model in _ELEVEN_NO_SPEED_MODELS else "speed"
+    if provider == "deepgram":
+        return "speed"
+    return None
+
+
+def provider_speed(provider: str, model: str, speed: float) -> float:
+    """Canonical speed clamped into the selected model's documented range."""
+    speed = clamp_speed(speed)
+    if provider == "sarvam":
+        low, high = _SARVAM_PACE_RANGE.get(model, _SARVAM_PACE_DEFAULT_RANGE)
+    elif provider == "elevenlabs":
+        low, high = _ELEVEN_SPEED_RANGE
+    elif provider == "deepgram":
+        low, high = _DEEPGRAM_SPEED_RANGE
+    else:
+        return speed
+    return min(high, max(low, speed))
+
+
+def _band_value(bands, level: int):
+    for upper, value in bands:
+        if level <= upper:
+            return value
+    return None
+
+
+def energy_params(provider: str, model: str, energy: int | None) -> dict[str, Any]:
+    """Native provider parameters for a Delivery-tuning Energy level.
+
+    Returns only fields the selected model documents; an empty dict means the
+    provider has no safe native control for this level (the LLM delivery
+    instruction remains the cross-provider behavior).
+    """
+    if energy is None:
+        return {}
+    level = clamp_level(energy)
+    if provider == "elevenlabs":
+        if model in _ELEVEN_STABILITY_ONLY_MODELS:
+            # No native expressiveness knob to map onto — the cross-provider
+            # LLM delivery instruction remains the behavior for these models.
+            return {}
+        style = _band_value(_ELEVEN_ENERGY_STYLE, level)
+        return {} if style is None else {"style": style}
+    if provider == "sarvam" and model in _SARVAM_PITCH_MODELS:
+        mapped = _band_value(_SARVAM_V2_ENERGY, level)
+        return dict(mapped) if mapped else {}
+    return {}
+
+
+def apply_delivery_params(
+    provider: str,
+    model: str,
+    params: dict[str, Any] | None,
+    *,
+    speed: float | None = None,
+    energy: int | None = None,
+) -> dict[str, Any]:
+    """Overlay canonical delivery tuning onto provider synthesis parameters.
+
+    Returns a new dict — the input is never mutated. See the module docstring
+    for the precedence rules.
+    """
+    merged: dict[str, Any] = dict(params or {})
+    # Energy first (fill-only), so an explicit operator setting always wins.
+    for key, value in energy_params(provider, model, energy).items():
+        if merged.get(key) is None:
+            merged[key] = value
+    if speed is not None:
+        # Drop legacy duplicates for the OTHER naming so a stale value can
+        # never shadow the canonical speed after a provider change.
+        merged.pop("pace", None)
+        merged.pop("speed", None)
+        key = speed_param_name(provider, model)
+        if key is not None:
+            merged[key] = provider_speed(provider, model, speed)
+    return merged
+
+
+def resolve_engine_params(
+    tts: dict[str, Any] | None,
+    engine: dict[str, Any] | None,
+    *,
+    speed: float | None = None,
+    energy: int | None = None,
+) -> dict[str, Any]:
+    """The synthesis parameters a reply is generated with for ``engine``.
+
+    Single source of truth shared by the streaming TTS router and every
+    pre-rendered sound that must match the reply's voice (latency cues,
+    acknowledgements, previews). The bot's saved ``tts.settings`` describe
+    the DEFAULT engine's provider/model and apply only to engines matching
+    that selection; a per-language override or the fallback engine carries
+    its own validated ``params``. Canonical Delivery speed/energy are then
+    overlaid exactly as for the reply (see :func:`apply_delivery_params`).
+    """
+    tts = tts or {}
+    engine = engine or {}
+    provider = str(engine.get("provider") or tts.get("provider") or "sarvam")
+    model = str(engine.get("model") or tts.get("model") or "")
+    inherits_base = (
+        provider == str(tts.get("provider") or "sarvam")
+        and model == str(tts.get("model") or "")
+    )
+    base = dict(tts.get("settings") or {}) if inherits_base else {}
+    params = {**base, **(engine.get("params") or {})}
+    return apply_delivery_params(provider, model, params, speed=speed, energy=energy)

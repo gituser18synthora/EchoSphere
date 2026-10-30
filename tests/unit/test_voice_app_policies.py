@@ -1,49 +1,69 @@
 """Call-level policies in the voice worker app.
 
-- Telephony output rate: every telephony serializer speaks fixed L16@8k
-  (the FreeSWITCH streamAudio envelope literally declares sampleRate 8000),
-  so a bot configured with any other telephony rate would play at the wrong
-  speed on the caller's phone. The app must force 8 kHz.
-- Session timeout: pipecat's session_timeout is an ABSOLUTE one-shot timer,
-  not an inactivity timeout — it must never drop a live conversation.
+WebSocket shutdown must be idempotent: the pipecat transport usually sends
+the close frame itself (client disconnect, worker cancellation, normal end),
+and Starlette raises ``RuntimeError: Cannot call "send" once a close message
+has been sent`` on a second close. Every shutdown path in the app goes
+through ``_close_websocket``, which must close at most once and never raise.
 """
 
-import logging
+from fastapi.websockets import WebSocketState
 
-from voice_runtime.app import (
-    TELEPHONY_SAMPLE_RATE,
-    resolve_telephony_sample_rate,
-    session_timeout_should_cancel,
-)
+from voice_runtime.app import _close_websocket
 
 
-class _RecorderStub:
-    def __init__(self, turns):
-        self.turns = turns
+class _FakeWebSocket:
+    """Mimics Starlette's close-state machine."""
+
+    def __init__(self, application_state=WebSocketState.CONNECTED):
+        self.application_state = application_state
+        self.close_calls: list[tuple[int, str]] = []
+
+    async def close(self, code=1000, reason=""):
+        if self.application_state == WebSocketState.DISCONNECTED:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        self.application_state = WebSocketState.DISCONNECTED
+        self.close_calls.append((code, reason))
 
 
-class TestTelephonySampleRate:
-    def test_default_is_8k(self):
-        assert resolve_telephony_sample_rate({}) == TELEPHONY_SAMPLE_RATE == 8000
+class _ExplodingWebSocket(_FakeWebSocket):
+    """Transport died mid-close (client vanished): close always raises."""
 
-    def test_configured_8k_is_kept(self):
-        assert resolve_telephony_sample_rate({"sampleRate": 8000}) == 8000
-
-    def test_other_rates_are_clamped_with_warning(self, caplog):
-        # 16k config + 8k envelope = half-speed playback; must be impossible.
-        with caplog.at_level(logging.WARNING, logger="voice_runtime.app"):
-            assert resolve_telephony_sample_rate(
-                {"sampleRate": 16000}, bot_id="bot-x", provider="freeswitch"
-            ) == 8000
-        assert any("16000" in r.getMessage() for r in caplog.records)
-
-    def test_string_rate_from_json_is_handled(self):
-        assert resolve_telephony_sample_rate({"sampleRate": "24000"}) == 8000
+    async def close(self, code=1000, reason=""):
+        raise RuntimeError('Cannot call "send" once a close message has been sent.')
 
 
-class TestSessionTimeoutPolicy:
-    def test_dead_session_without_turns_is_cancelled(self):
-        assert session_timeout_should_cancel(_RecorderStub([])) is True
+class TestIdempotentClose:
+    async def test_closes_once_with_code_and_reason(self):
+        ws = _FakeWebSocket()
+        await _close_websocket(ws, code=4401, reason="unknown or expired session")
+        assert ws.close_calls == [(4401, "unknown or expired session")]
+        assert ws.application_state == WebSocketState.DISCONNECTED
 
-    def test_live_call_with_turns_is_never_cancelled(self):
-        assert session_timeout_should_cancel(_RecorderStub([object()])) is False
+    async def test_second_close_is_a_noop(self):
+        # The disconnect handler, the pipeline teardown and the _run_call
+        # finally block may all reach close — only the first may send.
+        ws = _FakeWebSocket()
+        await _close_websocket(ws)
+        await _close_websocket(ws)
+        await _close_websocket(ws, code=4500, reason="late error path")
+        assert len(ws.close_calls) == 1
+
+    async def test_skips_when_transport_already_closed(self):
+        # Pipecat's FastAPI transport closed the socket during the call.
+        ws = _FakeWebSocket(application_state=WebSocketState.DISCONNECTED)
+        await _close_websocket(ws)
+        assert ws.close_calls == []
+
+    async def test_close_race_never_raises(self):
+        # State says CONNECTED but the close frame is already on the wire
+        # (the exact race behind the production RuntimeError).
+        ws = _ExplodingWebSocket()
+        await _close_websocket(ws)  # must not raise
+
+    async def test_pre_accept_denial_still_closes(self):
+        # Session rejection happens before accept(); the handshake denial
+        # close must still go out.
+        ws = _FakeWebSocket(application_state=WebSocketState.CONNECTING)
+        await _close_websocket(ws, code=4404, reason="unknown provider")
+        assert ws.close_calls == [(4404, "unknown provider")]

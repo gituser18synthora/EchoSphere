@@ -91,7 +91,12 @@ class AnthropicLLM(LLMProvider):
         )
         if not key:
             raise ProviderError(self.name, "auth", "Missing API key reference")
-        self._client = AsyncAnthropic(api_key=key, timeout=config.timeout_seconds)
+        # max_retries=0: the SDK's default 2 hidden retries stack under the
+        # callers' own bounded retries and blow the voice latency budget —
+        # retry policy is owned by the brain/API layers, never the SDK.
+        self._client = AsyncAnthropic(
+            api_key=key, timeout=config.timeout_seconds, max_retries=0
+        )
         self._model = config.model or _DEFAULT_MODEL
 
     def _request_kwargs(
@@ -177,12 +182,17 @@ class AnthropicLLM(LLMProvider):
                     if usage is not None:
                         from shared.providers.base import LLMStreamUsage
 
+                        # Anthropic's input_tokens EXCLUDES cache reads (they
+                        # are reported separately) — normalize to the gross-
+                        # including-cached convention LLMStreamUsage defines.
+                        cache_read = int(
+                            getattr(usage, "cache_read_input_tokens", 0) or 0
+                        )
                         self.last_stream_usage = LLMStreamUsage(
-                            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                            input_tokens=int(getattr(usage, "input_tokens", 0) or 0)
+                            + cache_read,
                             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                            cached_tokens=int(
-                                getattr(usage, "cache_read_input_tokens", 0) or 0
-                            ),
+                            cached_tokens=cache_read,
                         )
                 except Exception:  # noqa: BLE001 — usage capture must not break the call
                     pass

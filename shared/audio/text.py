@@ -49,8 +49,143 @@ _ABBREV_ENDINGS = (
 _SIMPLE_SPLIT_RE = re.compile(r"(?<=[.?!])\s+")
 
 
+# Any Unicode letter or digit, any script (\w minus underscore). A segment
+# without one — an orphan ".", "…", "-", an emoji tail — has nothing a TTS
+# engine can voice. Sarvam's streaming API rejects such payloads with a 422
+# error event AND closes the socket, so they must never reach a provider.
+_SPEAKABLE_RE = re.compile(r"[^\W_]")
+
+# Identifiers are references, not quantities.  TTS providers commonly read a
+# compact value such as ``601001`` as "six hundred one thousand and one", and
+# ElevenLabs v3 garbled an order's last four digits ``9203`` outright
+# (cv_3324204e8584, 2026-09-23), which makes the identifier impossible to
+# verify over a call.  Keep the rewrite deliberately label-scoped so dates,
+# amounts, room counts and other ordinary numbers retain their natural
+# pronunciation: a digit run is spaced only when an identifier label sits
+# right in front of it, and never when a currency/percent word follows it or
+# it continues into a date/decimal.
+_ID_NOUNS = (
+    r"booking|reservation|बुकिंग|आरक्षण"
+    r"|order|ऑर्डर|ऑर्डर|आर्डर|ओर्डर"
+    r"|ticket|टिकट|टिकेट"
+    r"|reference|ref|रेफरेंस|रेफ़रेंस|रिफरेंस"
+    r"|transaction|txn|ट्रांज़ैक्शन|ट्रांजैक्शन|ट्रांजेक्शन"
+    r"|complaint|शिकायत|case|केस|pnr|पीएनआर|utr|otp|ओटीपी"
+    r"|tracking|ट्रैकिंग|awb|consignment|shipment|शिपमेंट|parcel|पार्सल"
+)
+# Labels that mark a reference on their own ("customer ID 700102",
+# "phone number 9876543210", "OTP 4821", "pin code 400001").
+_ID_WORDS = (
+    r"id|आईडी|आई\.?\s?डी\.?|number|नंबर|नम्बर|संख्या|no\.?|num|code|कोड"
+)
+# "…ऑर्डर का आखिरी चार अंक 9203 हैं" / "last four digits are 9203" — the
+# digit-count noun right before the run is the label.
+_DIGITS_WORDS = r"digits?|अंक|अंकों|ank|ankon"
+_ID_CONNECTORS = r"is|are|was|hai|hain|tha|है|हैं|था"
+# A labelled run that is really a quantity ("order 1200 rupees ka tha").
+_QUANTITY_SUFFIX = (
+    r"रुपये|रुपए|रुपया|रु\.?|rupees?|rupaye|rupay|rs\.?|inr|₹"
+    r"|%|percent|प्रतिशत|paise|पैसे"
+)
+_BOOKING_ID_RE = re.compile(
+    r"(?P<prefix>(?<!\w)"
+    r"(?:(?:" + _ID_NOUNS + r")(?:\s+(?:" + _ID_WORDS + r"))?"
+    r"|(?:" + _ID_WORDS + r")"
+    r"|(?:" + _DIGITS_WORDS + r"))"
+    r"(?:\s+(?:" + _ID_CONNECTORS + r"))?\s*[:#-]?\s*)"
+    r"(?P<identifier>\d{4,18})"
+    r"(?!\d|[-/.:]\d|\s*(?:" + _QUANTITY_SUFFIX + r")(?!\w))",
+    re.IGNORECASE,
+)
+
+
+# ── foreign-script guard ─────────────────────────────────────────────────────
+# Smaller LLMs generating Indic text occasionally leak tokens from unrelated
+# scripts ("രണ്ട് հազար രൂപ", "XX0923 бойынша", "具体മായ") — observed on a
+# Malayalam collections bot with gpt-5-mini. Such characters are unspeakable
+# for the target voice and can break the provider. Letters from scripts that
+# cannot belong to the reply language are removed before synthesis; Latin
+# (code-switched business terms, names) and Devanagari (Hindi lender/brand
+# names used across the platform) are always kept, as are digits, symbols and
+# punctuation. Unknown target languages keep the text untouched.
+_SCRIPT_BY_BASE_LANGUAGE = {
+    "hi": "DEVANAGARI", "mr": "DEVANAGARI", "ne": "DEVANAGARI",
+    "ml": "MALAYALAM", "ta": "TAMIL", "te": "TELUGU", "kn": "KANNADA",
+    "bn": "BENGALI", "gu": "GUJARATI", "pa": "GURMUKHI", "or": "ORIYA",
+    "en": "LATIN",
+}
+_ALWAYS_ALLOWED_SCRIPTS = frozenset({"LATIN", "DEVANAGARI"})
+
+
+def _letter_script(char: str) -> str | None:
+    import unicodedata
+
+    try:
+        return unicodedata.name(char).split()[0]
+    except ValueError:
+        return None
+
+
+def strip_foreign_scripts(text: str, language: str | None) -> tuple[str, dict[str, int]]:
+    """Remove letters from scripts foreign to ``language``.
+
+    Returns ``(cleaned_text, {script_name: removed_count})``. Nothing is
+    removed for an unknown language, and the original text is returned when
+    stripping would leave nothing speakable.
+    """
+    if not text:
+        return text, {}
+    base = (language or "").split("-")[0].lower()
+    target = _SCRIPT_BY_BASE_LANGUAGE.get(base)
+    if target is None:
+        return text, {}
+    allowed = _ALWAYS_ALLOWED_SCRIPTS | {target}
+    removed: dict[str, int] = {}
+    out: list[str] = []
+    for char in text:
+        if char.isalpha():
+            script = _letter_script(char)
+            if script is not None and script not in allowed and script != "DIGIT":
+                removed[script] = removed.get(script, 0) + 1
+                continue
+        out.append(char)
+    if not removed:
+        return text, {}
+    cleaned = re.sub(r" {2,}", " ", "".join(out)).strip()
+    if not has_speakable_text(cleaned):
+        return text, {}
+    return cleaned, removed
+
+
+def has_speakable_text(text: str) -> bool:
+    """True when the text contains at least one letter or digit (any script)."""
+    return bool(_SPEAKABLE_RE.search(text or ""))
+
+
+def verbalize_booking_ids(text: str) -> str:
+    """Space labelled identifiers so TTS reads them digit by digit.
+
+    Covers booking/order/ticket/reference/transaction IDs, OTPs, "customer
+    ID …", "phone number …" and "last four digits …" readouts in English,
+    Hinglish and Devanagari.  Only a digit run directly after such a label is
+    touched: amounts ("400 रुपये", "1200 rupees"), dates ("4 अगस्त",
+    "2026-09-23") and unlabelled numbers keep their natural pronunciation.
+
+    The visible assistant response and persisted transcript remain unchanged;
+    this helper is part of TTS-only text preparation.  Applying it more than
+    once is safe because an already spaced identifier no longer matches the
+    compact-number pattern.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        identifier = match.group("identifier")
+        return f"{match.group('prefix')}{' '.join(identifier)}"
+
+    return _BOOKING_ID_RE.sub(_replace, text or "")
+
+
 def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
-    """Normalize LLM output for speech synthesis without altering spoken content."""
+    """Normalize LLM output into provider-safe, unambiguous spoken text."""
     if not text:
         return ""
     cleaned = text.replace("\u00a0", " ")
@@ -59,6 +194,7 @@ def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
     cleaned = re.sub(r"[*_`#]+", "", cleaned)
     cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
     cleaned = re.sub(r" +", " ", cleaned).strip()
+    cleaned = verbalize_booking_ids(cleaned)
     if ensure_terminal_punct and cleaned and not _has_terminal_punct(cleaned):
         cleaned = cleaned + _default_terminal_punct(cleaned)
     return cleaned

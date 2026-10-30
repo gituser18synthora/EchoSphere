@@ -1,0 +1,750 @@
+"""Human speech naturalness — runtime wiring.
+
+Covers the three integration seams:
+- ConversationBrain: transient prefaces mask LLM/tool latency, never enter
+  conversation history; backchannels never count as the bot's reply.
+- StreamingTTSRouter: per-sentence pause/rate variation in pause mode.
+- CallerAudioGate: the backchannel window keeps a mid-utterance murmur from
+  poisoning the caller's own live speech segment.
+"""
+
+import asyncio
+import logging
+import random
+from types import SimpleNamespace
+
+import pytest
+
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    TextFrame,
+    TranscriptionFrame,
+    TTSAudioRawFrame,
+    UserStartedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
+
+from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.intent_classifier import IntentClassification
+from shared.orchestration.naturalness import SpeechNaturalnessPlanner, TurnSpeechPlan
+from shared.orchestration.router import RouteDecision, RouteKind
+from shared.providers.tts.streaming import TTSStreamEvent, TTSStreamSettings
+from voice_runtime.audio_gate import CallerAudioGate
+from voice_runtime.brain import ConversationBrain
+from voice_runtime.frames import TTSFlushHintFrame
+from voice_runtime.tts_router import _Generation, _Sentence
+from voice_runtime.latency_filler import scale_pcm
+from voice_runtime.services import EchoTTSService
+
+from tests.unit.test_tts_router_flush_finals import (
+    ENGINE,
+    KEY,
+    FakeProvider,
+    audio_frames,
+    make_router,
+)
+
+GRACE = 0.05
+
+
+def planner(overrides=None, seed=7):
+    base = {"enabled": True}
+    base.update(overrides or {})
+    return SpeechNaturalnessPlanner(base, rng=random.Random(seed))
+
+
+# ── brain harness (mirrors test_brain_call_session) ─────────────────────
+
+
+class _RecorderStub:
+    def __init__(self):
+        self.events = []
+        self.session_id = "s-nat"
+        self.usage = {"kb_searches": 0, "llm_output_tokens": 0}
+        self.turns = []
+        self.language = "hi-IN"
+
+    def add_event(self, kind, **data):
+        self.events.append((kind, data))
+
+    def add_turn(self, turn):
+        self.turns.append(turn)
+
+    async def flush_event(self, kind, **data):
+        self.events.append((kind, data))
+
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+    def event_kinds(self):
+        return [kind for kind, _ in self.events]
+
+
+class _StreamingLLMStub:
+    def __init__(self, tokens):
+        self._tokens = tokens
+        self.calls = []
+        self.last_stream_usage = None
+
+    def stream(self, history, *, system, temperature, max_tokens):
+        self.calls.append({"history": [dict(m) for m in history], "system": system})
+
+        async def _gen():
+            for token in self._tokens:
+                yield token
+
+        return _gen()
+
+
+def make_brain(*, llm=None, naturalness=None, tts=None) -> ConversationBrain:
+    config = ResolvedBotConfig(
+        tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
+        published=True, language="hi-IN", languages=["hi-IN"],
+        stt={"provider": "sarvam"}, tts=tts or {}, system_prompt="You are Test.",
+    )
+    brain = ConversationBrain(
+        config=config, llm=llm, recorder=_RecorderStub(),
+        finalize_grace=GRACE, naturalness=naturalness,
+    )
+    brain._pushed = []
+    brain._notified = []
+
+    async def _push(frame, direction=None):
+        brain._pushed.append(frame)
+
+    async def _notify(payload):
+        brain._notified.append(payload)
+
+    brain.push_frame = _push
+    brain._notify_client = _notify
+
+    def _create_task(coro, name=None):
+        return asyncio.get_event_loop().create_task(coro)
+
+    async def _cancel_task(task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    brain.create_task = _create_task
+    brain.cancel_task = _cancel_task
+    return brain
+
+
+def transcript(text, language="hi-IN"):
+    return TranscriptionFrame(text=text, user_id="u", timestamp="t", language=language)
+
+
+async def settle_turn():
+    await asyncio.sleep(GRACE * 2)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+def assistant_history(brain):
+    return [m["content"] for m in brain._history if m["role"] == "assistant"]
+
+
+# ── brain: streamed-reply preface ────────────────────────────────────────
+
+
+async def test_fast_reply_has_no_dispatch_time_acknowledgement():
+    llm = _StreamingLLMStub(["Aapka sawaal ", "samajh gaya, batata hoon."])
+    brain = make_brain(
+        llm=llm,
+        naturalness=planner({"thinking_filler_probability": 1.0,
+                             "acknowledgement_probability": 1.0}),
+    )
+    await brain.process_frame(
+        transcript("mujhe apne account ke baare mein jaanna hai"),
+        FrameDirection.DOWNSTREAM,
+    )
+    await settle_turn()
+
+    frames = brain._pushed
+    texts = [f.text for f in frames if isinstance(f, TextFrame)]
+    # Only the semantic answer enters the shared TTS queue, even when an
+    # acknowledgement was configured with probability one.
+    assert "early_ack_played" not in brain._recorder.event_kinds()
+    reply = assistant_history(brain)[-1]
+    assert reply == "Aapka sawaal samajh gaya, batata hoon."
+    assert "".join(texts) == reply
+    event = dict(brain._recorder.events)["orchestration_turn"]
+    assert event["human_speech_enabled"] is True
+    assert event["naturalness"]["filler_used"] is False        # nothing glued
+    assert event["naturalness"]["early_ack_spoken"] is False
+    await brain.cleanup()
+
+
+def attach_latency_filler(brain):
+    from tests.unit.test_latency_filler import make_filler, _AcknowledgementCueStub
+
+    filler = make_filler(delay_ms=60, cue_library=_AcknowledgementCueStub(), recorder=brain._recorder)
+    filler.acknowledgement_hook = brain._on_latency_ack_played
+    brain._latency_filler = filler
+    return filler
+
+
+async def test_delayed_ack_audio_is_not_the_reply():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    async def _slow_turn(text):
+        await asyncio.sleep(0.5)
+
+    brain._handle_turn = _slow_turn
+    filler = attach_latency_filler(brain)
+    await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    await asyncio.sleep(0.08)
+    assert "early_ack_played" in brain._recorder.event_kinds()
+    assert filler.playing
+    # Its audio must not close the latency measurement or count as the reply.
+    assert brain._reply_audio_started is False
+    assert brain._latency.bot_started_at is None
+    assert brain._bot_speaking is False
+    # The reply's own audio owns the marks.
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._reply_audio_started is True
+    assert brain._latency.bot_started_at is not None
+    await brain.cleanup()
+
+
+async def test_caller_continuing_over_the_ack_merges_instead_of_barging_in():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    async def _slow_turn(text):
+        await asyncio.sleep(0.5)
+
+    brain._handle_turn = _slow_turn
+    filler = attach_latency_filler(brain)
+    await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    await asyncio.sleep(0.08)
+    assert filler.playing
+    # The caller keeps talking over "जी…": a continuation of their thought,
+    # rewound and merged — not an interruption of a reply nobody heard yet.
+    await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    kinds = brain._recorder.event_kinds()
+    assert "barge_in" not in kinds
+    cancelled = [d for k, d in brain._recorder.events if k == "generation_cancelled"]
+    assert cancelled and cancelled[-1]["reason"] == "late_transcript_merge"
+    assert not filler.armed
+    await brain.cleanup()
+
+
+async def test_early_ack_withheld_for_dictated_digits_and_disabled_layer():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+    handled = []
+
+    async def _handle(text):
+        handled.append(text)
+
+    brain._handle_turn = _handle
+    await brain.process_frame(transcript("sat zero zero ek do teen"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    assert handled and "early_ack_played" not in brain._recorder.event_kinds()
+    assert [f for f in brain._pushed if isinstance(f, TextFrame)] == []
+
+    off = make_brain(llm=_StreamingLLMStub(["Theek hai."]), naturalness=planner({"enabled": False}))
+    off._handle_turn = _handle
+    await off.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    assert "early_ack_played" not in off._recorder.event_kinds()
+    await brain.cleanup()
+    await off.cleanup()
+
+
+async def test_early_ack_context_follows_the_callers_words():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    for text, expected in (
+        ("haan bol raha hoon", "answer"),
+        ("mera order kab aayega", "question"),
+        ("aapka office kahan hai?", "question"),
+    ):
+        brain._recorder.events.clear()
+        brain._naturalness._last_early_ack_turn = None   # isolate from anti-repetition
+        planned = brain._plan_early_ack(text)
+        assert planned and planned["context"] == expected, (text, planned)
+        assert "early_ack_played" not in brain._recorder.event_kinds()
+    await brain.cleanup()
+
+
+async def test_disabled_naturalness_changes_nothing():
+    llm = _StreamingLLMStub(["Theek hai."])
+    brain = make_brain(llm=llm, naturalness=planner({"enabled": False}))
+    await brain.process_frame(
+        transcript("mujhe jaankari chahiye"), FrameDirection.DOWNSTREAM
+    )
+    await settle_turn()
+    texts = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+    assert texts == ["Theek hai."]
+    event = dict(brain._recorder.events)["orchestration_turn"]
+    assert event["human_speech_enabled"] is False
+    assert event["naturalness"]["filler_used"] is False
+
+
+def test_runtime_derives_structured_criticality_before_speech():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    ordinary_plan = SimpleNamespace(
+        action="", verify_reference=None, scripted_final=False
+    )
+
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.SAFETY), None, ordinary_plan, None, False
+    ) == "compliance_route"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.TOOL),
+        IntentClassification(tool_name="lookup_customer"),
+        ordinary_plan,
+        None,
+        True,
+    ) == "tool_result"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.CHAT), None, ordinary_plan,
+        "payment_intent", False,
+    ) == "repayment_commitment"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.CHAT), None,
+        SimpleNamespace(
+            action="ask_identity_confirmation", verify_reference=None,
+            scripted_final=False,
+        ),
+        None,
+        False,
+    ) == "identity_verification"
+
+
+async def test_direct_say_preface_keeps_history_semantic():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    brain._turn_speech_plan = TurnSpeechPlan(
+        preface="Achha...", preface_kind="acknowledgement"
+    )
+    record = await brain._say("Aapki request note kar li hai.", authored=False)
+    assert record is not None and record.text == "Aapki request note kar li hai."
+    assert assistant_history(brain) == ["Aapki request note kar li hai."]
+    texts = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+    assert texts == ["Achha... ", "Aapki request note kar li hai."]
+
+
+async def test_authored_say_is_never_decorated():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    brain._turn_speech_plan = TurnSpeechPlan(
+        preface="Achha...", preface_kind="acknowledgement"
+    )
+    await brain._say("Namaste, main Test bol raha hoon.")  # authored=True
+    texts = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+    assert texts == ["Namaste, main Test bol raha hoon."]
+    # The plan's preface was not consumed by the authored phrase.
+    assert brain._turn_speech_plan.has_preface
+
+
+# ── brain: backchannels ──────────────────────────────────────────────────
+
+
+async def test_backchannel_never_becomes_a_turn_or_reply():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    await brain._play_backchannel("hmm...")
+
+    # Spoken, but no history / turn record / client bot_text. Trailing "..."
+    # is normalized to a single ellipsis so the aggregator cannot split it.
+    texts = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+    assert texts == ["hmm…"]
+    assert brain._history == []
+    assert brain._recorder.turns == []
+    assert all(p.get("type") != "bot_text" for p in brain._notified)
+    assert "backchannel_played" in brain._recorder.event_kinds()
+    assert brain._backchannel_active is True
+
+    # Its audio must not count as the reply speaking.
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._reply_audio_started is False
+    assert brain._latency.bot_started_at is None
+    assert brain._bot_speaking is True
+
+    await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._backchannel_active is False
+    assert brain._bot_speaking is False
+
+
+async def test_preface_and_backchannel_logs_do_not_include_spoken_variant(caplog):
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    brain._turn_speech_plan = TurnSpeechPlan(
+        preface="Sensitive Name 9876543210...", preface_kind="checking"
+    )
+    with caplog.at_level(logging.INFO, logger="voice_runtime.brain"):
+        await brain._speak_preface()
+        await brain._play_backchannel("UTR ZXCV123456")
+
+    assert "Sensitive Name" not in caplog.text
+    assert "9876543210" not in caplog.text
+    assert "ZXCV123456" not in caplog.text
+    assert "preface started" in caplog.text
+    assert "backchannel played" in caplog.text
+
+
+async def test_reply_audio_bookkeeping_intact_without_backchannel():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    # A dispatched turn is in flight (the tracker rejects unowned bot audio).
+    brain._latency.mark_final()
+    brain._latency.mark_dispatched()
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._reply_audio_started is True
+    assert brain._latency.bot_started_at is not None
+
+
+async def test_monitor_not_started_when_backchannels_disabled():
+    brain = make_brain(
+        llm=_StreamingLLMStub([]),
+        naturalness=planner({"backchannels": False}),
+    )
+    brain._pipeline_started = True
+    brain._start_backchannel_monitor()
+    assert brain._backchannel_task is None
+
+
+# ── TTS router: per-sentence delivery ────────────────────────────────────
+
+
+class _ForcedPlanner(SpeechNaturalnessPlanner):
+    """Deterministic segment plans for router assertions."""
+
+    def __init__(self, pause_after_ms=320, speed_scale=0.95):
+        super().__init__({}, rng=random.Random(1))
+        self._forced = (pause_after_ms, speed_scale)
+
+    def plan_segment(self, text, *, base_pause_ms, language="", **kwargs):
+        seg = super().plan_segment(text, base_pause_ms=base_pause_ms,
+                                   language=language, **kwargs)
+        seg.pause_after_ms, seg.speed_scale = self._forced
+        return seg
+
+
+class _BreathPlanner(SpeechNaturalnessPlanner):
+    """Forces a breath before every sentence but the first (router test)."""
+
+    def __init__(self, breath_gain_db=0.0):
+        super().__init__({"sentence_breath_probability": 1.0, "breath_gain_db": breath_gain_db},
+                         rng=random.Random(1))
+
+    def plan_segment(self, text, *, base_pause_ms, language="", first_in_turn=False,
+                     breaths_so_far=0):
+        seg = super().plan_segment(text, base_pause_ms=base_pause_ms, language=language,
+                                   first_in_turn=first_in_turn, breaths_so_far=breaths_so_far)
+        seg.pause_after_ms = 150
+        seg.breath_before = not first_in_turn and breaths_so_far < 1
+        return seg
+
+
+class _ClipLibraryStub:
+    def __init__(self, clip):
+        self.clip_bytes = clip
+        self.requests = []
+
+    def clip(self, gender, sample_rate, *, kind="breath", max_ms=None, gain_db=0.0):
+        self.requests.append((gender, sample_rate, kind))
+        return scale_pcm(self.clip_bytes, gain_db)
+
+
+class _RouterRecorder:
+    session_id = "s-router"
+
+    def __init__(self):
+        self.events = []
+
+    def add_event(self, kind, **data):
+        self.events.append((kind, data))
+
+
+class _RecentFillerLibraryStub(_ClipLibraryStub):
+    """Clip library that reports the latency filler just breathed."""
+
+    def recently_played(self, within_s):
+        return True
+
+
+async def test_no_in_reply_inhale_right_after_the_pre_reply_latency_breath():
+    library = _RecentFillerLibraryStub(b"\x05\x00" * 1600)
+    recorder = _RouterRecorder()
+    router = make_router(pause_ms=150, naturalness=_BreathPlanner(),
+                         filler_library=library, recorder=recorder)
+    provider = FakeProvider()
+    state = _Generation(engine=dict(ENGINE, voice_gender="female"), provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya kaafi lamba hai aur isme bahut saari baatein hain.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+    # The pause is materialized, the inhale is not: the reply gap already
+    # carried a breath a moment ago.
+    frames = audio_frames(router)
+    assert frames[-1].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
+    assert library.requests == []
+    assert state.breaths == 0
+    assert ("sentence_breath_suppressed", {
+        "context": "ctx", "reason": "recent_latency_filler",
+    }) in recorder.events
+    assert not any(k == "sentence_breath_played" for k, _ in recorder.events)
+
+
+@pytest.mark.parametrize("gain_db", [0.0, -6.0])
+async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence(gain_db):
+    breath = b"\xe8\x03" * 1600                      # 100 ms at 16 kHz
+    library = _ClipLibraryStub(breath)
+    recorder = _RouterRecorder()
+    breath_planner = _BreathPlanner(breath_gain_db=gain_db)
+    router = make_router(pause_ms=150, naturalness=breath_planner,
+                         filler_library=library, recorder=recorder)
+    provider = FakeProvider()
+    engine = dict(ENGINE, voice_gender="female")
+    state = _Generation(engine=engine, provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya kaafi lamba hai aur isme bahut saari baatein hain.", "ctx"):
+        pass
+    async for _ in router.run_tts("Teesra vaakya bhi kaafi lamba hai aur isme bhi kaafi baatein hain.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+    assert state.active == "ctx~2"
+
+    # Planned pause, then the breath (gender-matched, trimmed), then a beat.
+    frames = audio_frames(router)
+    assert frames[-3].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
+    assert frames[-2].audio == scale_pcm(breath, gain_db)
+    assert len(frames[-1].audio) == int(16000 * 60 / 1000) * 2
+    assert library.requests == [("female", 16000, "inhale")]
+    assert ("sentence_breath_played", {
+        "context": "ctx", "gender": "female", "breath_ms": 100.0,
+    }) in recorder.events
+    # Only ONE per turn: the third sentence gets its pause but no breath.
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~2", audio=b"\x01\x02" * 8,
+    ))
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~2"))
+    assert state.active == "ctx~3"
+    assert state.breaths == 1
+    assert library.requests == [("female", 16000, "inhale")]
+    assert audio_frames(router)[-1].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
+
+
+async def test_pause_mode_uses_planned_per_sentence_gap():
+    router = make_router(pause_ms=150, naturalness=_ForcedPlanner(pause_after_ms=320))
+    provider = FakeProvider()
+    state = _Generation(engine=ENGINE, provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    assert state.active == "ctx~1"
+    assert state.active_pause_after_ms == 320
+
+    # Sentence one produced audio and finished → the gap is owed at 320ms.
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+    assert state.active == "ctx~2"
+
+    silence = audio_frames(router)[-1]
+    expected_bytes = int(16000 * 320 / 1000) * 2
+    assert len(silence.audio) == expected_bytes
+
+
+async def test_pause_mode_without_planner_keeps_router_default_gap():
+    router = make_router(pause_ms=150)
+    provider = FakeProvider()
+    state = _Generation(engine=ENGINE, provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+
+    silence = audio_frames(router)[-1]
+    assert len(silence.audio) == int(16000 * 150 / 1000) * 2
+
+
+async def test_per_sentence_speed_reconfigures_elevenlabs_only():
+    engine = {"provider": "elevenlabs", "model": "eleven_flash_v2_5",
+              "voice": "v1", "params": {}, "api_key_reference": "env:X"}
+    router = make_router(pause_ms=150, naturalness=_ForcedPlanner(speed_scale=0.95))
+    provider = FakeProvider()
+    state = _Generation(engine=engine, provider=provider)
+    router._generations["ctx"] = state
+
+    seen = []
+
+    def fake_settings(eng, locale, *, speed=None):
+        seen.append(speed)
+        return TTSStreamSettings(provider="elevenlabs", model="eleven_flash_v2_5",
+                                 voice="v1", language=locale, sample_rate=16000)
+
+    router._stream_settings = fake_settings
+    state.pending.append(_Sentence(text="Ek.", speed_scale=0.95))
+    await router._dispatch_next_sentence("ctx", state)
+    assert seen == [1.0 * 0.95]
+    assert ("configure",) in provider.calls
+
+    # Sarvam engines are never reconfigured mid-turn (config resend flushes).
+    provider2 = FakeProvider()
+    state2 = _Generation(engine=ENGINE, provider=provider2)
+    router._generations["ctx2"] = state2
+    state2.pending.append(_Sentence(text="Do.", speed_scale=0.95))
+    await router._dispatch_next_sentence("ctx2", state2)
+    assert ("configure",) not in provider2.calls
+
+
+class _RestProvider:
+    name = "sarvam-tts"
+    output_sample_rate = 16000
+
+    def __init__(self):
+        self.calls = []
+
+    async def stream_synthesize(self, text, *, voice=None, language=None, speed=1.0):
+        self.calls.append({"text": text, "speed": speed, "language": language})
+        yield b"\x01\x02" * 20
+
+
+async def _no_metrics(*args, **kwargs):
+    return None
+
+
+async def test_rest_tts_uses_planned_gap_and_supported_segment_rate():
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="hi-IN", speed=1.0, pause_ms=150,
+        sample_rate=16000, provider_name="sarvam", model="bulbul:v3",
+        naturalness=_ForcedPlanner(pause_after_ms=320, speed_scale=0.95),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    first = [frame async for frame in service.run_tts("Pehla vaakya.", "ctx")]
+    second = [frame async for frame in service.run_tts("Doosra vaakya.", "ctx")]
+
+    assert all(isinstance(frame, TTSAudioRawFrame) for frame in first + second)
+    assert provider.calls[0]["speed"] == 0.95
+    assert provider.calls[1]["speed"] == 0.95
+    # The second sentence begins with the first sentence's planned 320 ms gap.
+    assert len(second[0].audio) == int(16000 * 320 / 1000) * 2
+
+
+async def test_rest_tts_unsupported_capability_keeps_base_rate():
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="en-IN", speed=1.1, pause_ms=150,
+        sample_rate=16000, provider_name="custom", model="unknown",
+        naturalness=_ForcedPlanner(speed_scale=0.9),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    _ = [frame async for frame in service.run_tts("Normal sentence.", "ctx")]
+    assert provider.calls[0]["speed"] == 1.1
+
+
+async def test_naturalness_segment_logs_never_include_sensitive_spoken_text(caplog):
+    sensitive = "Call 9876543210 at 12 Lake Road, UTR ZXCV123456, OTP 4321"
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="en-IN", speed=1.0, pause_ms=150,
+        sample_rate=16000, provider_name="sarvam", model="bulbul:v3",
+        naturalness=planner(),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    with caplog.at_level(logging.INFO, logger="voice_runtime.services"):
+        _ = [frame async for frame in service.run_tts(sensitive, "ctx")]
+
+    logged = caplog.text
+    for secret in ("9876543210", "Lake Road", "ZXCV123456", "4321"):
+        assert secret not in logged
+    assert "character_count" in logged
+    assert "critical_content" in logged
+
+
+# ── caller audio gate: backchannel window ────────────────────────────────
+
+
+def open_gate() -> CallerAudioGate:
+    gate = CallerAudioGate()
+    gate._open = True
+    gate._floor_dbfs = -60.0
+    return gate
+
+
+def test_backchannel_window_shields_the_open_segment():
+    gate = open_gate()
+    gate._begin_segment()
+    gate._bot_speaking = True          # backchannel audio is playing
+    gate.begin_backchannel_window()
+
+    assert gate._echo_guarded() is False            # threshold not raised
+    gate._accumulate_segment(-30.0, 100.0)
+    assert gate._segment_during_bot_audio is False  # segment not poisoned
+    assert gate.live_speech_ms == 100.0
+
+    # The shield outlives the window by the echo tail, so the caller's
+    # continuing speech is not latched by trailing echo either.
+    gate._bot_speaking = False
+    gate.end_backchannel_window()
+    gate._bot_stopped_at = __import__("time").monotonic()
+    gate._accumulate_segment(-30.0, 100.0)
+    assert gate._segment_during_bot_audio is False
+
+
+def test_closed_gate_keeps_full_echo_protection_during_backchannel():
+    gate = CallerAudioGate()
+    gate._bot_speaking = True
+    gate.begin_backchannel_window()
+    # Gate closed: the backchannel's own echo must NOT find a lowered bar.
+    assert gate._echo_guarded() is True
+    assert gate.live_speech_ms == 0.0
+
+
+def test_normal_echo_guard_unaffected_outside_window():
+    gate = open_gate()
+    gate._begin_segment()
+    gate._bot_speaking = True
+    assert gate._echo_guarded() is True
+    gate._accumulate_segment(-30.0, 50.0)
+    assert gate._segment_during_bot_audio is True

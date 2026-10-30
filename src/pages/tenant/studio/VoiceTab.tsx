@@ -7,27 +7,161 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AudioSettings, LanguageVoiceOverride, ModelLanguagesInfo, ProviderInfo,
-  ProviderModelInfo, ProviderSettings, ProviderTestResult,
+  Prompt, ProviderModelInfo, ProviderSettings, ProviderTestResult, RuntimeContextConfig,
   TtsPreviewResult, VoiceBot, VoiceCapability, VoiceOption, VoiceSettings, VoiceTuning,
 } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  generateTtsPreview, getModelLanguages, getProviderCatalog, getVoiceSettings,
-  listLanguages, listProviderModels, listProviderVoices, saveVoiceSettings,
-  testProviderConnection, validateVoiceConfig,
+  generateTtsPreview, getModelLanguages, getProviderCatalog, getRuntimeContext, getVoiceSettings,
+  listLanguages, listPrompts, listProviderModels, listProviderVoices, saveVoiceSettings,
+  setGoalPolicyEndCall, testProviderConnection, validateVoiceConfig,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import {
-  Button, Callout, CardSkeleton, ErrorState, Field, Modal, SearchableSelect, StatusChip,
+  Button, Callout, CardSkeleton, ErrorState, Field, Modal, NumberInput, SearchableSelect, StatusChip, Toggle,
   type SearchableSelectOption,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
+import { SttAutoDetectControl } from "@/components/SttAutoDetectControl";
+import { DictionaryField } from "@/components/PronunciationDictionaries";
 import { useApp } from "@/state/AppContext";
 
 /* ---------- helpers ---------- */
 
 const DEFAULT_SAMPLE_TEXT = "Hello! I'm your voice assistant. How can I help you today?";
+
+/** Resolve the current Greeting prompt text for a preview locale.
+
+    Prompt variants normally use the bot's full locale (for example hi-IN).
+    Base-language matching also handles older prompt data that stored only
+    `hi`; the first populated variant is the final greeting fallback. */
+export function activeGreetingSample(prompts: Prompt[] | undefined, language: string): string | null {
+  const greeting = prompts?.find((prompt) => prompt.type === "greeting");
+  const version = greeting?.versions.find((item) => item.version === greeting.activeVersion);
+  const variants = (version?.variants ?? []).filter((variant) => variant.content.trim());
+  if (variants.length === 0) return null;
+
+  const locale = language.trim().toLowerCase();
+  const exact = variants.find((variant) => variant.language.trim().toLowerCase() === locale);
+  if (exact) return exact.content.trim();
+
+  const baseLanguage = locale.split("-")[0];
+  const sameLanguage = baseLanguage
+    ? variants.find((variant) => variant.language.trim().toLowerCase().split("-")[0] === baseLanguage)
+    : undefined;
+  return (sameLanguage ?? variants[0]).content.trim();
+}
+
+/* Keep Voice Preview's variable grammar aligned with the runtime resolver:
+   {{customer_name}}, {customer_name} and [customer_name] all resolve, and
+   equivalent spellings such as customer-name normalize to customer_name. */
+const PREVIEW_PLACEHOLDER_RE = /\{\{\s*([^{}\n]{1,40}?)\s*\}\}|\{\s*([^{}\n]{1,40}?)\s*\}|\[\s*([^\[\]\n]{1,40}?)\s*\]/g;
+
+const normalizePreviewVariable = (key: string) =>
+  key.trim().toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, "_").replace(/^_+|_+$/g, "");
+
+const previewValueText = (value: unknown): string =>
+  value !== null && typeof value === "object" ? JSON.stringify(value) : String(value);
+
+/** Substitute every known runtime value while leaving genuinely missing
+    placeholders visible, matching resolve_placeholders on the backend. */
+export function renderGreetingVariables(text: string, values: Record<string, unknown>): string {
+  const normalized = new Map<string, string>();
+  for (const [key, value] of Object.entries(values)) {
+    const normalizedKey = normalizePreviewVariable(key);
+    if (normalizedKey && value !== null && value !== undefined) {
+      normalized.set(normalizedKey, previewValueText(value));
+    }
+  }
+  return text.replace(PREVIEW_PLACEHOLDER_RE, (match, double, single, square) => {
+    const inner = String(double ?? single ?? square ?? "").trim();
+    /* Bracketed prose containing sentence punctuation is not a variable. */
+    if (!inner || (inner.includes(".") && inner.includes(" ")) || /[<>!?;]/.test(inner)) return match;
+    return normalized.get(normalizePreviewVariable(inner)) ?? match;
+  });
+}
+
+/** Saved test values are the deterministic caller data used by Studio
+    previews. Field examples fill only keys absent from that test payload. */
+export function runtimePreviewVariables(config: RuntimeContextConfig | null | undefined): Record<string, unknown> {
+  const examples = Object.fromEntries(
+    (config?.fields ?? [])
+      .filter((field) => field.key.trim() && field.example !== undefined && field.example !== "")
+      .map((field) => [field.key.trim(), field.example]),
+  );
+  return { ...examples, ...(config?.testPayload ?? {}) };
+}
+
+function withVoiceIdentity(values: Record<string, unknown>, voice: VoiceOption | undefined) {
+  if (!voice) return values;
+  return {
+    ...values,
+    assistant_voice_name: voice.name,
+    voice_speaker_name: voice.name,
+    voice_bot_spiker_name: voice.name,
+    assistant_voice_gender: voice.gender,
+    voice_speaker_gender: voice.gender,
+  };
+}
+
+/* Delivery tuning's Speaking speed is the single canonical speed control for
+   a bot. The provider-specific duplicates (Sarvam `pace`, ElevenLabs `speed`)
+   are hidden from this page and stripped from saved values — the runtime maps
+   the canonical speed onto each engine. The admin voice catalog keeps the
+   full schema. */
+const DELIVERY_SPEED_PARAMS = ["pace", "speed"];
+
+/* Platform-owned llmSettings keys (backend PLATFORM_LLM_SETTING_KEYS — kept
+   equal by tests/unit/test_provider_validation.py). They configure the
+   EchoSphere runtime, not the LLM provider, so they are never in a provider's
+   params schema — reconcileSettings would silently drop them on every
+   provider/model switch. */
+const PLATFORM_LLM_SETTING_KEYS = [
+  "goal_engine_enabled", "intent_llm_enabled", "memory_greeting_enabled",
+  "time_context_enabled",
+  "orchestration_provider", "orchestration_model", "orchestration_service_tier",
+  "orchestration_response_text",
+  "orchestration_timeout_seconds", "intent_timeout_seconds",
+  "memory_greeting_timeout_seconds", "orchestration_max_tokens",
+  "max_output_characters", "reply_service_tier", "reply_reasoning_effort",
+  "deterministic_answers", "decision_fast_output", "speculative_reply",
+  "parallel_extraction", "early_ack_ms",
+];
+
+function preservePlatformLlmSettings(next: ProviderSettings, previous: ProviderSettings): ProviderSettings {
+  const out = { ...next };
+  for (const key of PLATFORM_LLM_SETTING_KEYS) {
+    if (previous[key] !== undefined && out[key] === undefined) out[key] = previous[key];
+  }
+  return out;
+}
+
+function stripDeliverySpeedParams<T>(record: Record<string, T> | undefined): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record ?? {}).filter(([key]) => !DELIVERY_SPEED_PARAMS.includes(key)),
+  );
+}
+
+/* Canonical speaking-speed bounds accepted by the voice-settings and preview
+   APIs (shared/providers/tts/delivery.py SPEED_MIN/SPEED_MAX). A model's own
+   range is intersected with these — bulbul:v2 documents pace down to 0.3, but
+   0.5 is the slowest speed the platform can store. */
+const CANONICAL_SPEED_MIN = 0.5;
+const CANONICAL_SPEED_MAX = 2.0;
+
+/** Slider bounds for the selected model, or null when it has no speed control.
+
+    An ABSENT speedRange (a catalog response predating the field) falls back to
+    the canonical range so speed keeps working; only an explicit null means the
+    model documents no speed control at all. */
+function effectiveSpeedRange(model: ProviderModelInfo | undefined): [number, number] | null {
+  if (!model) return null;
+  const range = model.speedRange;
+  if (range === null) return null;
+  if (range === undefined) return [CANONICAL_SPEED_MIN, CANONICAL_SPEED_MAX];
+  return [Math.max(CANONICAL_SPEED_MIN, range[0]), Math.min(CANONICAL_SPEED_MAX, range[1])];
+}
 
 function voiceSupportsModel(v: VoiceOption, model: string): boolean {
   return !model || v.modelCodes.length === 0 || v.modelCodes.includes(model);
@@ -51,6 +185,53 @@ function withCurrent(options: SearchableSelectOption[], value: string): Searchab
   ];
 }
 
+/** Render the currently selected VOICE correctly in three distinct states,
+    which the generic `withCurrent` cannot tell apart:
+
+    1. still loading — the option list is empty only because the fetch has not
+       returned. Showing "<id> (unavailable)" here is wrong twice over: it
+       leaks a raw id as the label and tells the operator a valid voice is
+       broken. The selection is kept, enabled, and labelled as loading.
+    2. stored as the PROVIDER WIRE id (e.g. "f1abxvIEijusskcPWE5x") while the
+       options are keyed by catalog id ("vp-el-monika"). Both forms are
+       persisted by different paths, and `findVoice` accepts either, so the
+       voice is real — it just is not `===` any option value. It is rendered
+       under its readable name and stays selectable.
+    3. genuinely absent from the catalog for this provider/model/language —
+       the original explicit "(unavailable)" entry.
+
+    `voices === undefined` means "not fetched yet"; `[]` means "fetched, none". */
+function withCurrentVoice(
+  options: SearchableSelectOption[],
+  value: string,
+  voices: VoiceOption[] | undefined,
+): SearchableSelectOption[] {
+  if (!value || options.some((o) => o.value === value)) return options;
+  if (voices === undefined) {
+    // No name is knowable yet — show the id plainly, but never claim it is
+    // unavailable and never disable it.
+    return [{ value, label: value, sub: "loading voices…" }, ...options];
+  }
+  const match = findVoice(voices, value);
+  if (match) {
+    // Same voice under its other id form — keep it selected and readable.
+    return [
+      {
+        value,
+        label: `${match.name}${match.source === "cloned" ? " · cloned" : ""}`,
+        sub: [match.gender, match.locale].filter(Boolean).join(" · "),
+        disabled: match.status === "unavailable",
+      },
+      ...options,
+    ];
+  }
+  return [
+    { value, label: `${value} (unavailable)`, sub: "not in the catalog for this selection — pick a replacement", disabled: true },
+    ...options,
+  ];
+}
+
+
 /* ---------- engine state ---------- */
 
 interface SttState { provider: string; model: string; language: string; settings: ProviderSettings }
@@ -58,21 +239,93 @@ interface LlmState { provider: string; model: string; settings: ProviderSettings
 interface TtsState { provider: string; model: string; voice: string; settings: ProviderSettings }
 interface FallbackState { provider: string; model: string; voice: string }
 
+/** What the preview modal hands back when the user applies a tuned draft. */
+export interface PreviewDraft {
+  provider: string; model: string; voice: string;
+  settings: ProviderSettings;
+  /** Bot-level Delivery tuning drafts (speed maps to Sarvam pace / ElevenLabs speed). */
+  speed: number;
+  pauseMs: number;
+  empathy: number;
+  energy: number;
+}
+
 interface PreviewContext {
   provider: string; model: string; voice: string; language: string; params?: ProviderSettings;
+  tuning?: VoiceTuning;
+  /* Staging callback: writes the tuned draft into page state. It never
+     persists — the explicit "Save voice settings" action still does that.
+     Engine + settings go to the launch target (default engine or language
+     row); the delivery values are bot-level and stage identically from
+     every launch point, so both preview buttons share ONE modal behavior. */
+  onApply?: (draft: PreviewDraft) => void;
+  /** The staged per-language override for a locale, exactly as a live call
+      would resolve it — null means the locale inherits the default engine. */
+  resolveOverride?: (locale: string) => LanguageVoiceOverride | null;
+  /** The staged default engine — what an inheriting locale falls back to.
+      Needed when the modal was launched from a per-language row. */
+  defaultEngine?: { provider: string; model: string; voice: string; params?: ProviderSettings };
+  /** The apply target runs inside the realtime streaming router (a
+      per-language row): non-streaming models can be previewed but never
+      applied, and are disabled in the model dropdown with the reason. */
+  requiresStreaming?: boolean;
 }
 
 type TestState = Record<string, { busy: boolean; result: ProviderTestResult | null }>;
 
 /* ============================================================ */
 
-export default function VoiceTab({ bot }: { bot: VoiceBot }) {
+export default function VoiceTab({ bot, onOpenNaturalConversation }: {
+  bot: VoiceBot;
+  /** Studio passes its tab navigator so the cross-link honours unsaved-change guards. */
+  onOpenNaturalConversation?: () => void;
+}) {
   const { toast, hasPermission } = useApp();
   const canManage = hasPermission("manage_voices") || hasPermission("bots.manage");
   const noPermTitle = canManage ? undefined : "Requires the manage_voices permission";
+  /* The end-call switch decides when the bot may hang up on a caller: bot
+     management level, not general voice editing (the backend enforces it). */
+  const canManageBot = hasPermission("bots.manage");
 
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
+  /* goal_policy.endCall.enabled — saved immediately through its own PATCH
+     (the server merges it into the latest goal policy). It is deliberately
+     NOT part of assembleConfig: the voice-settings PUT replaces goalPolicy
+     whole, so sending a tab-load copy could drop the bot's goals. */
+  const [endCallOn, setEndCallOn] = useState(false);
+  const [endCallSaving, setEndCallSaving] = useState(false);
+  useEffect(() => {
+    if (settingsQ.data) setEndCallOn(settingsQ.data.goalPolicy?.endCall?.enabled === true);
+  }, [settingsQ.data]);
+  /* The SAVED Goal Engine state gates the switch — an unsaved toggle of the
+     Goal Engine above does not change what live calls do yet. */
+  const goalEngineOffSaved = settingsQ.data?.llmSettings?.goal_engine_enabled === false;
+  const toggleEndCall = async (enabled: boolean) => {
+    setEndCallSaving(true);
+    try {
+      const result = await setGoalPolicyEndCall(bot.id, enabled);
+      setEndCallOn(result.enabled);
+      toast(result.enabled
+        ? "End call after goodbye is on. New calls use it."
+        : "End call after goodbye is off.");
+    } catch (e) {
+      toast((e as ApiRequestError).message || "Could not update end call after goodbye", "error");
+    } finally {
+      setEndCallSaving(false);
+    }
+  };
   const catalogQ = useAsync(() => getProviderCatalog(), []);
+  /* Voice Preview speaks the bot's current Greeting prompt instead of an
+     unrelated catalog sentence. A prompt-load failure is non-blocking: the
+     selected voice sample/default text remains available as a fallback. */
+  const promptsQ = useAsync(() => listPrompts(bot.id).catch(() => []), [bot.id]);
+  /* Runtime-context test data supplies deterministic values for Greeting
+     placeholders (customer_name, lender_name, amounts, and custom fields). */
+  const runtimeContextQ = useAsync(() => getRuntimeContext(bot.id).catch(() => null), [bot.id]);
+  const previewVariables = useMemo(
+    () => runtimePreviewVariables(runtimeContextQ.data),
+    [runtimeContextQ.data],
+  );
   /* Readable language names for the per-language section — locale codes stay
      the internal values. Disabled languages are included so a bot that still
      references one keeps its readable name (flagged in the row instead).
@@ -144,7 +397,9 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     setTuning({ speed: s.speed, pauseMs: s.pauseMs, empathy: s.empathy, energy: s.energy });
     setStt({ provider: s.sttProvider ?? "", model: s.sttModel ?? "", language: s.sttLanguage ?? "", settings: s.sttSettings ?? {} });
     setLlm({ provider: s.llmProvider ?? "", model: s.llmModel ?? "", settings: s.llmSettings ?? {} });
-    setTts({ provider: s.ttsProvider ?? "", model: s.ttsModel ?? "", voice: s.ttsVoice ?? "", settings: s.ttsSettings ?? {} });
+    /* Legacy pace/speed duplicates are dropped so Delivery tuning stays the
+       only speed control (they are also stripped server-side on save). */
+    setTts({ provider: s.ttsProvider ?? "", model: s.ttsModel ?? "", voice: s.ttsVoice ?? "", settings: stripDeliverySpeedParams(s.ttsSettings ?? {}) });
     setFallback({ provider: s.fallbackProvider ?? "", model: s.fallbackModel ?? "", voice: s.fallbackVoice ?? "" });
     setLangMap(() => {
       /* Keep only entries for the bot's current languages plus the "default" locale key. */
@@ -272,20 +527,30 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   };
   const changeSttModel = (model: string) => {
     const schema = modelInfo("stt", stt.provider, model)?.paramsSchema;
-    setStt((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+    setStt((s) => ({
+      ...s,
+      model,
+      settings: reconcileSettings(schema, s.settings),
+    }));
   };
 
   const changeLlmProvider = async (provider: string) => {
-    setLlm({ provider, model: "", settings: {} });
+    // Platform runtime settings (output length, orchestration engine, …) are
+    // provider-independent by design — a provider switch keeps them.
+    setLlm((s) => ({ provider, model: "", settings: preservePlatformLlmSettings({}, s.settings) }));
     if (!provider) return;
     const def = await defaultModelOf("llm", provider);
     setLlm((s) => (s.provider === provider && !s.model
-      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      ? { ...s, model: def?.code ?? "", settings: preservePlatformLlmSettings(schemaDefaults(def?.paramsSchema), s.settings) }
       : s));
   };
   const changeLlmModel = (model: string) => {
     const schema = modelInfo("llm", llm.provider, model)?.paramsSchema;
-    setLlm((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+    setLlm((s) => ({
+      ...s,
+      model,
+      settings: preservePlatformLlmSettings(reconcileSettings(schema, s.settings), s.settings),
+    }));
   };
 
   const changeTtsProvider = async (provider: string) => {
@@ -294,11 +559,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     void ensureVoices(provider);
     const def = await defaultModelOf("tts", provider);
     setTts((s) => (s.provider === provider && !s.model
-      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(stripDeliverySpeedParams(def?.paramsSchema)) }
       : s));
   };
   const changeTtsModel = (model: string) => {
-    const schema = modelInfo("tts", tts.provider, model)?.paramsSchema;
+    const schema = stripDeliverySpeedParams(modelInfo("tts", tts.provider, model)?.paramsSchema);
     setTts((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
   };
 
@@ -337,8 +602,15 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     setLangMap((m) => {
       const cur = m[locale];
       if (!cur || typeof cur === "string") return m;
-      const v = cur.voice ? findVoice(voicesRef.current[cur.provider], cur.voice) : undefined;
-      const keepVoice = Boolean(v && voiceSupportsModel(v, model) && voiceSupportsLanguage(v, locale));
+      const loaded = voicesRef.current[cur.provider];
+      const v = cur.voice ? findVoice(loaded, cur.voice) : undefined;
+      // A voice is dropped ONLY on evidence that it is incompatible. While the
+      // catalog is still loading there is no evidence, so the operator's
+      // selection is kept and re-validated once the list arrives (the row
+      // status and save-time validation both still flag a real mismatch).
+      const keepVoice = loaded === undefined
+        ? Boolean(cur.voice)
+        : Boolean(v && voiceSupportsModel(v, model) && voiceSupportsLanguage(v, locale));
       return { ...m, [locale]: { ...cur, model, voice: keepVoice ? cur.voice : "" } };
     });
 
@@ -346,6 +618,15 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     setLangMap((m) => { const next = { ...m }; delete next[locale]; return next; });
 
   const langLabel = (code: string) => langCatalog[code]?.name ?? code;
+
+  /* The staged override a live call would resolve for a locale (mirrors the
+     runtime language_map semantics). Incomplete rows and legacy voice-id
+     entries fall back to the default engine, exactly like the runtime. */
+  const resolveOverride = (locale: string): LanguageVoiceOverride | null => {
+    const entry = langMap[locale];
+    if (!entry || typeof entry === "string") return null;
+    return entry.provider && entry.model && entry.voice ? entry : null;
+  };
 
   /* Per-row status — shown as an icon+text chip (never color alone). */
   const rowStatus = (locale: string): { chip: string; label: string; message?: string } => {
@@ -360,6 +641,16 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     const models = modelsRef.current[`tts:${entry.provider}`];
     if (entry.model && models && !models.some((m) => m.code === entry.model)) {
       return { chip: "error", label: "Unavailable", message: `Model "${entry.model}" is no longer available for ${entry.provider} — select an active model before saving.` };
+    }
+    /* A model that exists but cannot stream in realtime (Eleven v3) can never
+       serve a per-language override — live calls switch languages mid-call.
+       The backend rejects it on save; surface the reason here first. */
+    const rowModel = entry.model ? models?.find((m) => m.code === entry.model) : undefined;
+    if (rowModel && !rowModel.streaming) {
+      return {
+        chip: "error", label: "Unavailable",
+        message: `Model "${entry.model}" does not support realtime streaming, so it cannot serve per-language overrides — pick a streaming model (e.g. Eleven Flash v2.5).`,
+      };
     }
     if (!entry.model || !entry.voice) return { chip: "warning", label: "Incomplete" };
     return { chip: "active", label: "Active" };
@@ -398,6 +689,8 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
 
   /* ---- validate / save ---- */
 
+  // Natural Conversation owns humanSpeech. Omit it from both validation and
+  // save so this page cannot overwrite changes made in that tab.
   const assembleConfig = () => ({
     sttProvider: stt.provider, sttModel: stt.model, sttLanguage: stt.language, sttSettings: stt.settings,
     llmProvider: llm.provider, llmModel: llm.model, llmSettings: llm.settings,
@@ -437,7 +730,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         setWarningsFromSave(true);
         toast(`Saved with warnings: ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`, "info");
       } else {
-        toast("Voice settings saved to draft — publish to make them live");
+        toast("Voice settings saved. Published bots use them for new calls.");
       }
       settingsQ.reload();
     } catch (e) {
@@ -452,7 +745,10 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   /* ---- STT language options ---- */
   const sttLangOptions: SearchableSelectOption[] = [];
   if (sttLangQ.data?.supportsAutoDetect) {
-    sttLangOptions.push({ value: "", label: "Auto-detect", sub: "the model detects the spoken language" });
+    sttLangOptions.push({
+      value: "", label: "Auto-detect",
+      sub: "follows the Auto-detect language setting below (else the bot's default language)",
+    });
   }
   for (const l of sttLangQ.data?.languages ?? []) {
     sttLangOptions.push({ value: l.code, label: l.nativeName ? `${l.name} · ${l.nativeName}` : l.name, sub: l.code });
@@ -461,10 +757,14 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const sttModels = modelsFor("stt", stt.provider);
   const llmModels = modelsFor("llm", llm.provider);
   const ttsModels = modelsFor("tts", tts.provider);
+  /* Fallback synthesis happens inside the realtime streaming router — every
+     active model is LISTED, but non-streaming ones (Eleven v3) render
+     disabled with the reason; the backend rejects them too. */
   const fallbackModels = modelsFor("tts", fallback.provider);
   const sttSchema = modelInfo("stt", stt.provider, stt.model)?.paramsSchema;
   const llmSchema = modelInfo("llm", llm.provider, llm.model)?.paramsSchema;
-  const ttsSchema = modelInfo("tts", tts.provider, tts.model)?.paramsSchema;
+  /* Provider pace/speed never renders here — Delivery tuning owns speed. */
+  const ttsSchema = stripDeliverySpeedParams(modelInfo("tts", tts.provider, tts.model)?.paramsSchema);
 
   /* What an inheriting language actually uses — the primary TTS engine. */
   const primaryEngineSummary = tts.provider
@@ -495,7 +795,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={stt.provider} onChange={(v) => void changeSttProvider(v)}
             />
             <ModelSelect
-              label="Model" models={sttModels} value={stt.model}
+              label="Model" ariaLabel="STT model" models={sttModels} value={stt.model}
               disabled={!stt.provider} onChange={changeSttModel}
             />
             {stt.provider && stt.model && (
@@ -512,6 +812,18 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                   ariaLabel="STT language"
                 />
               </Field>
+            )}
+            {stt.provider && stt.model && (
+              /* Prominent, not buried under "Advanced": this is the switch that
+                 lets a multilingual bot follow the caller's language. */
+              <SttAutoDetectControl
+                settings={stt.settings}
+                languages={bot.languages}
+                serverDerivedDefault={settingsQ.data?.sttAutoDetectLanguage?.derivedDefault}
+                sttLanguage={stt.language}
+                disabled={!canManage}
+                onChange={(next) => setStt((s) => ({ ...s, settings: next }))}
+              />
             )}
             <ParamFields
               key={`stt:${stt.provider}:${stt.model}`}
@@ -539,7 +851,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={llm.provider} onChange={(v) => void changeLlmProvider(v)}
             />
             <ModelSelect
-              label="Model" models={llmModels} value={llm.model}
+              label="Model" ariaLabel="LLM model" models={llmModels} value={llm.model}
               disabled={!llm.provider} onChange={changeLlmModel}
             />
             <ParamFields
@@ -547,6 +859,73 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               schema={llmSchema} values={llm.settings}
               onChange={(next) => setLlm((s) => ({ ...s, settings: next }))}
             />
+            <Field
+              label="Max output characters"
+              hint="Keeps voice replies concise (typically 1–2 sentences) and limits text sent to speech synthesis. Default: 360."
+            >
+              <NumberInput
+                aria-label="Max output characters"
+                min={120}
+                max={2000}
+                step={20}
+                value={Number(llm.settings.max_output_characters ?? 360)}
+                onChange={(value) => setLlm((s) => ({
+                  ...s,
+                  settings: { ...s.settings, max_output_characters: Number(value) || 360 },
+                }))}
+              />
+            </Field>
+            <details>
+              <summary className="t-label" style={{ cursor: "pointer" }}>Advanced orchestration</summary>
+              <div className="col gap-12" style={{ marginTop: 10 }}>
+                <div className="row-between gap-12">
+                  <div className="col gap-6">
+                    <span className="field-label">Goal Engine</span>
+                    <span className="field-hint">
+                      Runs a structured goal decision before reply generation. Disabling it can reduce
+                      latency, but may affect goal tracking, scope routing, and workflow orchestration.
+                    </span>
+                  </div>
+                  <Toggle
+                    label="Goal Engine"
+                    checked={llm.settings.goal_engine_enabled !== false}
+                    disabled={!canManage}
+                    onChange={(enabled) => setLlm((s) => ({
+                      ...s,
+                      settings: { ...s.settings, goal_engine_enabled: enabled },
+                    }))}
+                  />
+                </div>
+                {llm.settings.goal_engine_enabled === false && (
+                  <Callout tone="warning" title="Goal Engine is disabled">
+                    Test intent routing, collections compliance, workflow transitions, and human handoff
+                    before publishing this configuration.
+                  </Callout>
+                )}
+                <div className="row-between gap-12">
+                  <div className="col gap-6">
+                    <span className="field-label">End call after goodbye</span>
+                    <span className="field-hint">
+                      When the Goal Engine is sure the caller is not the intended person, the bot says a
+                      short goodbye and hangs up. Off by default. Saved immediately for new calls.
+                    </span>
+                    {goalEngineOffSaved && (
+                      <span className="field-hint" data-testid="end-call-engine-off">
+                        Goal Engine is off for this bot, so this cannot run.
+                      </span>
+                    )}
+                  </div>
+                  <span title={canManageBot ? undefined : "Requires the bots.manage permission"}>
+                    <Toggle
+                      label="End call after goodbye"
+                      checked={endCallOn}
+                      disabled={!canManageBot || goalEngineOffSaved || endCallSaving}
+                      onChange={(enabled) => { void toggleEndCall(enabled); }}
+                    />
+                  </span>
+                </div>
+              </div>
+            </details>
           </SectionCard>
 
           {/* 3 — Text-to-Speech */}
@@ -564,13 +943,13 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={tts.provider} onChange={(v) => void changeTtsProvider(v)}
             />
             <ModelSelect
-              label="Model" models={ttsModels} value={tts.model}
+              label="Model" ariaLabel="TTS model" models={ttsModels} value={tts.model}
               disabled={!tts.provider} onChange={changeTtsModel}
             />
             {tts.provider && (
               <Field label="Voice" plain>
                 <SearchableSelect
-                  options={withCurrent(voiceSelectOptions(tts.provider, tts.model), tts.voice)}
+                  options={withCurrentVoice(voiceSelectOptions(tts.provider, tts.model), tts.voice, voicesRef.current[tts.provider])}
                   value={tts.voice}
                   onChange={(v) => setTts((s) => ({ ...s, voice: v }))}
                   placeholder={voicesRef.current[tts.provider] ? "Select voice…" : "Loading voices…"}
@@ -585,6 +964,22 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               schema={ttsSchema} values={tts.settings}
               onChange={(next) => setTts((s) => ({ ...s, settings: next }))}
             />
+            {/* Widget-backed schema entries (pronunciation dictionary) render
+                as their specialized control, never as a raw provider-id box. */}
+            {Object.entries(ttsSchema).filter(([, s]) => s.widget === "dictionary").map(([key, spec]) => (
+              <DictionaryField
+                key={`dict:${tts.provider}:${tts.model}:${key}`}
+                value={typeof tts.settings[key] === "string" ? (tts.settings[key] as string) : null}
+                disabled={!canManage}
+                help={spec.help}
+                onChange={(dictId) => setTts((s) => {
+                  const settings = { ...s.settings };
+                  if (dictId) settings[key] = dictId;
+                  else delete settings[key];
+                  return { ...s, settings };
+                })}
+              />
+            ))}
             <CleanupCallout items={ttsIssues} onApply={() => setTts((s) => ({ ...s, voice: "" }))} />
             <div>
               <Button
@@ -594,6 +989,18 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                 onClick={() => setPreview({
                   provider: tts.provider, model: tts.model, voice: tts.voice,
                   language: defaultLocale || bot.languages[0] || "", params: tts.settings,
+                  tuning,
+                  resolveOverride,
+                  onApply: (draft) => {
+                    setTts({
+                      provider: draft.provider, model: draft.model,
+                      voice: draft.voice, settings: draft.settings,
+                    });
+                    setTuning({
+                      speed: draft.speed, pauseMs: draft.pauseMs,
+                      empathy: draft.empathy, energy: draft.energy,
+                    });
+                  },
                 })}
               >
                 Preview voice
@@ -606,13 +1013,17 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         <div className="col gap-16">
           {/* Delivery tuning (compact) */}
           <SectionCard title="Delivery tuning" sub="How the assistant sounds, independent of engine">
-            <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={1.4} step={0.05} fmt={(v) => `${v.toFixed(2)}×`}
+            <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={2} step={0.1} fmt={(v) => `${v.toFixed(1)}×`}
+              hint="Applies across all voice providers — the single speed control for this bot. Sarvam accepts up to 2×; ElevenLabs voices are capped at 1.2× at synthesis time."
               onChange={(v) => setTuning((t) => ({ ...t, speed: v }))} />
             <Slider label="Pause between sentences" value={tuning.pauseMs} min={100} max={900} step={50} fmt={(v) => `${v}ms`}
+              hint="Silence inserted between assistant sentences."
               onChange={(v) => setTuning((t) => ({ ...t, pauseMs: v }))} />
-            <Slider label="Empathy" value={tuning.empathy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+            <Slider label="Empathy" value={tuning.empathy} min={0} max={100} step={1} fmt={(v) => `${v}%`}
+              hint="Influences wording and acknowledgement in generated replies."
               onChange={(v) => setTuning((t) => ({ ...t, empathy: v }))} />
-            <Slider label="Energy" value={tuning.energy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+            <Slider label="Energy" value={tuning.energy} min={0} max={100} step={1} fmt={(v) => `${v}%`}
+              hint="How calm or lively replies feel; native voice support varies by provider."
               onChange={(v) => setTuning((t) => ({ ...t, energy: v }))} />
           </SectionCard>
 
@@ -643,7 +1054,12 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                   const entry = langMap[locale];
                   const override = entry && typeof entry === "object" ? entry : null;
                   const legacy = typeof entry === "string" && entry ? entry : null;
-                  const rowModels = override ? modelsFor("tts", override.provider) : [];
+                  /* Per-language overrides run inside the realtime streaming
+                     router — every active model is listed so the catalog is
+                     visible, with non-streaming ones disabled + the reason. */
+                  const rowModels = override
+                    ? modelsFor("tts", override.provider)
+                    : [];
                   const rowModelsLoaded = override ? modelsRef.current[`tts:${override.provider}`] !== undefined : false;
                   const providerKnown = !override || ttsProviders.some((p) => p.code === override.provider);
                   const modelKnown = !override?.model || rowModels.some((m) => m.code === override.model);
@@ -662,6 +1078,10 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                             {langCatalog[locale] && !langCatalog[locale].enabled ? " · disabled on platform" : ""}
                           </span>
                         </div>
+                        {/* Chip + actions form ONE right-aligned unit so a
+                            narrow card wraps them together under the name —
+                            never a chip on one line and buttons on another. */}
+                        <div className="lang-voice-meta">
                         <StatusChip status={status.chip} label={status.label} />
                         <div className="lang-voice-actions">
                           <Button
@@ -671,10 +1091,29 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                             aria-label={`Preview voice for ${langLabel(locale)}`}
                             onClick={() => override && setPreview({
                               provider: override.provider, model: override.model, voice: override.voice,
-                              language: locale, params: override.params,
+                              language: locale, params: override.params, tuning,
+                              requiresStreaming: true,
+                              resolveOverride,
+                              defaultEngine: {
+                                provider: tts.provider, model: tts.model,
+                                voice: tts.voice, params: tts.settings,
+                              },
+                              /* Engine + params go to this language row;
+                                 delivery values are bot-level and stage the
+                                 same way as the default-engine preview. */
+                              onApply: (draft) => {
+                                setRowField(locale, {
+                                  provider: draft.provider, model: draft.model,
+                                  voice: draft.voice, params: draft.settings,
+                                });
+                                setTuning({
+                                  speed: draft.speed, pauseMs: draft.pauseMs,
+                                  empathy: draft.empathy, energy: draft.energy,
+                                });
+                              },
                             })}
                           >
-                            Preview
+                            Preview voice
                           </Button>
                           <Button
                             size="sm" variant="ghost" icon="undo"
@@ -685,6 +1124,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                           >
                             Reset
                           </Button>
+                        </div>
                         </div>
                       </div>
 
@@ -718,13 +1158,20 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                               </option>
                             )}
                             {rowModels.map((m) => (
-                              <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
+                              <option
+                                key={m.code} value={m.code} disabled={!m.streaming}
+                                title={!m.streaming
+                                  ? "Live calls switch languages in realtime — this model only synthesizes over REST."
+                                  : undefined}
+                              >
+                                {m.displayName}{m.isDefault ? " (default)" : ""}{!m.streaming ? NO_STREAMING_SUFFIX : ""}
+                              </option>
                             ))}
                           </select>
                         </Field>
                         <Field label="Voice" plain>
                           <SearchableSelect
-                            options={override ? withCurrent(voiceSelectOptions(override.provider, override.model, locale), override.voice) : []}
+                            options={override ? withCurrentVoice(voiceSelectOptions(override.provider, override.model, locale), override.voice, voicesRef.current[override.provider]) : []}
                             value={override?.voice ?? ""}
                             onChange={(v) => setRowField(locale, { voice: v })}
                             placeholder={override ? (voicesRef.current[override.provider] ? "Select voice…" : "Loading voices…") : "Inherited"}
@@ -821,11 +1268,12 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               <>
                 <ModelSelect
                   label="Fallback model" models={fallbackModels} value={fallback.model}
+                  requireStreaming
                   onChange={(v) => setFallback((f) => ({ ...f, model: v }))}
                 />
                 <Field label="Fallback voice" plain>
                   <SearchableSelect
-                    options={withCurrent(voiceSelectOptions(fallback.provider, fallback.model), fallback.voice)}
+                    options={withCurrentVoice(voiceSelectOptions(fallback.provider, fallback.model), fallback.voice, voicesRef.current[fallback.provider])}
                     value={fallback.voice}
                     onChange={(v) => setFallback((f) => ({ ...f, voice: v }))}
                     placeholder={voicesRef.current[fallback.provider] ? "Select voice…" : "Loading voices…"}
@@ -851,6 +1299,17 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           <ul style={{ margin: 0, paddingLeft: 16 }}>{saveWarnings.map((w) => <li key={w}>{w}</li>)}</ul>
         </Callout>
       )}
+      <div className="row-between gap-12" style={{ flexWrap: "wrap" }}>
+        <p className="t-micro" style={{ margin: 0 }}>
+          Saving applies these settings to new calls for published bots. Active calls keep their current settings.
+          {" "}Fillers, acknowledgements, backchannels and pauses live in the Natural Conversation tab.
+        </p>
+        {onOpenNaturalConversation && (
+          <Button size="sm" icon="arrow-right" onClick={onOpenNaturalConversation}>
+            Open Natural Conversation
+          </Button>
+        )}
+      </div>
       <div className="row gap-12" style={{ justifyContent: "flex-end" }}>
         <Button
           icon="check-circle" onClick={() => void validate()} busy={validating}
@@ -876,6 +1335,8 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         ensureModels={(p) => ensureModels("tts", p)}
         ensureVoices={ensureVoices}
         languages={bot.languages}
+        prompts={promptsQ.data ?? undefined}
+        previewVariables={previewVariables}
       />
     </div>
   );
@@ -933,21 +1394,49 @@ function ProviderSelect({ label, capability, providers, value, onChange }: {
   );
 }
 
-function ModelSelect({ label, models, value, onChange, disabled }: {
+/** Suffix explaining why a model is not selectable in a realtime-only slot. */
+export const NO_STREAMING_SUFFIX = " — no realtime streaming";
+
+function ModelSelect({ label, models, value, onChange, disabled, ariaLabel, requireStreaming }: {
   label: string; models: ProviderModelInfo[]; value: string;
   onChange: (v: string) => void; disabled?: boolean;
+  /** Distinct accessible name — the visible label is "Model" in every engine section. */
+  ariaLabel?: string;
+  /** This slot runs inside the realtime streaming router (fallback engine,
+      per-language override): every provider model is LISTED so the catalog
+      is visible, but non-streaming ones are disabled with the reason. */
+  requireStreaming?: boolean;
 }) {
+  /* Concise catalog description of the selected model, plus a realtime note
+     for TTS models the provider cannot stream over its realtime socket
+     (e.g. Eleven v3 — replies synthesize per segment over REST). */
+  const selected = models.find((m) => m.code === value);
+  const hint = selected
+    ? [selected.description, selected.capability === "tts" && !selected.streaming
+        ? "No realtime streaming — replies are synthesized per segment (higher latency)."
+        : null].filter(Boolean).join(" ") || undefined
+    : undefined;
   return (
-    <Field label={label} plain>
+    <Field label={label} plain hint={hint}>
       <select
-        className="select" value={value} disabled={disabled} aria-label={label}
+        className="select" value={value} disabled={disabled} aria-label={ariaLabel ?? label}
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{disabled ? "Provider default" : "Select model"}</option>
         {value && !models.some((m) => m.code === value) && <option value={value}>{value}</option>}
-        {models.map((m) => (
-          <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
-        ))}
+        {models.map((m) => {
+          const blocked = Boolean(requireStreaming && !m.streaming);
+          return (
+            <option
+              key={m.code} value={m.code} disabled={blocked}
+              title={blocked
+                ? "Live calls switch engines in realtime — this model only synthesizes over REST."
+                : m.description ?? undefined}
+            >
+              {m.displayName}{m.isDefault ? " (default)" : ""}{blocked ? NO_STREAMING_SUFFIX : ""}
+            </option>
+          );
+        })}
       </select>
     </Field>
   );
@@ -993,9 +1482,9 @@ function CleanupCallout({ items, onApply }: { items: string[]; onApply: () => vo
    Delivery tuning slider (kept from the previous tab)
    ============================================================ */
 
-function Slider({ label, value, min, max, step, fmt, onChange }: {
+function Slider({ label, value, min, max, step, fmt, hint, onChange }: {
   label: string; value: number; min: number; max: number; step: number;
-  fmt: (v: number) => string; onChange: (v: number) => void;
+  fmt: (v: number) => string; hint?: string; onChange: (v: number) => void;
 }) {
   return (
     <label className="col gap-6">
@@ -1010,6 +1499,7 @@ function Slider({ label, value, min, max, step, fmt, onChange }: {
         style={{ accentColor: "var(--brand-500)", width: "100%" }}
         aria-label={label}
       />
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }
@@ -1018,7 +1508,7 @@ function Slider({ label, value, min, max, step, fmt, onChange }: {
    Voice preview modal — real synthesis via /providers/tts-preview
    ============================================================ */
 
-function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, ensureModels, ensureVoices, languages }: {
+function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, ensureModels, ensureVoices, languages, prompts, previewVariables }: {
   ctx: PreviewContext | null;
   onClose: () => void;
   ttsProviders: ProviderInfo[];
@@ -1027,30 +1517,130 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   ensureModels: (provider: string) => Promise<ProviderModelInfo[]>;
   ensureVoices: (provider: string) => Promise<VoiceOption[]>;
   languages: string[];
+  prompts: Prompt[] | undefined;
+  previewVariables: Record<string, unknown>;
 }) {
   const [form, setForm] = useState({ provider: "", model: "", voice: "", language: "", text: "" });
+  /* Draft provider settings — local to the modal until the user applies them.
+     Moving a slider never persists anything; it only changes what the next
+     Generate synthesizes. */
+  const [draft, setDraft] = useState<ProviderSettings>({});
+  /* Bot-level Delivery tuning drafts (same persisted fields production uses). */
+  const [speed, setSpeed] = useState(1);
+  const [pause, setPause] = useState(350);
+  const [empathy, setEmpathy] = useState(50);
+  const [energy, setEnergy] = useState(50);
+  /* Set when a language change resolved to a per-language override engine —
+     the modal then previews that engine, exactly like a live call would. */
+  const [overrideLocale, setOverrideLocale] = useState<string | null>(null);
+  const [applied, setApplied] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [result, setResult] = useState<TtsPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /* Automatic greeting updates stop after the user intentionally edits the
+     textarea, so changing a language/voice cannot destroy their test text. */
+  const sampleTextEditedRef = useRef(false);
+  /* Set once the user picks a provider/model/voice by hand. From then on a
+     language change never rewrites the engine: an explicit selection is the
+     thing being tested, and silently switching the provider out from under
+     it made the modal look broken. State, not a ref — the offered language
+     list depends on it. */
+  const [enginePinned, setEnginePinned] = useState(false);
+
+  const automaticSampleText = (provider: string, voiceId: string, language: string) => {
+    const voice = findVoice(voicesFor(provider), voiceId);
+    const greeting = activeGreetingSample(prompts, language);
+    return greeting
+      ? renderGreetingVariables(greeting, withVoiceIdentity(previewVariables, voice))
+      : (voice?.sampleText ?? DEFAULT_SAMPLE_TEXT);
+  };
+
+  /* Languages the selected preview model can actually speak (platform locale
+     codes, already intersected with the enabled platform languages by the
+     API). Deepgram is the sharp case: its Aura voices speak no Indian
+     language at all, so offering hi-IN under a Deepgram model could only
+     ever produce a provider rejection. */
+  const modelLangQ = useAsync<ModelLanguagesInfo | null>(
+    () => (form.provider && form.model
+      ? getModelLanguages("tts", form.provider, form.model).catch(() => null)
+      : Promise.resolve(null)),
+    [form.provider, form.model],
+  );
+
+  /* A language with a per-language override previews on ITS OWN engine, so it
+     stays offered whatever the currently shown model speaks. Everything else
+     is filtered to the selected model. */
+  const offeredLanguages = useMemo(() => {
+    const info = modelLangQ.data;
+    if (!info || info.languageAgnostic || info.languages.length === 0) return languages;
+    const speakable = new Set(info.languages.map((l) => l.code));
+    return languages.filter(
+      (l) => speakable.has(l)
+        || (!enginePinned && Boolean(ctx?.resolveOverride?.(l))),
+    );
+  }, [modelLangQ.data, languages, ctx, enginePinned]);
+
+  const hiddenLanguages = useMemo(
+    () => languages.filter((l) => !offeredLanguages.includes(l)),
+    [languages, offeredLanguages],
+  );
+
+  const draftFor = (provider: string, model: string, params: ProviderSettings | undefined) => {
+    const schema = stripDeliverySpeedParams(
+      modelsFor(provider).find((m) => m.code === model)?.paramsSchema,
+    );
+    return reconcileSettings(schema, stripDeliverySpeedParams(params ?? {}));
+  };
 
   /* Prefill from the launching context each time the modal opens. */
   useEffect(() => {
     if (!ctx) return;
-    const voice = findVoice(voicesFor(ctx.provider), ctx.voice);
+    const language = ctx.language || languages[0] || "";
+    sampleTextEditedRef.current = false;
+    setEnginePinned(false);
     setForm({
       provider: ctx.provider,
       model: ctx.model,
       voice: ctx.voice,
-      language: ctx.language || languages[0] || "",
-      text: voice?.sampleText || DEFAULT_SAMPLE_TEXT,
+      language,
+      text: automaticSampleText(ctx.provider, ctx.voice, language),
     });
+    /* Start from the saved/staged values for this engine, reconciled against
+       the model actually selected — never from another model's leftovers. */
+    setDraft(draftFor(ctx.provider, ctx.model, ctx.params));
+    setSpeed(ctx.tuning?.speed ?? 1);
+    setPause(ctx.tuning?.pauseMs ?? 350);
+    setEmpathy(ctx.tuning?.empathy ?? 50);
+    setEnergy(ctx.tuning?.energy ?? 50);
+    /* Launched from a per-language row: the modal starts ON that override,
+       so a later switch to an inheriting locale must restore the default. */
+    const launchedOnOverride = Boolean(
+      ctx.defaultEngine && (
+        ctx.defaultEngine.provider !== ctx.provider
+        || ctx.defaultEngine.model !== ctx.model
+        || ctx.defaultEngine.voice !== ctx.voice
+      ),
+    );
+    setOverrideLocale(launchedOnOverride ? (ctx.language || null) : null);
+    setApplied(false);
     setResult(null);
     setError(null);
     setPlaying(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
+
+  /* Prompts may finish loading after the modal opens. Replace the temporary
+     fallback with the greeting unless the user has already typed their own
+     sample text. */
+  useEffect(() => {
+    if (!ctx || sampleTextEditedRef.current) return;
+    setForm((current) => {
+      const nextText = automaticSampleText(current.provider, current.voice, current.language);
+      return nextText !== current.text ? { ...current, text: nextText } : current;
+    });
+  }, [ctx, previewVariables, prompts]);
 
   useEffect(() => () => { audioRef.current?.pause(); }, []);
 
@@ -1060,13 +1650,88 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   };
   const close = () => { stop(); onClose(); };
 
+  /* A provider switch has no settings to carry over — the new provider's
+     parameters are entirely different — so the draft resets to the new
+     default model's defaults. */
   const changeProvider = async (provider: string) => {
+    setEnginePinned(true);
     setForm((f) => ({ ...f, provider, model: "", voice: "" }));
+    setDraft({});
+    setOverrideLocale(null);
+    setApplied(false);
     if (!provider) return;
     void ensureVoices(provider);
     const models = await ensureModels(provider);
     const def = models.find((m) => m.isDefault) ?? models[0];
     setForm((f) => (f.provider === provider && !f.model ? { ...f, model: def?.code ?? "" } : f));
+    setDraft(schemaDefaults(stripDeliverySpeedParams(def?.paramsSchema)));
+  };
+
+  /* A model switch keeps settings the new model also defines (clamped into its
+     range) and drops the rest — v2's pitch disappears on v3, its loudness is
+     clamped into v3's 0.1–2.5, and v3's temperature appears with its default. */
+  const changeModel = (model: string) => {
+    setEnginePinned(true);
+    const schema = stripDeliverySpeedParams(
+      modelsFor(form.provider).find((m) => m.code === model)?.paramsSchema,
+    );
+    setForm((f) => ({ ...f, model, voice: "" }));
+    setDraft((d) => reconcileSettings(schema, d));
+    setOverrideLocale(null);
+    setApplied(false);
+  };
+
+  /* A language change resolves the SAME engine a live call would use for
+     that locale: a complete per-language override switches the previewed
+     provider/model/voice (+ its params, over the base settings when the
+     override runs the identical model, mirroring the runtime); leaving an
+     override restores the default engine. A locale with no override leaves
+     the user's manual selections alone. */
+  const changeLanguage = async (locale: string) => {
+    setForm((f) => ({
+      ...f,
+      language: locale,
+      text: sampleTextEditedRef.current
+        ? f.text
+        : automaticSampleText(f.provider, f.voice, locale),
+    }));
+    setApplied(false);
+    if (!ctx || enginePinned) return;
+    const fallback = ctx.defaultEngine
+      ?? { provider: ctx.provider, model: ctx.model, voice: ctx.voice, params: ctx.params };
+    const override = ctx.resolveOverride?.(locale) ?? null;
+    const isDefaultEngine = (e: { provider: string; model: string; voice: string }) =>
+      e.provider === fallback.provider && e.model === fallback.model && e.voice === fallback.voice;
+    if (override === null || isDefaultEngine(override)) {
+      if (overrideLocale !== null) {
+        setForm((f) => ({
+          ...f, language: locale,
+          provider: fallback.provider, model: fallback.model, voice: fallback.voice,
+          text: sampleTextEditedRef.current
+            ? f.text
+            : automaticSampleText(fallback.provider, fallback.voice, locale),
+        }));
+        setDraft(draftFor(fallback.provider, fallback.model, fallback.params));
+        setOverrideLocale(null);
+      }
+      return;
+    }
+    await Promise.all([ensureVoices(override.provider), ensureModels(override.provider)]);
+    const sameEngine = override.provider === fallback.provider && override.model === fallback.model;
+    setForm((f) => ({
+      ...f, language: locale,
+      provider: override.provider, model: override.model, voice: override.voice,
+      text: sampleTextEditedRef.current
+        ? f.text
+        : automaticSampleText(override.provider, override.voice, locale),
+    }));
+    /* Runtime semantics: base tts_settings apply only when the override runs
+       the default provider+model; otherwise the override's params stand alone. */
+    setDraft(draftFor(
+      override.provider, override.model,
+      sameEngine ? { ...(fallback.params ?? {}), ...(override.params ?? {}) } : override.params,
+    ));
+    setOverrideLocale(locale);
   };
 
   const generate = async () => {
@@ -1077,7 +1742,17 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
       const r = await generateTtsPreview({
         provider: form.provider, model: form.model, voice: form.voice,
         language: form.language, text: form.text.trim(),
-        params: ctx && form.provider === ctx.provider && form.model === ctx.model ? ctx.params : undefined,
+        /* The unsaved draft is what gets synthesized — that is the point of
+           tuning here. It is already reconciled to the selected model, so no
+           parameter from a previous provider/model can ride along. */
+        params: draft,
+        /* Delivery tuning DRAFTS: canonical speed, sentence pause and native
+           energy mapping are applied server-side with the live-call logic
+           (shared/providers/tts/delivery.py). Empathy shapes live LLM replies
+           and cannot rewrite fixed preview text, so it is not sent. */
+        speed: speedRange ? speed : undefined,
+        pauseMs: pause,
+        energy,
       });
       setResult(r);
       const audio = new Audio(`data:${r.mimeType};base64,${r.audioBase64}`);
@@ -1094,8 +1769,15 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   };
 
   const models = modelsFor(form.provider);
+  const selectedModel = models.find((m) => m.code === form.model);
+  /* Only the selected model's schema is ever rendered or sent. Delivery owns
+     pace/speed, so those are shown as the single speaking-speed control below
+     instead of as raw provider parameters. */
+  const settingsSchema = stripDeliverySpeedParams(selectedModel?.paramsSchema);
+  const speedRange = effectiveSpeedRange(selectedModel);
+  const settingsCount = Object.keys(settingsSchema).length;
   const voices = voicesFor(form.provider);
-  const voiceOptions = withCurrent(
+  const voiceOptions = withCurrentVoice(
     (voices ?? [])
       .filter((v) => voiceSupportsModel(v, form.model))
       .map((v) => ({
@@ -1105,20 +1787,67 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         disabled: v.status === "unavailable",
       })),
     form.voice,
+    voices,
   );
   const textLen = form.text.trim().length;
   const canGenerate = Boolean(form.provider && form.model && form.voice && textLen > 0 && textLen <= 500);
+  /* Applying only stages the engine + settings on the page; it does not need
+     preview text to be valid, but does need a complete engine selection.
+     While the modal previews a per-language override that is NOT the engine
+     it was launched to edit, applying would clobber the launch target with a
+     different locale's engine — blocked with an explanatory title. */
+  const launchedOnOverride = Boolean(ctx?.defaultEngine && (
+    ctx.defaultEngine.provider !== ctx.provider
+    || ctx.defaultEngine.model !== ctx.model
+    || ctx.defaultEngine.voice !== ctx.voice
+  ));
+  const applyingForeignOverride = overrideLocale !== null
+    && !(launchedOnOverride && overrideLocale === ctx?.language);
+  /* A per-language target only accepts realtime-streaming engines (the
+     backend enforces the same rule on save) — a stale non-streaming model
+     can still be PREVIEWED, just never applied. */
+  const applyingNonStreaming = Boolean(
+    ctx?.requiresStreaming && selectedModel && !selectedModel.streaming,
+  );
+  const canApply = Boolean(form.provider && form.model && form.voice)
+    && !applyingForeignOverride && !applyingNonStreaming;
+  /* Schema entries rendered by specialized widgets (dictionary selector). */
+  const widgetEntries = Object.entries(settingsSchema).filter(([, s]) => s.widget === "dictionary");
+  const paramCount = settingsCount - widgetEntries.length;
 
   return (
     <Modal
       open={ctx !== null}
       onClose={close}
+      wide
       title="Preview voice"
-      sub="Generates real audio with the selected provider"
+      sub="Tune the voice, then enter sample text and generate real audio"
       footer={
         <>
           <Button variant="ghost" onClick={close}>Close</Button>
           <Button icon="pause" onClick={stop} disabled={!playing}>Stop</Button>
+          {ctx?.onApply && (
+            <Button
+              icon={applied ? "check" : "check-circle"}
+              disabled={!canApply}
+              title={canApply
+                ? "Stage these settings on the Voice tab — still needs Save voice settings"
+                : applyingForeignOverride
+                  ? "This language uses a per-language override — edit it from the Per-language voices section"
+                  : applyingNonStreaming
+                    ? `${selectedModel?.displayName ?? form.model} does not support realtime streaming — per-language overrides need a streaming model`
+                    : "Pick a provider, model and voice first"}
+              onClick={() => {
+                ctx.onApply?.({
+                  provider: form.provider, model: form.model, voice: form.voice,
+                  settings: draft, speed, pauseMs: pause, empathy, energy,
+                });
+                setApplied(true);
+              }}
+            >
+              {applied ? "Applied" : "Apply settings"}
+            </Button>
+          )}
           <Button
             variant="primary" icon="play" busy={generating}
             onClick={() => void generate()}
@@ -1131,7 +1860,8 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
       }
     >
       <div className="col gap-12">
-        <div className="grid grid-2" style={{ gap: 12 }}>
+        {/* 1 — Engine selection */}
+        <div className="preview-grid">
           <Field label="Provider" plain>
             <select
               className="select" value={form.provider} aria-label="Preview provider"
@@ -1146,13 +1876,28 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
           <Field label="Model" plain>
             <select
               className="select" value={form.model} aria-label="Preview model"
-              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value, voice: "" }))}
+              onChange={(e) => changeModel(e.target.value)}
             >
               <option value="">Select model</option>
               {form.model && !models.some((m) => m.code === form.model) && (
                 <option value={form.model}>{form.model}</option>
               )}
-              {models.map((m) => <option key={m.code} value={m.code}>{m.displayName}</option>)}
+              {models.map((m) => {
+                /* Previewing a non-streaming model is always allowed; when
+                   the APPLY TARGET is a per-language row it cannot be staged,
+                   so the option is disabled with the reason. */
+                const blocked = Boolean(ctx?.requiresStreaming && !m.streaming);
+                return (
+                  <option
+                    key={m.code} value={m.code} disabled={blocked}
+                    title={blocked
+                      ? "Per-language overrides run in realtime — this model only synthesizes over REST."
+                      : m.description ?? undefined}
+                  >
+                    {m.displayName}{blocked ? NO_STREAMING_SUFFIX : ""}
+                  </option>
+                );
+              })}
             </select>
           </Field>
           <Field label="Voice" plain>
@@ -1163,7 +1908,14 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
                 const voice = findVoice(voices, v);
                 setForm((f) => ({
                   ...f, voice: v,
-                  text: f.text.trim() ? f.text : (voice?.sampleText || DEFAULT_SAMPLE_TEXT),
+                  text: sampleTextEditedRef.current
+                    ? f.text
+                    : (activeGreetingSample(prompts, f.language)
+                      ? renderGreetingVariables(
+                        activeGreetingSample(prompts, f.language)!,
+                        withVoiceIdentity(previewVariables, voice),
+                      )
+                      : (voice?.sampleText ?? DEFAULT_SAMPLE_TEXT)),
                 }));
               }}
               placeholder={voices ? "Select voice…" : "Loading voices…"}
@@ -1171,18 +1923,144 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
               ariaLabel="Preview voice"
             />
           </Field>
-          <Field label="Language" plain>
+          <Field
+            label="Language" plain
+            hint={
+              hiddenLanguages.length > 0
+                ? `${selectedModel?.displayName ?? form.model} does not speak ${hiddenLanguages.join(", ")} — map those languages to another engine below.`
+                : overrideLocale
+                  ? undefined
+                  : "A language with a per-language override previews that engine, like a real call."
+            }
+          >
             <select
               className="select" value={form.language} aria-label="Preview language"
-              onChange={(e) => setForm((f) => ({ ...f, language: e.target.value }))}
+              onChange={(e) => void changeLanguage(e.target.value)}
             >
-              {form.language && !languages.includes(form.language) && (
+              {form.language && !offeredLanguages.includes(form.language) && (
                 <option value={form.language}>{form.language}</option>
               )}
-              {languages.map((l) => <option key={l} value={l}>{l}</option>)}
+              {offeredLanguages.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </Field>
         </div>
+        {overrideLocale && (
+          <p className="t-micro" style={{ margin: 0 }} data-testid="override-hint">
+            <Icon name="info" size={12} /> {overrideLocale} uses its per-language voice override —
+            this preview resolved the same engine a real call would use.
+          </p>
+        )}
+
+        {/* 2 — Provider-specific voice controls (catalog paramsSchema) */}
+        <div className="preview-settings">
+          <div className="row-between" style={{ alignItems: "baseline" }}>
+            <span className="t-label">Voice settings</span>
+            {form.model && paramCount > 0 && (
+              <button
+                type="button" className="param-reset" style={{ position: "static" }}
+                aria-label="Reset all voice settings to defaults"
+                onClick={() => {
+                  setDraft((d) => ({ ...schemaDefaults(settingsSchema), ...Object.fromEntries(widgetEntries.map(([k]) => [k, d[k]])) }));
+                  setApplied(false);
+                }}
+              >
+                Reset all to defaults
+              </button>
+            )}
+          </div>
+          {!form.model ? (
+            <p className="field-hint" style={{ margin: 0 }}>Select a model to tune its voice settings.</p>
+          ) : (
+            <div className="col gap-12" style={{ marginTop: 10 }}>
+              <ParamFields
+                key={`preview:${form.provider}:${form.model}`}
+                schema={settingsSchema}
+                values={draft}
+                showReset
+                onChange={(next) => { setDraft(next); setApplied(false); }}
+              />
+              {paramCount === 0 && (
+                <p className="field-hint" style={{ margin: 0 }}>
+                  This model exposes no additional tunable settings.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 3 — Delivery tuning drafts (bot-level persisted fields). The SAME
+            editable controls regardless of which Preview button opened the
+            modal — these values are bot-level, so every launch point stages
+            them to the same place. */}
+        <div className="preview-settings">
+          <span className="t-label">Delivery tuning</span>
+          <div className="col gap-12" style={{ marginTop: 10 }}>
+            <div className="preview-grid">
+              {speedRange ? (
+                <Slider
+                  label="Speaking speed" value={speed}
+                  min={speedRange[0]} max={speedRange[1]} step={0.1}
+                  fmt={(v) => `${v.toFixed(1)}×`}
+                  hint={`Sent as ${form.provider === "sarvam" ? "pace" : "speed"} (${speedRange[0]}–${speedRange[1]}×) — the bot's single speed control.`}
+                  onChange={(v) => { setSpeed(v); setApplied(false); }}
+                />
+              ) : (
+                <div className="col gap-6">
+                  <span className="field-label">Speaking speed</span>
+                  <span className="field-hint">
+                    {selectedModel
+                      ? `${selectedModel.displayName} has no speed control — speaking speed is not applied for this model.`
+                      : "Unavailable for this model."}
+                  </span>
+                </div>
+              )}
+              <Slider
+                label="Pause between sentences" value={pause} min={100} max={900} step={50}
+                fmt={(v) => `${v}ms`} hint="Silence inserted between assistant sentences."
+                onChange={(v) => { setPause(v); setApplied(false); }}
+              />
+              <Slider
+                label="Empathy" value={empathy} min={0} max={100} step={1}
+                fmt={(v) => `${v}%`}
+                hint="Shapes live LLM replies — cannot rewrite this fixed sample text."
+                onChange={(v) => { setEmpathy(v); setApplied(false); }}
+              />
+              <Slider
+                label="Energy" value={energy} min={0} max={100} step={1}
+                fmt={(v) => `${v}%`}
+                hint="Native voice mapping where the provider supports it."
+                onChange={(v) => { setEnergy(v); setApplied(false); }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 4 — Pronunciation (models that document a dictionary control) */}
+        {widgetEntries.length > 0 && (
+          <div className="preview-settings">
+            <span className="t-label">Pronunciation</span>
+            <div className="col gap-12" style={{ marginTop: 10 }}>
+              {widgetEntries.map(([key, spec]) => (
+                <DictionaryField
+                  key={`preview-dict:${form.provider}:${form.model}:${key}`}
+                  value={typeof draft[key] === "string" ? (draft[key] as string) : null}
+                  help={spec.help}
+                  onChange={(dictId) => {
+                    setDraft((d) => {
+                      const next = { ...d };
+                      if (dictId) next[key] = dictId;
+                      else delete next[key];
+                      return next;
+                    });
+                    setApplied(false);
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 5 — Sample text LAST: finish tuning, then write and preview. */}
         <Field
           label="Sample text"
           hint={`${textLen}/500 characters`}
@@ -1191,9 +2069,18 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
           <textarea
             className="textarea" rows={3} value={form.text} maxLength={600}
             aria-label="Preview sample text"
-            onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
+            onChange={(e) => {
+              sampleTextEditedRef.current = true;
+              setForm((f) => ({ ...f, text: e.target.value }));
+            }}
           />
         </Field>
+        <p className="t-micro" style={{ margin: 0 }}>
+          Starts with the active Greeting and resolves its variables from saved Runtime
+          context test data plus the selected voice identity. Generate uses the same delivery
+          mapping as live calls. Sample text is never saved; settings are staged with Apply
+          and persisted only by &ldquo;Save voice settings&rdquo;.
+        </p>
         {error && <Callout tone="critical" title="Preview failed">{error}</Callout>}
         {result && (
           <div className="row gap-6 t-micro" style={{ alignItems: "center" }}>

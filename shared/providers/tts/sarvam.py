@@ -9,6 +9,7 @@ legacy per-sample pure-python loop), and output is 16 kHz 16-bit mono PCM.
 
 import asyncio
 import base64
+import inspect
 import logging
 import re
 import time
@@ -16,6 +17,8 @@ import time
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
 from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
+from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
+from shared.providers.tts.sarvam_voices import NoV4Equivalent, is_v4_model, v4_speaker
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
 
@@ -46,6 +49,14 @@ logger = logging.getLogger(__name__)
 # truth — and ultimately by the Sarvam API itself; an unknown speaker surfaces
 # as a ProviderError("invalid_input"), never as a silent substitution.
 _MODEL_DEFAULT_SPEAKER = {"bulbul:v2": "anushka", "bulbul:v3": "shubh"}
+# bulbul:v4-flash speakers are persona ids; v3 names map through the reviewed
+# table in shared.providers.tts.sarvam_voices (never a guessed substitute).
+# Output rates the REST endpoint synthesizes natively (same set as streaming).
+_NATIVE_RATES = {8000, 16000, 22050, 24000}
+# Parameters forwarded from ProviderConfig.extra to the REST request.
+_REST_PARAMS = {"pace", "temperature", "pitch", "loudness", "enable_preprocessing"}
+_V3_ONLY_PARAMS = {"temperature"}
+_V2_ONLY_PARAMS = {"pitch"}
 _FALLBACK_DEFAULT_SPEAKER = "shubh"
 
 
@@ -78,6 +89,30 @@ def _normalize_speaker(voice: object) -> str:
     return str(voice).strip().lower() if voice is not None else ""
 
 
+# The sarvamai SDK renamed the TTS language keyword: ``target_language_code``
+# up to 0.1.2x, ``language_code`` from 0.1.3x (0.1.35 is installed locally and
+# on live; the HTTP body it sends is ``language_code`` and the Sarvam API
+# accepts both spellings). Passing the old keyword to the new SDK raises
+# ``TypeError: unexpected keyword argument`` before any request is made, which
+# silently killed every REST render (voiced cues, previews). The keyword is
+# read from the installed ``convert`` signature so the adapter follows the
+# SDK it runs against instead of assuming a version.
+_LANGUAGE_KWARG_CANDIDATES = ("language_code", "target_language_code")
+_DEFAULT_LANGUAGE_KWARG = "language_code"
+
+
+def _tts_language_kwarg(convert) -> str:
+    """The keyword ``convert`` accepts for the synthesis language."""
+    try:
+        params = inspect.signature(convert).parameters
+    except (TypeError, ValueError):
+        return _DEFAULT_LANGUAGE_KWARG
+    for name in _LANGUAGE_KWARG_CANDIDATES:
+        if name in params:
+            return name
+    return _DEFAULT_LANGUAGE_KWARG
+
+
 class SarvamTTS(TTSProvider):
     name = "sarvam-tts"
 
@@ -103,6 +138,21 @@ class SarvamTTS(TTSProvider):
         self._voice = config.voice or ""
         self._language = config.language or ""
         self._timeout = config.timeout_seconds
+        # Synthesis parameters (the same names the streaming config uses:
+        # pace, temperature, pitch, loudness, enable_preprocessing) so a
+        # REST render can match a streamed reply's voice. Unknown keys are
+        # ignored; ``output_sample_rate`` selects a native Sarvam rate so
+        # short clips for an 8 kHz telephony leg need no resampling.
+        self._params = {
+            key: value for key, value in dict(config.extra or {}).items()
+            if key in _REST_PARAMS and value is not None
+        }
+        requested = (config.extra or {}).get("output_sample_rate")
+        try:
+            requested = int(requested) if requested else 0
+        except (TypeError, ValueError):
+            requested = 0
+        self.output_sample_rate = requested if requested in _NATIVE_RATES else _PCM_RATE
 
     async def synthesize(
         self, text: str, *, voice: str | None = None, language: str | None = None,
@@ -114,23 +164,42 @@ class SarvamTTS(TTSProvider):
         started = time.perf_counter()
         language_code = _resolve_language(language or self._language or None, text)
         speaker = _normalize_speaker(voice) or _normalize_speaker(self._voice)
+        v4 = is_v4_model(self._model)
+        v3_contract = v4 or self._model.startswith("bulbul:v3")
+        if v4:
+            try:
+                speaker = v4_speaker(speaker, language_code)
+            except NoV4Equivalent as exc:
+                raise ProviderError(self.name, "invalid_input", str(exc)) from exc
         if not speaker:
             speaker = _MODEL_DEFAULT_SPEAKER.get(self._model, _FALLBACK_DEFAULT_SPEAKER)
             logger.info(
                 "sarvam-tts: no speaker configured; using model default '%s' for %s",
                 speaker, self._model,
             )
+        convert = self._client.text_to_speech.convert
+        request = {
+            "text": text,
+            "model": self._model,
+            _tts_language_kwarg(convert): language_code,
+            "speaker": speaker,
+            "speech_sample_rate": self.output_sample_rate,
+            "output_audio_codec": "wav",
+        }
+        for key, value in omit_default_loudness(self._params).items():
+            if key in _V3_ONLY_PARAMS and not v3_contract:
+                continue
+            if key in _V2_ONLY_PARAMS and v3_contract:
+                continue
+            if key == "loudness" and not sarvam_accepts_loudness(self._model):
+                continue  # bulbul models only (shared.providers.tts.delivery)
+            request[key] = value
+        # The canonical Delivery speed is authoritative over a stored pace.
+        pace = speed if speed and speed != 1.0 else request.get("pace", speed or 1.0)
+        request["pace"] = max(0.5, min(2.0, float(pace or 1.0)))
         try:
             response = await asyncio.wait_for(
-                self._client.text_to_speech.convert(
-                    text=text,
-                    model=self._model,
-                    target_language_code=language_code,
-                    speaker=speaker,
-                    pace=max(0.5, min(2.0, speed)),
-                    speech_sample_rate=_PCM_RATE,
-                    output_audio_codec="wav",
-                ),
+                convert(**request),
                 timeout=self._timeout,
             )
         except TimeoutError as exc:
@@ -157,8 +226,8 @@ class SarvamTTS(TTSProvider):
                     self.name, "upstream",
                     "Provider returned an audio payload that is not a 16-bit PCM WAV",
                 )
-            if rate and rate != _PCM_RATE:
-                pcm = resample_pcm(pcm, rate, _PCM_RATE)
+            if rate and rate != self.output_sample_rate:
+                pcm = resample_pcm(pcm, rate, self.output_sample_rate)
         else:
             logger.warning(
                 "sarvam-tts: provider returned no audio for speaker '%s' (%s)",
@@ -166,7 +235,7 @@ class SarvamTTS(TTSProvider):
             )
         return TTSResult(
             audio=pcm,
-            sample_rate=_PCM_RATE,
+            sample_rate=self.output_sample_rate,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 

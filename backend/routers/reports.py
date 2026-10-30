@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
-from backend.core.deps import is_super_admin, require_permission
+from backend.core.deps import can_view_costs, is_super_admin, require_permission
 from backend.reports.exporter import (
     CSV_CONTENT_TYPE,
     XLSX_CONTENT_TYPE,
@@ -92,6 +92,8 @@ def export_report(
         )
     if definition.platform_only and not is_super_admin(user):
         raise ForbiddenError("This report is available only to platform administrators.")
+    if definition.requires_costs_view and not can_view_costs(user):
+        raise ForbiddenError("Your role does not include cost visibility.")
     if bot_id and not definition.supports_bot_filter:
         raise ApiError(
             "This report does not support a VoiceBot filter.",

@@ -6,6 +6,8 @@ records used by tenants/bots/subscriptions can be deactivated or archived but
 never permanently deleted.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_, select
@@ -25,6 +27,7 @@ from shared.models import (
     Country,
     Currency,
     DataRegion,
+    GuardrailProfile,
     ExchangeRate,
     Industry,
     Plan,
@@ -258,8 +261,8 @@ _EDITABLE = {
         "config", "sort_order",
     },
     "provider-models": {
-        "display_name", "languages", "codecs", "sample_rates", "streaming",
-        "params_schema", "is_default", "sort_order",
+        "display_name", "description", "languages", "codecs", "sample_rates",
+        "streaming", "params_schema", "is_default", "sort_order",
     },
     "languages": {
         "name", "native_name", "iso_code", "script", "direction",
@@ -320,7 +323,8 @@ _TYPES: dict[str, dict] = {
     ),
     "voices": dict(
         model=VoiceProfile, serializer=serialize_voice, usage=_voice_usage,
-        perm="manage_master_data", label="Voice", search=("name", "provider", "accent"),
+        perm="manage_master_data", label="Voice",
+        search=("name", "provider", "accent", "provider_voice_id"),
     ),
     "currencies": dict(
         model=Currency, serializer=serialize_currency, usage=_currency_usage,
@@ -410,6 +414,8 @@ _AI_PROFILE_STACK = (
 # Fields where an explicit empty string clears the column (needed when a
 # provider change invalidates the previously selected model).
 _CLEARABLE: dict[str, set[str]] = {
+    # Clearing the default profile removes the industry's recommendation.
+    "industries": {"default_guardrail_profile_id"},
     "ai-profiles": {f for pair in _AI_PROFILE_STACK for f in pair[:2]} | {"default_voice"},
     "voices": {"locale", "provider_voice_id", "accent"},
     # Clearing the selling price returns the row to cost-only (no markup).
@@ -453,6 +459,19 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
             errors.append({"field": _camel(field), "message": "Must be a number."})
         elif value < 0:
             errors.append({"field": _camel(field), "message": "Must be zero or greater."})
+
+    if mtype == "industries" and payload.get("default_guardrail_profile_id"):
+        profile = db.scalar(
+            select(GuardrailProfile).where(
+                GuardrailProfile.id == payload["default_guardrail_profile_id"],
+                GuardrailProfile.is_deleted.is_(False),
+            )
+        )
+        if profile is None or profile.status != "active":
+            errors.append({
+                "field": "defaultGuardrailProfileId",
+                "message": "Select an active guardrail profile.",
+            })
 
     if mtype == "plans" and payload.get("currency") is not None:
         code = str(payload["currency"]).strip().upper()
@@ -578,6 +597,7 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
                     "field": _camel(model_field),
                     "message": f"Model '{model}' does not belong to provider '{provider}'.{detail}",
                 })
+        _validate_profile_default_voice(db, payload, effective, errors, current)
 
     if mtype == "provider-models":
         _validate_provider_model_payload(db, payload, effective, errors, current)
@@ -939,6 +959,48 @@ def _validate_provider_model_payload(db: Session, payload: dict, effective, erro
             errors.append({"field": "streaming", "message": "Must be true or false."})
 
 
+def _validate_profile_default_voice(
+    db: Session, payload: dict, effective, errors: list[dict], current,
+) -> None:
+    """An AI profile's default voice is an active platform voice of the
+    profile's TTS provider that supports its TTS model.
+
+    Checked only when the voice, provider or model changes, so a profile saved
+    before this rule still saves while an unrelated field is edited."""
+    from backend.core.provider_catalog import find_voice
+
+    def _norm(value):
+        return (str(value).strip() or None) if isinstance(value, str) else value
+
+    changed = current is None or any(
+        field in payload and _norm(payload[field]) != _norm(getattr(current, field, None))
+        for field in ("tts_provider", "tts_model", "default_voice")
+    )
+    voice = effective("default_voice")
+    if not voice or not changed:
+        return
+    provider = effective("tts_provider")
+    model = effective("tts_model")
+    if not provider:
+        errors.append({
+            "field": "defaultVoice",
+            "message": "Select a TTS provider before choosing a default voice.",
+        })
+        return
+    row = find_voice(db, provider, voice)  # no tenant: platform voices only
+    if row is None:
+        errors.append({
+            "field": "defaultVoice",
+            "message": f"'{voice}' is not an active {provider} platform voice.",
+        })
+    elif model and row.model_codes and model not in row.model_codes:
+        errors.append({
+            "field": "defaultVoice",
+            "message": f"Voice '{row.name}' does not support {provider}/{model} — "
+                       "choose one of the voices listed for this model.",
+        })
+
+
 def _validate_voice_payload(db: Session, payload: dict, effective, errors: list[dict]) -> None:
     """Provider-aware voice validation: the selected provider decides which
     models, languages and settings are legal. Settings are checked against the
@@ -1017,15 +1079,38 @@ def _validate_voice_payload(db: Session, payload: dict, effective, errors: list[
         for message in validate_params(schema_row.params_schema, settings, prefix="Settings"):
             errors.append({"field": "providerSettings", "message": message})
 
+    if "languages" in payload and payload["languages"] is not None:
+        if not isinstance(payload["languages"], list) or not all(
+            isinstance(code, str) and code.strip() for code in payload["languages"]
+        ):
+            errors.append({"field": "languages", "message": "Must be a list of locale codes."})
+            return
+        # De-duplicated in the order the admin picked them — languages[0] is
+        # the voice's primary locale.
+        deduped: list[str] = []
+        for code in payload["languages"]:
+            code = code.strip()
+            if code not in deduped:
+                deduped.append(code)
+        payload["languages"] = deduped
+
     locale = effective("locale")
-    if locale and model_row is not None and model_row.languages:
+    languages = effective("languages") or []
+    # An empty list means "offer this voice for every language" — only the
+    # codes actually chosen are checked against the model's catalog.
+    checked = [(c, "languages") for c in languages]
+    if locale and locale not in languages:
+        checked.append((locale, "locale"))
+    if checked and model_row is not None and model_row.languages:
         supported = {lang.code for lang in model_platform_languages(db, model_row)}
-        if supported and locale not in supported:
-            errors.append({
-                "field": "locale",
-                "message": f"'{locale}' is not supported by {provider}/{model_row.code}. "
-                           f"Supported: {', '.join(sorted(supported))}.",
-            })
+        if supported:
+            for code, field in checked:
+                if code not in supported:
+                    errors.append({
+                        "field": field,
+                        "message": f"'{code}' is not supported by {provider}/{model_row.code}. "
+                                   f"Supported: {', '.join(sorted(supported))}.",
+                    })
 
 
 def _spec(mtype: str) -> dict:
@@ -1073,6 +1158,7 @@ def list_master(
     provider: str | None = Query(None),  # voices + provider-models + provider-pricing
     gender: str | None = Query(None),  # voices only
     language: str | None = Query(None),  # voices only (locale prefix or languages[])
+    model_code: str | None = Query(None, alias="model", max_length=80),  # voices only
     status_filter: str | None = Query(None, alias="status", pattern="^(active|inactive|archived)$"),
     include_inactive: bool = Query(True, alias="includeInactive"),
     params: PageParams = Depends(page_params),
@@ -1107,6 +1193,14 @@ def list_master(
             stmt = stmt.where(or_(
                 VoiceProfile.locale.like(f"{language}%"),
                 func.json_contains(VoiceProfile.languages, f'"{language}"'),
+            ))
+        if model_code:
+            # Same rule as the runtime catalog (provider_catalog.list_voices):
+            # a voice without model codes works with every model of its provider.
+            stmt = stmt.where(or_(
+                VoiceProfile.model_codes.is_(None),
+                func.json_length(VoiceProfile.model_codes) == 0,
+                func.json_contains(VoiceProfile.model_codes, json.dumps(model_code)),
             ))
     if status_filter:
         if mtype in _STATUSLESS:
@@ -1570,8 +1664,18 @@ def onboarding_options(
         select(SupportedLanguage).where(SupportedLanguage.enabled.is_(True))
         .order_by(SupportedLanguage.sort_order, SupportedLanguage.code)
     ).all()
+    guardrail_profiles = db.scalars(
+        select(GuardrailProfile).where(
+            GuardrailProfile.is_deleted.is_(False),
+            GuardrailProfile.status == "active",
+        ).order_by(GuardrailProfile.created_at)
+    ).all()
     return ok({
-        "industries": [{"code": i.code, "name": i.name, "icon": i.icon or ""} for i in industries],
+        "industries": [
+            {"code": i.code, "name": i.name, "icon": i.icon or "",
+             "defaultGuardrailProfileId": i.default_guardrail_profile_id or ""}
+            for i in industries
+        ],
         "dataRegions": [
             {"code": r.code, "name": r.name, "infrastructureReady": r.infrastructure_ready}
             for r in regions
@@ -1592,5 +1696,10 @@ def onboarding_options(
             {"code": l.code, "name": l.name, "nativeName": l.native_name or "",
              "direction": l.direction}
             for l in languages
+        ],
+        "guardrailProfiles": [
+            {"id": p.id, "code": p.code, "name": p.name,
+             "description": p.description or ""}
+            for p in guardrail_profiles
         ],
     })

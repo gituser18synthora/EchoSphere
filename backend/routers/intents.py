@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
-    get_current_user,
     require_permission,
     resolve_tenant_id,
 )
@@ -21,8 +20,16 @@ from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import ApiConnection, EntityDef, Intent, User, VoiceBot, Workflow
+from shared.bot_config import invalidate_bot_config_sync
 from shared.orchestration.entity_extractor import extract_entities, extract_entity
 from backend.serializers import serialize_entity, serialize_intent
+from shared.readiness import refresh_readiness
+
+
+def _refresh_intent_readiness(db: Session, intent: Intent) -> None:
+    bot = db.get(VoiceBot, intent.bot_id)
+    if bot is not None and not bot.is_deleted:
+        refresh_readiness(db, bot, keys=("r4",))
 
 router = APIRouter(tags=["Intents & Entities"])
 
@@ -104,7 +111,7 @@ def _validate_intent_refs(db: Session, tenant_id: str, bot_id: str, *,
 
 @router.get("/bots/{bot_id}/intents")
 def list_intents(
-    bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    bot_id: str, user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")), db: Session = Depends(get_db)
 ):
     bot = _bot_checked(db, bot_id, user)
     rows = db.scalars(
@@ -176,12 +183,14 @@ def create_intent(
     )
     db.add(row)
     _sync_entity_usage(db, bot.tenant_id)
+    refresh_readiness(db, bot, keys=("r4",))
     record_audit(
         db, user=user, action="Created intent", entity_type="intent", entity_id=row.id,
         target_label=f"{row.name} ({bot.name})", tenant_id=bot.tenant_id,
         new_value={"name": row.name, "code": code}, request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(serialize_intent(row))
 
 
@@ -273,6 +282,7 @@ def update_intent(
         row.version += 1
         row.updated_by = user.id
     _sync_entity_usage(db, row.tenant_id)
+    _refresh_intent_readiness(db, row)
     record_audit(
         db, user=user, action="Updated intent", entity_type="intent", entity_id=row.id,
         target_label=row.name, tenant_id=row.tenant_id, previous_value=before,
@@ -280,6 +290,7 @@ def update_intent(
         request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok(serialize_intent(row))
 
 
@@ -308,6 +319,7 @@ def duplicate_intent(
         created_by=user.id,
     )
     db.add(clone)
+    _refresh_intent_readiness(db, clone)
     record_audit(
         db, user=user, action="Duplicated intent", entity_type="intent",
         entity_id=clone.id, target_label=name, tenant_id=src.tenant_id,
@@ -330,11 +342,13 @@ def delete_intent(
         guard_hard_delete()
     soft_delete(row, user)
     _sync_entity_usage(db, row.tenant_id)
+    _refresh_intent_readiness(db, row)
     record_audit(
         db, user=user, action="Archived intent", entity_type="intent", entity_id=row.id,
         target_label=row.name, tenant_id=row.tenant_id, request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok({"archived": True, "id": row.id})
 
 
@@ -347,7 +361,7 @@ class IntentTestRequest(BaseModel):
 def test_intents(
     bot_id: str,
     body: IntentTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     """Run one utterance through the real runtime router: matched intent,
@@ -412,7 +426,7 @@ def test_intents(
 @router.get("/entities")
 def list_entities(
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
@@ -647,7 +661,7 @@ class EntityTestRequest(BaseModel):
 def test_entity(
     entity_id: str,
     body: EntityTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     row = _entity_checked(db, entity_id, user)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
 
 import httpx
@@ -32,6 +33,10 @@ from backend.core.deps import (
     require_permission,
     require_tenant_member,
 )
+from shared.providers.languages import (
+    tts_supports_language,
+    tts_unsupported_language_message,
+)
 from backend.core.provider_catalog import (
     CAPABILITIES,
     find_voice,
@@ -43,24 +48,66 @@ from backend.core.provider_catalog import (
     list_voices,
     model_platform_languages,
     supports_voice_cloning,
+    validate_params,
     validate_voice_settings,
 )
 from backend.core.responses import ok
-from shared.audio.pcm import pcm_to_wav_bytes
+from shared.audio.pcm import pcm_to_wav_bytes, silence_pcm
+from shared.providers.tts.delivery import (
+    apply_delivery_params,
+    speed_range,
+    strip_speed_params,
+)
 from shared.config import get_settings
 from shared.db.mysql import get_db
 from shared.errors import ApiError, NotFoundError
 from shared.models import User, VoiceBot, VoiceProfile
 from shared.providers.base import ProviderError
+from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
+from shared.providers.tts.elevenlabs_v3_ws import ElevenLabsV3DialogueTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import TTSStreamSettings
 
 router = APIRouter(tags=["Providers"])
 
+logger = logging.getLogger("api.providers")
+
 _TEST_TIMEOUT_S = 8.0
 _PREVIEW_TIMEOUT_S = 15.0
 _PREVIEW_MAX_CHARS = 500
+
+# Providers whose realtime WebSocket the preview can drive. A provider
+# absent here can still be previewed over REST if its model row is
+# non-streaming; otherwise the preview reports it as unsupported.
+_STREAMING_PREVIEW_CLIENTS = {
+    "sarvam": SarvamWebSocketTTSProvider,
+    "elevenlabs": ElevenLabsWebSocketTTSProvider,
+    "deepgram": DeepgramWebSocketTTSProvider,
+}
+
+# Models served by a different realtime endpoint than their provider default
+# (ElevenLabs Eleven v3 on the Text-to-Dialogue socket). Mirrors
+# voice_runtime.tts_router._STREAMING_MODEL_PROVIDERS so a preview drives the
+# same adapter a live call would.
+_STREAMING_PREVIEW_MODEL_CLIENTS = {
+    ("elevenlabs", "eleven_v3_conversational"): ElevenLabsV3DialogueTTSProvider,
+}
+
+# Providers with a REST adapter the preview can use for a NON-streaming model
+# row (ElevenLabs v3 today). The class is imported lazily in the branch so a
+# streaming preview never pulls an adapter it will not call.
+_REST_PREVIEW_PROVIDERS = frozenset({"elevenlabs", "deepgram"})
+
+
+def _rest_preview_client(provider: str):
+    if provider == "deepgram":
+        from shared.providers.tts.deepgram import DeepgramTTS
+
+        return DeepgramTTS
+    from shared.providers.tts.elevenlabs import ElevenLabsTTS
+
+    return ElevenLabsTTS
 
 
 def _provider_secret(provider_row) -> str:
@@ -81,9 +128,16 @@ def _serialize_provider(row, capability: str) -> dict:
 
 
 def _serialize_model(row) -> dict:
+    # speedRange is the documented range of the model's own speed control
+    # (Sarvam `pace`, ElevenLabs `speed`), which Delivery tuning owns and maps
+    # onto. It is sent so the UI can bound its speaking-speed slider per model
+    # instead of hardcoding provider ranges; null means the model has no speed
+    # control at all (e.g. eleven_v3) and the slider is hidden.
+    bounds = speed_range(row.provider_code, row.code) if row.capability == "tts" else None
     return {
         "code": row.code,
         "displayName": row.display_name,
+        "description": row.description,
         "provider": row.provider_code,
         "capability": row.capability,
         "languages": row.languages or [],
@@ -91,6 +145,7 @@ def _serialize_model(row) -> dict:
         "sampleRates": row.sample_rates or [],
         "streaming": row.streaming,
         "paramsSchema": row.params_schema or {},
+        "speedRange": list(bounds) if bounds else None,
         "isDefault": row.is_default,
     }
 
@@ -299,6 +354,22 @@ async def _run_provider_test(db: Session, body: ProviderTestRequest) -> dict:
                 if body.voice and not response.json().get("voices"):
                     return {"ok": False, "error": "voice_unavailable",
                             "message": "The selected voice is not available on this account."}
+        elif body.provider == "deepgram":
+            # Cheapest authenticated call: token introspection, for STT and
+            # TTS alike. A live Flux or /v1/speak handshake would bill audio
+            # minutes / characters for a connectivity check. Probes the same
+            # regional host the adapters use, so a misconfigured
+            # DEEPGRAM_REGION shows up here rather than on a live call.
+            from shared.providers.deepgram_common import auth_headers, rest_base_url
+
+            async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_S) as client:
+                response = await client.get(
+                    f"{rest_base_url()}/v1/auth/token", headers=auth_headers(key),
+                )
+                if response.status_code in (401, 403):
+                    return {"ok": False, "error": "auth",
+                            "message": "Deepgram rejected the API key."}
+                response.raise_for_status()
         elif body.provider == "openai":
             async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_S) as client:
                 url = "https://api.openai.com/v1/models"
@@ -364,36 +435,151 @@ class PreviewRequest(BaseModel):
     language: str
     text: str = Field(min_length=1, max_length=_PREVIEW_MAX_CHARS)
     params: dict = Field(default_factory=dict)
+    # Delivery tuning (optional, same ranges as the voice-settings API). The
+    # mapping onto provider parameters is shared with live calls
+    # (shared.providers.tts.delivery), so a preview always sounds like the
+    # runtime would.
+    speed: float | None = Field(default=None, ge=0.5, le=2.0)
+    pause_ms: int | None = Field(default=None, alias="pauseMs", ge=0, le=5000)
+    energy: int | None = Field(default=None, ge=0, le=100)
+
+    model_config = {"populate_by_name": True}
 
 
-async def _collect_preview_audio(provider_client, text: str) -> tuple[bytes, float | None]:
-    """Stream a preview generation and return (pcm, time-to-first-audio-ms)."""
+# Friendly summaries per ProviderError category. Schema validation runs before
+# any provider call, so a category like invalid_input here means the provider
+# itself rejected something the catalog could not know (e.g. an account-level
+# restriction) — the sanitized provider message is appended for context.
+_PREVIEW_ERROR_SUMMARIES = {
+    "auth": "the provider rejected the platform credentials",
+    "timeout": "the provider did not answer in time",
+    "rate_limit": "the provider rate limit was hit — try again shortly",
+    "invalid_input": "the provider rejected the request",
+    "upstream": "the provider had an internal problem",
+}
+
+
+def _preview_provider_error(provider_name: str, exc: ProviderError) -> ApiError:
+    """Readable preview failure. ProviderError messages are sanitized at the
+    adapter layer and redacted again here before becoming user-facing.
+
+    The provider's own words are always carried through — including for auth
+    failures, where the category alone ("credentials rejected") hides the
+    difference between a wrong key, an expired plan and an unpaid invoice. The
+    message is redacted, never a raw response body.
+    """
+    from shared.logging_utils import redact_secrets
+
+    summary = _PREVIEW_ERROR_SUMMARIES.get(exc.category, "the provider call failed")
+    detail = redact_secrets(str(exc)).split("] ", 1)[-1].strip()
+    suffix = f" ({detail[:300]})" if detail else ""
+    # 502 is this endpoint's "the provider failed" status; a 422 means the
+    # PLATFORM rejected the request (catalog/schema/capability validation),
+    # which the voice-settings UI and its tests rely on to tell the two apart.
+    logger.warning(
+        "tts-preview: %s failed (category=%s): %s",
+        provider_name, exc.category, detail[:500],
+    )
+    return ApiError(f"{provider_name} preview failed: {summary}{suffix}.", 502)
+
+
+async def _diagnose_silent_elevenlabs(
+    body, provider_row, wire_voice: str, params: dict
+) -> ProviderError | None:
+    """Ask the REST endpoint why a stream produced no audio.
+
+    The ElevenLabs realtime socket reports account-level failures (an unpaid
+    invoice, a suspended key, an exhausted quota) by closing the generation
+    with no audio and no error frame. REST answers the same request with a
+    structured reason, so on an empty stream we ask it once — only on the
+    failure path, so a working preview is never billed twice.
+    """
+    from shared.providers.base import ProviderConfig
+    from shared.providers.tts.elevenlabs import ElevenLabsTTS
+
+    reference = provider_row.secret_ref or f"env:{provider_row.code.upper()}_API_KEY"
+    client = ElevenLabsTTS(ProviderConfig(
+        provider="elevenlabs", model=body.model, voice=wire_voice,
+        language=body.language, api_key_reference=reference,
+        timeout_seconds=_PREVIEW_TIMEOUT_S, extra=dict(params),
+    ))
+    try:
+        await client.synthesize(
+            body.text[:100] or "test", voice=wire_voice, language=body.language,
+        )
+    except ProviderError as exc:
+        return exc
+    except Exception:  # noqa: BLE001 — diagnosis must never mask the original
+        logger.warning("tts-preview: ElevenLabs diagnosis failed", exc_info=True)
+    finally:
+        await client.aclose()
+    return None
+
+
+async def _preview_sentences(text: str, pause_ms: int | None) -> list[str]:
+    """Sentence segments for a preview — the runtime aggregator's rules.
+
+    Without a pause there is nothing to insert between segments, so the text
+    synthesizes in one piece exactly as before.
+    """
+    if not pause_ms or pause_ms <= 0:
+        return [text]
+    from voice_runtime.aggregator import split_sentences  # lazy: pulls pipecat
+
+    return await split_sentences(text) or [text]
+
+
+async def _collect_preview_audio(
+    provider_client, sentences: list[str], *, pause_ms: int | None, sample_rate: int
+) -> tuple[bytes, float | None]:
+    """Stream a preview and return (pcm, time-to-first-audio-ms).
+
+    Each sentence is one provider generation; segments are joined with the
+    same deterministic silence live calls insert (never before the first or
+    after the last sentence).
+    """
     started = time.perf_counter()
     await provider_client.connect()
-    await provider_client.synthesize_stream(text, generation_id="preview")
-    await provider_client.flush("preview")
-    await provider_client.finish("preview")
 
-    chunks: list[bytes] = []
+    segments: list[bytes] = []
     ttfa_ms: float | None = None
     deadline = started + _PREVIEW_TIMEOUT_S
-    while True:
-        remaining = deadline - time.perf_counter()
-        if remaining <= 0:
-            raise ProviderError(provider_client.name, "timeout", "Preview timed out")
-        try:
-            event = await asyncio.wait_for(provider_client.events.get(), timeout=remaining)
-        except (TimeoutError, asyncio.TimeoutError):
-            raise ProviderError(provider_client.name, "timeout", "Preview timed out") from None
-        if event.kind == "audio":
-            if ttfa_ms is None:
-                ttfa_ms = (time.perf_counter() - started) * 1000
-            chunks.append(event.audio)
-        elif event.kind == "final":
-            break
-        elif event.kind == "error" and event.error is not None:
-            raise event.error
-    return b"".join(chunks), ttfa_ms
+    for index, sentence in enumerate(sentences):
+        generation_id = f"preview-{index + 1}"
+        await provider_client.synthesize_stream(sentence, generation_id=generation_id)
+        await provider_client.flush(generation_id)
+        await provider_client.finish(generation_id)
+        chunks: list[bytes] = []
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise ProviderError(provider_client.name, "timeout", "Preview timed out")
+            try:
+                event = await asyncio.wait_for(provider_client.events.get(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                raise ProviderError(provider_client.name, "timeout", "Preview timed out") from None
+            if event.kind == "audio":
+                if ttfa_ms is None:
+                    ttfa_ms = (time.perf_counter() - started) * 1000
+                chunks.append(event.audio)
+            elif event.kind == "final":
+                break
+            elif event.kind == "error" and event.error is not None:
+                raise event.error
+        if chunks:
+            if segments and pause_ms:
+                segments.append(silence_pcm(sample_rate, pause_ms))
+            segments.append(b"".join(chunks))
+    return b"".join(segments), ttfa_ms
+
+
+def _join_preview_segments(
+    segments: list[bytes], *, pause_ms: int | None, sample_rate: int
+) -> bytes:
+    """Join REST-synthesized sentence segments with the shared silence gap."""
+    audible = [segment for segment in segments if segment]
+    gap = silence_pcm(sample_rate, pause_ms or 0)
+    return gap.join(audible) if gap else b"".join(audible)
 
 
 @router.post("/providers/tts-preview")
@@ -424,14 +610,105 @@ async def tts_preview(
     wire_voice = voice_row.provider_voice_id or voice_row.name if voice_row else body.voice
     started = time.perf_counter()
 
+    # The draft settings are unsaved, so the save path's validation has not run
+    # on them — validate here against the SAME catalog schema before any of it
+    # reaches a provider. This is what stops a stale parameter from a
+    # previously selected model (bulbul:v2 pitch on bulbul:v3, a v2 loudness
+    # above v3 / v4-flash's 2.5, speed on eleven_v3) being previewed with
+    # settings a real call could never use.
+    # Delivery owns pace/speed, so those are stripped rather than rejected —
+    # the canonical `speed` field below is the one authoritative control.
+    # Capability check before anything is synthesized: a model that cannot
+    # speak the requested language is a configuration error the operator can
+    # fix, not a provider outage. Only the platform's own languages are
+    # modelled, so an unmodelled combination (None) is never rejected here.
+    if body.language and tts_supports_language(
+            body.provider, body.model, body.language) is False:
+        raise ApiError(
+            tts_unsupported_language_message(
+                body.provider, body.model, body.language),
+            422,
+        )
+
+    draft_params = strip_speed_params(body.params)
+    param_errors = validate_params(
+        model_row.params_schema, draft_params, prefix=f"{body.provider}/{body.model}"
+    )
+    if param_errors:
+        raise ApiError(param_errors[0], 422, errors=param_errors)
+
+    # Delivery tuning uses the SAME provider mapping as live calls: canonical
+    # speed overrides legacy pace/speed params; Energy maps only onto controls
+    # the selected model documents. Empathy (and the conversational half of
+    # Energy) shape LLM-generated replies and cannot rewrite fixed preview text.
+    params = apply_delivery_params(
+        body.provider, body.model, draft_params,
+        speed=body.speed, energy=body.energy,
+    )
+    sentences = await _preview_sentences(body.text, body.pause_ms)
+
     if body.provider == "mock":
         from shared.providers.base import ProviderConfig
         from shared.providers.tts.mock import MockTTS
 
-        result = await MockTTS(ProviderConfig(provider="mock")).synthesize(
-            body.text, voice=wire_voice, language=body.language
+        mock_client = MockTTS(ProviderConfig(provider="mock"))
+        segments = []
+        for sentence in sentences:
+            result = await mock_client.synthesize(
+                sentence, voice=wire_voice, language=body.language,
+                speed=body.speed or 1.0,
+            )
+            segments.append(result.audio)
+        sample_rate = result.sample_rate
+        pcm = _join_preview_segments(
+            segments, pause_ms=body.pause_ms, sample_rate=sample_rate
         )
-        pcm, sample_rate, ttfa_ms = result.audio, result.sample_rate, 1.0
+        ttfa_ms = 1.0
+    elif not model_row.streaming and body.provider in _REST_PREVIEW_PROVIDERS:
+        # Models without realtime WebSocket support (Eleven v3) synthesize
+        # previews over REST with the dynamically selected model — one call
+        # per sentence when a pause gap has to be inserted.
+        from shared.providers.base import ProviderConfig
+
+        rest_cls = _rest_preview_client(body.provider)
+        reference = provider_row.secret_ref or f"env:{provider_row.code.upper()}_API_KEY"
+        if not _provider_secret(provider_row):
+            raise ApiError(
+                f"No API key configured for {provider_row.name} — set the referenced "
+                "environment variable to enable previews.", 422,
+            )
+        # Same rate as the WebSocket previews so a v3 voice is judged at the
+        # same fidelity as a Flash voice (16 kHz previews sounded duller).
+        rest_rate = 24000 if 24000 in (model_row.sample_rates or [24000]) else 16000
+        client = rest_cls(ProviderConfig(
+            provider=body.provider,
+            model=body.model,
+            voice=wire_voice,
+            language=body.language,
+            api_key_reference=reference,
+            timeout_seconds=_PREVIEW_TIMEOUT_S,
+            extra={**params, "output_sample_rate": rest_rate},
+        ))
+        try:
+            segments = []
+            ttfa_ms = None
+            for sentence in sentences:
+                result = await client.synthesize(
+                    sentence, voice=wire_voice, language=body.language,
+                    speed=body.speed or 1.0,
+                )
+                if ttfa_ms is None:
+                    # single-shot REST: first audio == first full response
+                    ttfa_ms = result.duration_ms
+                segments.append(result.audio)
+        except ProviderError as exc:
+            raise _preview_provider_error(provider_row.name, exc) from exc
+        finally:
+            await client.aclose()
+        sample_rate = result.sample_rate
+        pcm = _join_preview_segments(
+            segments, pause_ms=body.pause_ms, sample_rate=sample_rate
+        )
     else:
         key = _provider_secret(provider_row)
         if not key:
@@ -447,24 +724,50 @@ async def tts_preview(
             language=body.language,
             sample_rate=sample_rate,
             codec="linear16" if body.provider == "sarvam" else "pcm",
-            params=body.params,
+            params=params,
             api_key=key,
             timeout_seconds=_TEST_TIMEOUT_S,
         )
-        client_cls = (
-            SarvamWebSocketTTSProvider if body.provider == "sarvam"
-            else ElevenLabsWebSocketTTSProvider if body.provider == "elevenlabs"
-            else None
-        )
+        client_cls = _STREAMING_PREVIEW_MODEL_CLIENTS.get(
+            (body.provider, body.model)
+        ) or _STREAMING_PREVIEW_CLIENTS.get(body.provider)
         if client_cls is None:
             raise ApiError(f"Preview is not supported for provider '{body.provider}'.", 422)
         client = client_cls(stream_settings)
+        pcm, ttfa_ms = b"", None
+        stream_error: ProviderError | None = None
         try:
-            pcm, ttfa_ms = await _collect_preview_audio(client, body.text)
+            pcm, ttfa_ms = await _collect_preview_audio(
+                client, sentences, pause_ms=body.pause_ms, sample_rate=sample_rate
+            )
         except ProviderError as exc:
-            raise ApiError(f"{provider_row.name} preview failed: {exc.category}.", 502) from exc
+            stream_error = exc
         finally:
             await client.close()
+        # ElevenLabs' realtime socket signals account-level failures (an unpaid
+        # invoice, a suspended key, an exhausted quota) by ending the
+        # generation with no audio and no reason. Whenever a stream produced
+        # nothing and the failure is still unexplained, ask REST — it answers
+        # the same request with a structured error. Specific failures
+        # (unsupported language, auth, timeout) are already actionable and are
+        # never re-diagnosed.
+        unexplained = stream_error is None or stream_error.category == "upstream"
+        if body.provider == "elevenlabs" and not pcm and unexplained:
+            diagnosed = await _diagnose_silent_elevenlabs(
+                body, provider_row, wire_voice, params
+            )
+            if diagnosed is not None:
+                stream_error = diagnosed
+        if stream_error is not None:
+            raise _preview_provider_error(provider_row.name, stream_error)
+
+    if not pcm:
+        # Checked before the audit/usage writes below: a preview that produced
+        # nothing is a failure and must not be recorded as billable characters.
+        raise ApiError(
+            f"{provider_row.name} preview failed: the provider returned no audio "
+            "for this voice/model/language combination.", 502,
+        )
 
     total_ms = (time.perf_counter() - started) * 1000
     record_audit(
@@ -492,8 +795,6 @@ async def tts_preview(
             commit=False,
         )
     db.commit()
-    if not pcm:
-        raise ApiError("The provider returned no audio.", 502)
     wav = pcm_to_wav_bytes(pcm, sample_rate=sample_rate)
     return ok({
         "audioBase64": base64.b64encode(wav).decode("ascii"),

@@ -30,6 +30,19 @@ _RRF_K = 60
 # Cheap token budget so we never ship an unbounded context to the LLM.
 _MAX_CONTEXT_TOKENS = 3000
 
+# The offline mock embedder is token-hash based, not a semantic model. A
+# shared brand token (for example "ZEE5") can therefore give an unrelated
+# question enough cosine/FTS score to cross the normal production gate. For
+# mock-only retrieval, require overlap on at least one meaningful query term;
+# real embedding providers retain the semantic OR keyword gate unchanged.
+_MOCK_GATE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "can", "could", "do", "does", "for", "from",
+    "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please",
+    "tell", "the", "this", "to", "today", "what", "when", "where", "which",
+    "who", "why", "with", "would", "you", "your", "zee", "zee5",
+    "hai", "hain", "kya", "ka", "ke", "ki", "ko", "mein", "mujhe",
+})
+
 
 def normalize_query(query: str) -> str:
     """Unicode-normalize, collapse whitespace, strip control characters."""
@@ -39,6 +52,27 @@ def normalize_query(query: str) -> str:
         ch for ch in query if ch.isspace() or unicodedata.category(ch)[0] != "C"
     )
     return re.sub(r"\s+", " ", query).strip()
+
+
+def _has_significant_lexical_overlap(query: str, text: str) -> bool:
+    """Whether a mock-embedding result shares a meaningful query token.
+
+    This is intentionally a development-provider safety check, not a generic
+    lexical relevance algorithm. Production embeddings may validly retrieve a
+    synonym with zero literal overlap and are never subject to this function.
+    """
+    tokens = {
+        token.casefold()
+        for token in re.findall(r"[^\W_]+", query, flags=re.UNICODE)
+        if len(token) >= 3 and token.casefold() not in _MOCK_GATE_STOPWORDS
+    }
+    if not tokens:
+        return False
+    haystack = {
+        token.casefold()
+        for token in re.findall(r"[^\W_]+", text, flags=re.UNICODE)
+    }
+    return bool(tokens & haystack)
 
 
 def _approx_tokens(text: str) -> int:
@@ -258,10 +292,14 @@ class HybridRetriever:
         # Keyword hits must survive on their own — exact terms, codes and
         # names often have weak embedding similarity, which is precisely when
         # lexical search matters.
+        mock_embedder = getattr(self._embedder, "model", "") == "mock-embedding"
         for src in fused:
-            src.passed_gate = (
+            score_passed = (
                 (src.vector_score is not None and src.vector_score >= min_score)
                 or (src.keyword_score is not None and src.keyword_score >= min_keyword_rank)
+            )
+            src.passed_gate = score_passed and (
+                not mock_embedder or _has_significant_lexical_overlap(query, src.text)
             )
         gated = [s for s in fused if s.passed_gate]
 
@@ -303,6 +341,7 @@ class HybridRetriever:
             "bm25Weight": settings.retrieval_bm25_weight,
             "minScore": min_score,
             "minKeywordRank": min_keyword_rank,
+            "mockLexicalGate": mock_embedder,
             "denseCandidates": len(dense),
             "keywordCandidates": len(keyword),
             "mergedCandidates": merged_count,

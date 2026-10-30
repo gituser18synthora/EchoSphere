@@ -141,19 +141,65 @@ class Settings(BaseSettings):
     # Disable when running dedicated `python -m backend.workers.ingestion` workers.
     ingestion_worker_embedded: bool = True
 
+    # ── Post-call intelligence (summary / outcome / Next Best Action) ─
+    # The processor runs embedded in the voice worker/gateway processes (the
+    # rows are durable; SKIP-LOCKED-style claims make multiple pollers safe).
+    post_call_worker_embedded: bool = True
+    post_call_poll_seconds: float = 3.0
+    post_call_max_attempts: int = 3
+    # A 'processing' row older than this is presumed orphaned by a process
+    # restart and is reclaimed.
+    post_call_stale_processing_seconds: float = 600.0
+    post_call_llm_timeout_seconds: float = 25.0
+
     # ── Providers (platform defaults; tenant/bot overrides in DB) ─
     # Defaults must stay inside the governed provider matrix:
     # STT=Sarvam, TTS=Sarvam/ElevenLabs, LLM=OpenAI, Embedding=OpenAI.
     stt_provider: str = "sarvam"
     stt_api_key_reference: str = "env:SARVAM_API_KEY"
-    stt_model: str = "saaras:v3"
+    # saaras:v4 since 2026-10-23 (Phase 3): with automatic content key terms it
+    # replaced every non-Hindi-script final on two replayed live calls
+    # (docs/VOICE_PROVIDERS.md). Bots with an explicit stt_model keep theirs.
+    stt_model: str = "saaras:v4"
+    # Sarvam realtime STT (voice_runtime.sarvam_realtime_stt): route Sarvam
+    # STT over ``/speech-to-text-realtime/ws`` (true partial transcripts,
+    # client- or server-side endpointing) instead of the legacy streaming
+    # socket. Evaluation flag, OFF by default — see docs/VOICE_PROVIDERS.md.
+    sarvam_realtime_stt: bool = False
+    # "manual": our VAD + turn policy set the boundaries (speech_start /
+    # speech_end); "vad": Sarvam's server VAD proposes them and the user
+    # aggregator runs ExternalUserTurnStrategies (no word-confirmed barge-in).
+    sarvam_realtime_endpointing: str = "manual"
+    # Server cadence for partials: "balanced" (Sarvam's default, first partial
+    # ~1.1 s into speech) or "fast" (~0.6 s; same final latency, measured
+    # 2026-10-06).
+    sarvam_realtime_stream_type: str = "balanced"
+    # Smart Turn end-of-turn model (voice_runtime.smart_turn): process-wide
+    # kill switch over the tenant ``turn_detection.smart_turn`` mode. False
+    # keeps every call on the fixed pause window regardless of tenant config.
+    smart_turn_enabled: bool = True
     tts_provider: str = "sarvam"
     tts_api_key_reference: str = "env:SARVAM_API_KEY"
+    # bulbul:v3 stays the platform default; bulbul:v4-flash is selectable per
+    # bot (persona voices in the catalog, shared.providers.tts.sarvam_voices).
     tts_model: str = "bulbul:v3"
     tts_voice: str = "shubh"
     llm_provider: str = "openai"
     llm_api_key_reference: str = "env:OPENAI_API_KEY"
     llm_model: str = "gpt-4o-mini"
+    # Goal Engine decision engine for every bot that does not set its own
+    # llm_settings.orchestration_model (shared.bot_config). gpt-6-luna on the
+    # fast tier — 2026-10-23 bench, 116 labelled live turns x 2: routing 69 %
+    # vs 54 % for the per-bot models it replaces (mostly gpt-4o-mini), harmful
+    # mislabels 5 vs 36, latency equal (p50 ~1.3 s); OpenAI's named
+    # replacement for gpt-4o-mini / gpt-4.1 / gpt-4.1-mini (shutdown
+    # 2027-01-14). Its standard tier is ~2x slower (p50 2.7 s), so the tier
+    # is part of the default; it applies to decision calls only, never to
+    # replies. Needs the catalog row (migration d3f5b7c9e1a2): without it the
+    # bot's conversation model decides, still on this tier.
+    orchestration_provider: str = "openai"
+    orchestration_model: str = "gpt-6-luna"
+    orchestration_service_tier: str = "fast"
 
     # ── Outbound API connections (SSRF guard) ───────────────────
     # Private/loopback targets are blocked unless explicitly allowed (dev/test).
@@ -170,10 +216,37 @@ class Settings(BaseSettings):
     # ── Voice runtime ────────────────────────────────────────────
     voice_worker_host: str = "0.0.0.0"
     voice_worker_port: int = 9002
+    # Public ws://|wss:// base browsers use to reach the worker. Needed when
+    # the app is served over HTTPS: a secure page may not open a ws:// socket
+    # and the worker port carries no TLS, so the socket has to go through the
+    # TLS proxy. Empty = same origin on HTTPS, host:voice_worker_port on HTTP.
+    voice_public_ws_base: str = ""
     voice_worker_concurrency: int = 20
     voice_session_timeout: int = 900
     max_call_duration: int = 3600
     default_silence_timeout: int = 12
+    # Platform no-response policy (all tenants; see voice_runtime.silence_policy):
+    # quiet seconds before the first "can you hear me?" prompt, seconds between
+    # retries, total prompts before the call is closed politely, and the extra
+    # quiet a caller gets after asking the bot to hold.
+    silence_prompt_seconds: float = 15.0
+    silence_retry_seconds: float = 15.0
+    silence_max_prompts: int = 3
+    silence_hold_grace_seconds: float = 45.0
+    # Per-call audio recording (stereo WAV: caller left, bot right). Written by
+    # the voice worker, served by /conversations/{id}/recording.
+    voice_call_recording_enabled: bool = True
+    voice_recordings_dir: str = "storage/recordings"
+    # Source audio that tenant voice clones were built from (uploaded files or
+    # in-browser recordings). Written by /voice-clones, served back by
+    # /voice-clones/{id}/audio/{audio_id}.
+    voice_clone_audio_dir: str = "storage/voice_clones"
+    # Optional operator-recorded latency-filler clips (human_speech
+    # "latency_fillers", see voice_runtime.latency_filler): 16-bit PCM WAV
+    # files whose name carries a gender token — filler_male_1.wav,
+    # breath_female.wav, filler_neutral.wav. A gender with no file gets the
+    # runtime's synthesized breath instead.
+    filler_audio_dir: str = "storage/filler_audio"
 
     # ── Telephony ────────────────────────────────────────────────
     freeswitch_host: str = "127.0.0.1"
@@ -196,6 +269,18 @@ class Settings(BaseSettings):
     # already-shipped bot audio keeps playing over the caller. Disable only
     # if the installed module build logs errors on unknown message types.
     freeswitch_send_kill_audio: bool = True
+    # Transfer lifecycle monitoring over the FreeSWITCH event socket (per
+    # transferred call). If no agent bridge appears within the ring window a
+    # `transfer_unconfirmed` event is recorded (the monitor keeps watching —
+    # queue hold can take longer); the max window bounds the monitor's
+    # lifetime for calls whose hangup event never arrives.
+    freeswitch_transfer_ring_seconds: float = 120.0
+    freeswitch_transfer_monitor_max_seconds: float = 7200.0
+    # Hangup lifecycle monitoring over the FreeSWITCH event socket (one
+    # monitor per FreeSWITCH call, started at call start). Bounds the
+    # monitor's lifetime for channels whose hangup events never arrive —
+    # generous because it must outlast the longest allowed call.
+    freeswitch_hangup_monitor_max_seconds: float = 14400.0
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not
@@ -203,6 +288,9 @@ class Settings(BaseSettings):
     # process/port, or a different public hostname). Empty = derive from the
     # webhook request's own base URL (single-host proxy deployments).
     telephony_public_ws_base: str = ""
+    # Caller speaker-consistency prototype (voice_runtime.speaker_consistency):
+    # ONNX GE2E encoder + mel filterbank; missing file → evidence disabled.
+    speaker_model_path: str = "storage/models/speaker/ge2e_lstm.onnx"
     # The telephony gateway (`python -m voice_runtime.gateway`) is a second
     # voice-worker instance bound to the public dialer port so external
     # dialers reach ONE host:port for both the signed webhook and the media
@@ -232,6 +320,19 @@ class Settings(BaseSettings):
             name = reference[4:]
             return _sanitize_env_secret(name, os.environ.get(name, ""))
         return reference
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+    @property
+    def startup_seed_enabled(self) -> bool:
+        """Whether the Platform API seeds the database at startup.
+
+        Never in production: there the database is initialised once,
+        explicitly, with ``python -m backend.cli init-production``.
+        """
+        return self.enable_database_seed and not self.is_production
 
     @property
     def mysql_url(self) -> str:
@@ -282,9 +383,11 @@ def validate_settings(service: str) -> None:
     if service == "api":
         require(settings.jwt_secret, "JWT_SECRET",
                 'generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"')
-        if settings.enable_database_seed:
+        if settings.startup_seed_enabled:
             require(settings.superadmin_password, "SUPERADMIN_PASSWORD",
-                    "initial super-admin password (required while ENABLE_DATABASE_SEED=true)")
+                    "initial super-admin password (required while ENABLE_DATABASE_SEED=true "
+                    "outside production; production creates the account once with "
+                    "`python -m backend.cli init-production`)")
 
     if service in ("api", "ingestion-worker"):
         # The knowledge plane (pgvector) backs knowledge APIs and ingestion.

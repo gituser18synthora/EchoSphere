@@ -61,10 +61,13 @@ class TTSStreamSettings:
 class TTSStreamEvent:
     """Event emitted on the provider's queue."""
 
-    kind: str                       # audio | final | error | disconnected
+    kind: str                       # audio | final | error | disconnected | cold_connect
     generation_id: str | None = None
     audio: bytes = b""
     error: ProviderError | None = None
+    # Small structured payload of informational events (cold_connect:
+    # waited_ms, reason).
+    info: dict[str, Any] | None = None
 
 
 class StreamingTTSProvider(ABC):
@@ -79,7 +82,9 @@ class StreamingTTSProvider(ABC):
 
     def __init__(self, settings: TTSStreamSettings) -> None:
         self._settings = settings
-        self.events: asyncio.Queue[TTSStreamEvent] = asyncio.Queue()
+        # Bounded so a stalled consumer backpressures the socket receive loop
+        # (all producers await put) instead of buffering audio without limit.
+        self.events: asyncio.Queue[TTSStreamEvent] = asyncio.Queue(maxsize=256)
         self._live_generations: set[str] = set()
         self._closed = False
 

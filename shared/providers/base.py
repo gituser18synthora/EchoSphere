@@ -28,12 +28,37 @@ async def run_in_sdk_pool(func, *args, **kwargs):
 
 
 class ProviderError(Exception):
-    """Categorized provider failure (sanitized; never carries secrets)."""
+    """Categorized provider failure (sanitized; never carries secrets).
 
-    def __init__(self, provider: str, category: str, message: str) -> None:
+    ``status`` is the HTTP status the provider answered with, when there was
+    one: it is what tells a spend limit (429) from an auth failure (401/403)
+    or an upstream incident (5xx) in the recorded events.
+    """
+
+    def __init__(
+        self, provider: str, category: str, message: str, *, status: int | None = None,
+    ) -> None:
         self.provider = provider
         self.category = category  # auth | timeout | rate_limit | invalid_input | upstream
+        self.message = message
+        self.status = status
         super().__init__(f"[{provider}:{category}] {message}")
+
+
+def error_fields(exc: BaseException | None, prefix: str = "error") -> dict:
+    """Event fields describing a provider failure: its type and, for a
+    :class:`ProviderError`, the category, HTTP status and (sanitized)
+    message. ``{}`` for no error."""
+    if exc is None:
+        return {}
+    fields: dict = {prefix: type(exc).__name__}
+    if isinstance(exc, ProviderError):
+        fields[f"{prefix}_category"] = exc.category
+        fields[f"{prefix}_status"] = exc.status
+        fields[f"{prefix}_message"] = exc.message[:200]
+    else:
+        fields[f"{prefix}_message"] = str(exc)[:200]
+    return fields
 
 
 class ProviderConfig(BaseModel):
@@ -54,7 +79,11 @@ class STTResult:
     language: str | None = None
     confidence: float | None = None
     is_final: bool = True
-    duration_ms: float = 0.0
+    duration_ms: float = 0.0  # request latency, NOT audio duration
+    # Optional quality metadata (provider-dependent) consumed by the voice
+    # runtime's transcript gate; None whenever the provider doesn't report it.
+    language_probability: float | None = None
+    no_speech_prob: float | None = None
 
 
 @dataclass
@@ -64,6 +93,14 @@ class LLMResult:
     output_tokens: int = 0
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
+    # Provider report, when available: prompt tokens served from the prompt
+    # cache (included in input_tokens), the service tier the request actually
+    # ran on, and the resolved model id.
+    cached_tokens: int = 0
+    service_tier: str | None = None
+    model: str | None = None
+    # Reasoning tokens (already included in output_tokens) — observability.
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -74,6 +111,15 @@ class LLMStreamUsage:
     streaming API; callers that need billing-grade numbers read it right
     after the stream ends (one generation at a time per provider instance —
     the realtime voice path never runs concurrent generations on one call).
+
+    Normalized convention (billing depends on it):
+    - ``input_tokens`` is the GROSS prompt count INCLUDING ``cached_tokens``
+      (OpenAI prompt_tokens and Gemini prompt_token_count already are;
+      Anthropic reports cache reads separately, so its adapter adds them in).
+    - ``cached_tokens`` is the cache-hit subset, billed at the cached rate;
+      pricing nets it out of the full-rate input component.
+    - ``reasoning_tokens`` are informational: providers include them in
+      ``output_tokens``, so they are never billed separately.
     """
 
     input_tokens: int = 0

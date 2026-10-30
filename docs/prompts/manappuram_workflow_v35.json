@@ -1,0 +1,1162 @@
+{
+  "id": "wf_6071246e3307",
+  "name": "Surveys & feedback journey",
+  "version": 35,
+  "nodes": [
+    {
+      "x": 40,
+      "y": 40,
+      "id": "n_start",
+      "kind": "start",
+      "label": "Outbound call connected",
+      "config": {}
+    },
+    {
+      "x": 300,
+      "y": 40,
+      "id": "n_greeting",
+      "kind": "message",
+      "label": "Greeting + recording disclosure",
+      "config": {
+        "message": "नमस्ते! मैं Manappuram Finance Limited से {voice_speaker_name} बोल रहा/रही हूँ। ये call quality और training purposes के लिए record की जा रही है।",
+        "textByLanguage": {
+          "ml": "നമസ്കാരം, Manappuram Finance Limited-ൽ നിന്ന് {voice_speaker_name} ആണ് സംസാരിക്കുന്നത്. ഈ call quality check-നും training-നും വേണ്ടി record ചെയ്യുന്നുണ്ട്."
+        }
+      }
+    },
+    {
+      "x": 560,
+      "y": 40,
+      "id": "n_identity_check",
+      "kind": "ask",
+      "label": "Confirm speaking with customer",
+      "config": {
+        "note": "Bare 'nahi/no' or an explicit denial ('wrong number', 'main nahi hoon') at THIS step means wrong person. Recording objection or 'don't want to talk' -> declined_recording (opted_out, no persuasion). DEFAULT TO 'confirmed' for any affirmative or go-ahead reply, even if it doesn't repeat the customer's name (e.g. 'bolo', 'boliye', 'bol raha hoon', 'haan bolo', 'speaking') -- the customer is not required to say their own name back. Only a clear denial routes to wrong_number. Never fall back to an undefined clarifying question like 'aap kya chahte hain' -- that is not part of this flow.",
+        "entity": {
+          "dataType": "text",
+          "synonyms": {
+            "bad_time": [
+              "abhi busy hoon",
+              "baad mein call karo",
+              "not a good time",
+              "call back later",
+              "अभी बिज़ी हूँ",
+              "बाद में call करो",
+              "wo abhi nahi hain",
+              "ghar par nahi hain",
+              "वो अभी नहीं हैं",
+              "ഇപ്പോൾ തിരക്കിലാണ്",
+              "പിന്നെ വിളിക്കൂ",
+              "ഇപ്പോൾ സമയമില്ല"
+            ],
+            "confirmed": [
+              "haan",
+              "haa",
+              "ha",
+              "han",
+              "hoon",
+              "ji",
+              "jee",
+              "haan ji",
+              "ji haan",
+              "yes",
+              "yeah",
+              "yep",
+              "ok",
+              "okay",
+              "theek hai",
+              "sahi hai",
+              "achha",
+              "accha",
+              "बोल रहा हूँ",
+              "बोल रही हूँ",
+              "हाँ जी",
+              "हाँ",
+              "हां",
+              "हा",
+              "जी",
+              "जी हाँ",
+              "bolo",
+              "bol",
+              "boliye",
+              "bolna",
+              "बोलो",
+              "बोलिए",
+              "bataiye",
+              "kahiye",
+              "बताइए",
+              "कहिए",
+              "bol raha hoon",
+              "bol rahi hoon",
+              "haan bolo",
+              "haan boliye",
+              "haan ji bolo",
+              "aage bolo",
+              "आगे बोलो",
+              "hmm bolo",
+              "hmm",
+              "hm",
+              "humm",
+              "हम्म",
+              "speaking",
+              "yes speaking",
+              "this is",
+              "bol raha hoon boliye",
+              "അതെ",
+              "ആ",
+              "അതെ പറയൂ",
+              "പറഞ്ഞോളൂ",
+              "ഞാനാണ്",
+              "athe",
+              "aa paranjolu"
+            ],
+            "wrong_number": [
+              "wrong number",
+              "galat number",
+              "ye number nahi hai",
+              "no this is not",
+              "रॉंग नंबर",
+              "गलत नंबर",
+              "nahi",
+              "नहीं",
+              "no",
+              "main nahi hoon",
+              "मैं नहीं हूँ",
+              "അല്ല",
+              "ഞാനല്ല",
+              "തെറ്റായ നമ്പർ",
+              "wrong number aanu"
+            ],
+            "declined_recording": [
+              "record mat karo",
+              "recording nahi",
+              "don't record",
+              "do not record",
+              "रिकॉर्ड मत करो",
+              "recording band karo",
+              "मुझे बात नहीं करनी",
+              "baat nahi karni",
+              "record ചെയ്യരുത്",
+              "സംസാരിക്കാൻ താൽപര്യമില്ല"
+            ]
+          },
+          "matchPrecedence": "'confirmed' is the DEFAULT outcome for this question. Any reply that is not a clear denial (wrong_number synonyms) and not clearly bad_time or declined_recording wins as 'confirmed' -- including short filler words, mumbled/unclear replies, and spellings not listed verbatim (e.g. 'haan bolo', 'hmm bolo', 'bol raha hoon boliye', 'aage bolo').",
+          "synonymPatterns": {
+            "bad_time": [
+              "\\b(?:abhi\\s*busy\\s*hoon|baad\\s*mein\\s*call\\s*karo|call\\s*back\\s*later|not\\s*a\\s*good\\s*time)\\b",
+              "(?:अभी\\s*बिज़ी\\s*हूँ|बाद\\s*में\\s*call\\s*करो|वो\\s*अभी\\s*नहीं\\s*हैं)"
+            ],
+            "confirmed": [
+              "\\b(?:haa*n?|hu+n|ji+|yes+|yeah+|yep|ok(?:ay)?|theek\\s*hai|sahi\\s*hai|achha|accha|bol(?:o|iye|na)?|bol\\s*(?:raha|rahi)\\s*h(?:oo)?n|bata(?:iye|o)?|kah(?:iye|o)?|hm+|humm+|speaking|this\\s*is)\\b",
+              "(?:हाँ|हां|हा+|हूँ|जी+|बोलो|बोलिए|बोलना|बोल\\s*(?:रहा|रही)\\s*हूँ|बताइए|बताओ|कहिए|कहो|हम्म+)"
+            ],
+            "wrong_number": [
+              "\\b(?:nahi+n?|no|wrong\\s*number|galat\\s*number|main\\s*nahi\\s*hoon|ye\\s*number\\s*nahi\\s*hai)\\b",
+              "(?:नहीं|नही|रॉंग\\s*नंबर|गलत\\s*नंबर|मैं\\s*नहीं\\s*हूँ)"
+            ],
+            "declined_recording": [
+              "\\b(?:record\\s*mat\\s*karo|recording\\s*nahi|don'?t\\s*record|do\\s*not\\s*record|baat\\s*nahi\\s*karni)\\b",
+              "(?:रिकॉर्ड\\s*मत\\s*करो|मुझे\\s*बात\\s*नहीं\\s*करनी)"
+            ]
+          },
+          "unmatchedFallback": "confirmed",
+          "matchCanonicalValues": false,
+          "unmatchedFallbackNote": "If the reply does not clearly match wrong_number / bad_time / declined_recording, DEFAULT TO 'confirmed' and proceed straight to Purpose. This applies even to single filler words, mumbled or unclear audio, or spellings/variants not in the synonym list -- treat those as confirmed too, never as unmatched/unclear. Do NOT ask a clarifying question at this step -- none is defined here, and on an outbound call any reply that is not an unmistakable denial means 'yes, go ahead'. Only route away from confirmed when the reply is a clear denial or matches one of the other three categories."
+        },
+        "question": "क्या मेरी बात {customer_name} जी से हो रही है?",
+        "variable": "identity_confirmed",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "{customer_name} ആണോ സംസാരിക്കുന്നത്?"
+        }
+      }
+    },
+    {
+      "x": 560,
+      "y": 220,
+      "id": "n_wrong_person_exit",
+      "kind": "message",
+      "label": "Wrong number - polite exit (ONLY reachable from n_identity_check)",
+      "config": {
+        "message": "माफ़ कीजिए इस असुविधा के लिए। आपका दिन शुभ हो।",
+        "dispositionCode": "wrong_number",
+        "textByLanguage": {
+          "ml": "Sorry, തെറ്റായ നമ്പറിലാണ് വിളിച്ചത്. സമയം തന്നതിന് നന്ദി."
+        }
+      }
+    },
+    {
+      "x": 560,
+      "y": 400,
+      "id": "n_reschedule",
+      "kind": "ask",
+      "label": "Bad time - offer callback",
+      "config": {
+        "note": "Set dispositionCode requested_callback only if the customer agrees to a callback. If they refuse to be called again ('mat karo call'), set opted_out instead.",
+        "entity": {
+          "dataType": "text",
+          "synonyms": {}
+        },
+        "question": "जी बिल्कुल, कोई बात नहीं। क्या मैं आपको किसी और उचित समय पर call कर सकता/सकती हूँ?",
+        "variable": "callback_preference",
+        "dispositionCode": "requested_callback",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "ശരി, എപ്പോൾ തിരിച്ചു വിളിച്ചാൽ സൗകര്യമാകും?"
+        }
+      }
+    },
+    {
+      "x": 820,
+      "y": 40,
+      "id": "n_purpose",
+      "kind": "message",
+      "label": "Purpose of the call",
+      "config": {
+        "message": "धन्यवाद, {customer_name} जी। मेरी call का purpose है आपकी recent gold loan closure experience पर feedback लेना। Manappuram Finance में हम अपने customers को सबसे बेहतर experience देने के लिए committed हैं, और आपका feedback हमें अपनी services बेहतर बनाने में मदद करेगा।",
+        "textByLanguage": {
+          "ml": "Gold loan close ചെയ്തതിനെപ്പറ്റി ചെറിയൊരു feedback ചോദിക്കാനാണ് വിളിച്ചത്."
+        }
+      }
+    },
+    {
+      "x": 1080,
+      "y": 40,
+      "id": "n_experience",
+      "kind": "ask",
+      "label": "Closure experience (sentiment-branched)",
+      "config": {
+        "note": "If the customer already says WHAT went wrong in this answer (e.g. 'nahi, staff bura tha'), store it in experience_issue_detail, set issue_already_reported=true and take the skip edge to n_experience_ack (do NOT ask n_experience_issue). WHENEVER an issue is stated (here, in n_experience_issue, or inside ANY later answer such as the rating or reuse answer) IMMEDIATELY set: experience_issue_detail = customer's words, issue_topic = 2-4 word neutral label in Hindi/Hinglish (e.g. 'staff के behavior', 'waiting time', 'charges'), issue_already_reported = true.",
+        "entity": {
+          "dataType": "text",
+          "synonyms": {
+            "negative": [
+              "nahi",
+              "नहीं",
+              "achha nahi",
+              "satisfactory nahi",
+              "smooth nahi tha",
+              "problem tha",
+              "dikkat hui",
+              "pareshani hui",
+              "bura tha",
+              "issue tha",
+              "not good",
+              "not satisfactory",
+              "ഇല്ല",
+              "നല്ലതായിരുന്നില്ല",
+              "അത്ര നല്ലതായിരുന്നില്ല",
+              "പ്രശ്നമുണ്ടായിരുന്നു",
+              "ബുദ്ധിമുട്ടുണ്ടായി",
+              "സുഖമായിരുന്നില്ല"
+            ],
+            "positive": [
+              "theek tha",
+              "achha tha",
+              "accha tha",
+              "satisfactory tha",
+              "smooth tha",
+              "koi dikkat nahi",
+              "haan bilkul",
+              "no problem",
+              "fine",
+              "good",
+              "achha raha",
+              "koi problem nahi",
+              "koi issue nahi",
+              "koi dikkat nahi hui",
+              "कोई दिक्कत नहीं",
+              "कोई problem नहीं",
+              "sab theek raha",
+              "നല്ലതായിരുന്നു",
+              "എല്ലാം നല്ലതായിരുന്നു",
+              "കുഴപ്പമില്ല",
+              "കുഴപ്പമൊന്നുമില്ല",
+              "പ്രശ്നമില്ല",
+              "പ്രശ്നമൊന്നുമില്ല",
+              "എല്ലാം ശരിയായിരുന്നു",
+              "സുഖമായിരുന്നു",
+              "kuzhappamilla"
+            ]
+          },
+          "matchPrecedence": "Positive phrases that contain a negation ('koi dikkat nahi', 'koi problem nahi', 'no problem') ALWAYS win over the bare word 'nahi'. A bare 'nahi/नहीं/no' as the whole answer to 'process smooth tha?' is NEGATIVE.",
+          "unmatchedFallback": "ask_clarifying_question",
+          "matchCanonicalValues": false,
+          "unmatchedFallbackNote": "If the reply doesn't clearly match positive or negative, do NOT guess and do NOT end the call. Ask a brief clarifying question ('kya process mein koi dikkat aayi, ya sab theek raha?') before branching.",
+          "sentimentClassification": true
+        },
+        "question": "आपके gold loan को close करने का experience कैसा रहा?",
+        "variable": "closure_experience",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "Loan close ചെയ്തപ്പോൾ കാര്യങ്ങൾ എങ്ങനെയുണ്ടായിരുന്നു?"
+        }
+      }
+    },
+    {
+      "x": 1080,
+      "y": 220,
+      "id": "n_experience_issue",
+      "kind": "ask",
+      "label": "Capture what went wrong (negative branch) - ONLY if customer has NOT already said what went wrong; else skip to n_experience_ack",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {}
+        },
+        "skipIf": {
+          "equals": true,
+          "skipTo": "n_experience_ack",
+          "variable": "issue_already_reported"
+        },
+        "question": "जी, समझ गया/गई। मुझे इसके लिए खेद है। क्या आप बता सकते हैं कि exactly क्या problem आई थी?",
+        "variable": "experience_issue_detail",
+        "instructions": "Ask this ONLY if the customer has not already described the problem. On the answer, IMMEDIATELY set experience_issue_detail (customer's words), issue_topic (2-4 word label, e.g. 'staff के behavior') and issue_already_reported = true. The issue is never asked open-ended again in the call.",
+        "setsOnAnswer": {
+          "issue_topic": "short label derived from experience_issue_detail",
+          "issue_already_reported": true
+        },
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "അങ്ങനെ ബുദ്ധിമുട്ടുണ്ടായതിൽ sorry. എന്താണ് സംഭവിച്ചതെന്ന് ഒന്ന് പറയാമോ?"
+        }
+      }
+    },
+    {
+      "x": 1080,
+      "y": 320,
+      "id": "n_experience_ack",
+      "kind": "message",
+      "label": "Acknowledge (negative experience) - also the SKIP target when the issue was already stated",
+      "config": {
+        "message": "जी, आपकी बात नोट कर ली गई है। हम इस पर काम करेंगे। धन्यवाद बताने के लिए। अब, 0 से 5 के scale पर, जहाँ 0 poor है और 5 excellent, आप Manappuram Finance की overall service को कैसे rate करेंगे?",
+        "instructions": "Give one short acknowledgement and the complete 0-5 rating question in the current conversation language; for Malayalam use textByLanguage.ml. Do not promise action or claim a backend save. Do not add a reason question. The next n_rating node only listens, without asking the scale again.",
+        "textByLanguage": {
+          "ml": "പറഞ്ഞത് മനസ്സിലായി. 0 ഏറ്റവും മോശം, 5 വളരെ നല്ലത്. ഞങ്ങളുടെ service-ന് 0 മുതൽ 5 വരെ എത്ര rating കൊടുക്കും?"
+        }
+      }
+    },
+    {
+      "x": 1340,
+      "y": 40,
+      "id": "n_rating",
+      "kind": "ask",
+      "label": "Overall service rating",
+      "config": {
+        "entity": {
+          "max": 5,
+          "min": 0,
+          "dataType": "number",
+          "extractionNote": "Extract the number even when it is embedded inside a full sentence, not just a bare digit. Patterns to recognize (X = any digit 0-5, in numerals or Hindi words - zero/shunya=0, ek=1, do=2, teen=3, char=4, paanch=5): 'X dunga/dungi/doonga/doongi', 'X denge/dunga uss time ki', 'X ki rating dunga/denge', 'mai X dunga', 'rating X hai/hogi', 'X number', 'X star', or just 'X' alone. In ALL these cases set service_rating = X immediately and proceed with routing - do NOT re-ask the plain rating question again just because the number came wrapped in a sentence. Only reprompt (invalidRangeReprompt) if NO number 0-5 is present anywhere in the reply at all (e.g. genuine stalling like 'thoda sochne dijiye' with no number given).",
+          "invalidRangeReprompt": "जी, कृपया 0 से 5 के बीच में rating बताइए।"
+        },
+        "routing": {
+          "note": "Structural routing so a positive/neutral rating can NEVER be followed by a reason question.",
+          "rules": [
+            {
+              "goto": "n_rating_low_reason",
+              "when": {
+                "lte": 2
+              }
+            },
+            {
+              "goto": "n_reuse",
+              "when": {
+                "gte": 3
+              }
+            }
+          ],
+          "variable": "service_rating"
+        },
+        "question": "0 से 5 के scale पर, जहाँ 0 poor है और 5 excellent, आप Manappuram Finance की overall service को कैसे rate करेंगे?",
+        "variable": "service_rating",
+        "instructions": "ARRIVAL RULE: if the immediately preceding node was n_experience_ack, its message already asked this exact question as its own last sentence - do NOT speak this question again, just silently wait for and capture the customer's number. If arriving from anywhere else (e.g. n_experience positive path, edge e9), ask this question fresh with the full scale wording. CRITICAL RULE, CHECKED EVERY SINGLE TIME, NO EXCEPTIONS: service_rating >= 3 => say ONLY a one-line thanks, then the reuse question. THE WORDS 'reason', 'vajah', 'wajah', 'iski wajah', 'kya wahi' MUST NEVER BE SPOKEN when service_rating >= 3 - not even if an issue was mentioned earlier in the call. A rating of 3, 4, or 5 always skips straight to n_reuse (edge e14) - full stop, no reason question, ever. service_rating <= 2 is the ONLY case where n_rating_low_reason (edge e13) may run. The customer's rating must be captured before n_rating_low_reason can ever run.",
+        "noInputTimeoutMs": 8000,
+        "skipQuestionIfArrivingFrom": [
+          "n_experience_ack"
+        ],
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "0 ഏറ്റവും മോശം, 5 വളരെ നല്ലത്. ഞങ്ങളുടെ service-ന് 0 മുതൽ 5 വരെ എത്ര rating കൊടുക്കും?"
+        }
+      }
+    },
+    {
+      "x": 1340,
+      "y": 220,
+      "id": "n_rating_low_reason",
+      "kind": "ask",
+      "label": "Reason for low rating (0-2) - open question ONLY if no issue was given earlier; if an issue is known, ask ONE short confirmation instead",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {}
+        },
+        "skipIf": {
+          "gte": 3,
+          "skipTo": "n_reuse",
+          "variable": "service_rating"
+        },
+        "question": "धन्यवाद बताने के लिए, {customer_name} जी। क्या मैं जान सकता/सकती हूँ कि इस rating की कोई particular वजह है?",
+        "requires": {
+          "note": "If this node is ever reached before service_rating has an actual captured value (e.g. right after n_experience_issue / n_experience_ack), redirect to n_rating first and ask the full 0-5 question. Never speak the rating-confirmation line in place of the rating question.",
+          "elseGoto": "n_rating",
+          "variable": "service_rating",
+          "hardBlock": "DO NOT REPEAT THIS FAILURE: never speak questionIfIssueKnown ('...kya wahi is rating ki wajah hai?') together with, before, or blended into the n_rating scale question in the same turn, and never speak it at all while service_rating is empty - this includes pulling it in right after n_experience_ack purely because issue_topic is already known. issue_topic being known is NOT a trigger for this node; only a captured numeric service_rating <= 2 is the trigger.",
+          "mustBeCaptured": true
+        },
+        "variable": "rating_low_reason",
+        "instructions": "CRITICAL GATE, CHECK FIRST, EVERY TIME: this node may run ONLY if service_rating is a captured number AND that number is 0, 1, or 2. If service_rating is 3, 4, or 5 - even if an issue was mentioned earlier - this node NEVER runs and this question is NEVER spoken; go straight to n_reuse instead. STRICT PRECONDITION: run only after a real service_rating <= 2 exists. If service_rating is not yet captured, ask n_rating instead. CASE A (issue_already_reported == true): never ask the open 'कोई particular वजह है?'. Ask ONLY the confirmation in questionIfIssueKnown (same earlier reason, or something else). Reply: (1) same/'haan'/'vahi'/mentions same topic => rating_low_reason = experience_issue_detail, go to n_rating_low_ack. (2) states a DIFFERENT reason with detail => rating_low_reason = that reason (+ earlier detail as context), go to n_rating_low_ack. (3) says 'kuch aur hai' / 'nahi' / 'aur bhi hai' WITHOUT detail => ask ONCE questionIfOtherReason, store the answer, go to n_rating_low_ack. CASE B (no issue reported earlier): ask the open question once; set issue_already_reported=true, experience_issue_detail, issue_topic from the answer. One question at a time; after the reply go to n_rating_low_ack then the reuse question in the same turn.",
+        "entryCondition": "ONLY when service_rating has ALREADY been captured in this call (customer actually gave a number) AND service_rating <= 2. NEVER reachable straight from n_experience / n_experience_issue / n_experience_ack. If service_rating is empty this node must not run.",
+        "noInputTimeoutMs": 8000,
+        "questionIfIssueKnown": {
+          "when": {
+            "equals": true,
+            "variable": "issue_already_reported"
+          },
+          "question": "जी, आपने जो {issue_topic} वाली बात बताई थी, क्या वही इस rating की वजह है, या कोई और वजह भी है?",
+          "hardBlock": "OBSERVED FAILURE: {issue_topic} was once wrongly filled with the just-captured service_rating/number (e.g. 'zero rating') instead of the actual stored issue_topic text (e.g. 'staff के behavior और payment में delay'). {issue_topic} must ALWAYS be the real problem the customer described earlier in the call, in their own words/label - it is NEVER the rating number or the word 'rating'. If issue_topic cannot be recalled clearly, fall back to the full experience_issue_detail phrasing rather than saying a vague 'kya wahi iss rating ki wajah hai' with no topic named - the customer must always be able to tell exactly what 'wahi' refers to."
+        },
+        "questionIfOtherReason": "जी, कृपया बताइए, और क्या वजह रही?",
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "ഈ rating കൊടുക്കാൻ കാരണമെന്താണെന്ന് ഒന്ന് പറയാമോ?"
+        }
+      }
+    },
+    {
+      "x": 1340,
+      "y": 320,
+      "id": "n_rating_low_ack",
+      "kind": "message",
+      "label": "Acknowledge (low rating) - also the SKIP target when the reason is already known",
+      "config": {
+        "message": "जी, समझ गया/गई। इसके लिए खेद है। आपकी बात नोट कर ली गई है और हम इस पर काम करेंगे।",
+        "instructions": "Acknowledge in ONE line, in the customer's own words ({issue_topic}), without asking anything new, then continue to the reuse question in the same turn.",
+        "textByLanguage": {
+          "ml": "പറഞ്ഞത് മനസ്സിലായി, നന്ദി."
+        }
+      }
+    },
+    {
+      "x": 1600,
+      "y": 40,
+      "id": "n_reuse",
+      "kind": "ask",
+      "label": "Willingness to reuse services",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {
+            "no": [
+              "nahi",
+              "no",
+              "नहीं",
+              "ഇല്ല",
+              "ഉപയോഗിക്കില്ല",
+              "ഇനി വേണ്ട"
+            ],
+            "yes": [
+              "haan",
+              "yes",
+              "ji",
+              "हाँ",
+              "हां",
+              "जी",
+              "അതെ",
+              "ഉപയോഗിക്കും",
+              "തീർച്ചയായും"
+            ],
+            "maybe": [
+              "abhi idea nahi",
+              "abhi koi idea nahi",
+              "abhi plan nahi",
+              "future mein dekhenge",
+              "future mein dekhunga",
+              "future mein sochenge",
+              "dekhenge",
+              "dekhunga",
+              "pata nahi abhi",
+              "shayad",
+              "may be",
+              "maybe",
+              "agar mann kiya toh",
+              "achhe offer aaye toh",
+              "sochunga",
+              "sochenge",
+              "confirm nahi keh sakta",
+              "അറിയില്ല",
+              "ഇപ്പോൾ പറയാൻ പറ്റില്ല",
+              "ആവശ്യം വന്നാൽ നോക്കാം",
+              "പിന്നെ നോക്കാം",
+              "ആവശ്യം വന്നാൽ",
+              "ചിലപ്പോൾ"
+            ]
+          },
+          "extractionNote": "'maybe' = an undecided/neutral answer - no firm commitment either way, e.g. 'abhi koi idea nahi, future mein dekhunga agar mann kiya toh' or 'achhe offers aaye toh use karunga'. This is DIFFERENT from a firm 'no' - the customer has not declined, just hasn't decided, and has typically already given enough context on their own (no immediate plan / will decide later) that no further reason question is needed.",
+          "matchCanonicalValues": false
+        },
+        "routing": {
+          "note": "no -> n_reuse_reason (edge e17) to ask why. yes AND maybe -> n_suggestions directly (edge e18), skipping the reason question - an undecided answer is not a decline and needs no justification, and the customer has usually already explained themselves.",
+          "rules": [
+            {
+              "goto": "n_reuse_reason",
+              "when": {
+                "equals": "no"
+              }
+            },
+            {
+              "goto": "n_suggestions",
+              "when": {
+                "in": [
+                  "yes",
+                  "maybe"
+                ]
+              }
+            }
+          ],
+          "variable": "reuse_intent"
+        },
+        "question": "धन्यवाद, {customer_name} जी। क्या आप future में फिर से हमारी services use करना चाहेंगे?",
+        "variable": "reuse_intent",
+        "instructions": "HARD BLOCK (observed failure): an undecided/neutral reply (classified as 'maybe') must NEVER trigger n_reuse_reason's 'kya particular vajah hai' question - it is reserved strictly for a firm 'no'. For 'maybe', give one short warm acknowledgement (e.g. 'जी, बिल्कुल समझता/समझती हूँ') and move straight to the suggestions question in the same turn.",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "നന്ദി. ആവശ്യം വന്നാൽ വീണ്ടും ഞങ്ങളുടെ service ഉപയോഗിക്കുമോ?"
+        }
+      }
+    },
+    {
+      "x": 1600,
+      "y": 220,
+      "id": "n_reuse_reason",
+      "kind": "ask",
+      "label": "Reason for not reusing - open question ONLY if no issue was given earlier; if an issue is known, ask ONE short confirmation instead",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {}
+        },
+        "question": "जी, समझ गया/गई। क्या मैं जान सकता/सकती हूँ कि इसकी कोई particular वजह है?",
+        "variable": "reuse_decline_reason",
+        "instructions": "STRICT PRECONDITION: run only after a real reuse_intent == false exists. CASE A (issue_already_reported == true): never ask the open 'कोई particular वजह है?'. Ask ONLY the confirmation in questionIfIssueKnown (same earlier reason, or something else). One short apology at most. Reply: (1) same/'haan'/'vahi'/mentions same topic (even 'nahi staff achha karo') => reuse_decline_reason = experience_issue_detail, go to n_reuse_ack. (2) DIFFERENT reason with detail => store it (+ earlier detail as context), go to n_reuse_ack. (3) 'kuch aur hai'/bare 'nahi' WITHOUT detail => ask ONCE questionIfOtherReason, store, go to n_reuse_ack. CASE B (no issue reported earlier): ask the open question once. One question at a time; then n_reuse_ack and the suggestions question in the same turn.",
+        "entryCondition": "ONLY when reuse_intent has ALREADY been captured in this call AND reuse_intent == false (customer said no).",
+        "noInputTimeoutMs": 8000,
+        "questionIfIssueKnown": {
+          "when": {
+            "equals": true,
+            "variable": "issue_already_reported"
+          },
+          "question": "जी, आपने जो {issue_topic} वाली बात बताई थी, क्या वही services दोबारा use न करने की वजह है, या कोई और वजह भी है?",
+          "hardBlock": "{issue_topic} must ALWAYS be the real problem the customer described earlier in the call (e.g. 'staff के behavior और payment में delay') - it is NEVER a rating number, 'reuse', or any other just-captured value. The customer must always be able to tell exactly what 'wahi' refers to."
+        },
+        "questionIfOtherReason": "जी, कृपया बताइए, और क्या वजह रही?",
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "വീണ്ടും ഉപയോഗിക്കാൻ താൽപര്യമില്ലാത്തതിന്റെ കാരണം ഒന്ന് പറയാമോ?"
+        }
+      }
+    },
+    {
+      "x": 1600,
+      "y": 320,
+      "id": "n_reuse_ack",
+      "kind": "message",
+      "label": "Acknowledge (reuse-decline) - also the SKIP target when the reason is already known",
+      "config": {
+        "message": "जी, समझ गया/गई। आपके अनुभव के लिए माफ़ कीजिए। ये feedback हमारे लिए बहुत महत्वपूर्ण है और हम इस पर काम करेंगे।",
+        "instructions": "Acknowledge in ONE line, in the customer's own words ({issue_topic}), without asking anything new, then continue to the suggestions question in the same turn.",
+        "textByLanguage": {
+          "ml": "പറഞ്ഞത് മനസ്സിലായി, നന്ദി."
+        }
+      }
+    },
+    {
+      "x": 1860,
+      "y": 40,
+      "id": "n_suggestions",
+      "kind": "ask",
+      "label": "Suggestions",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {}
+        },
+        "question": "क्या आपके पास हमारे लिए कोई सुझाव है, जिससे हम अपनी services को और बेहतर बना सकें?",
+        "variable": "suggestions",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "Service-ൽ എന്തെങ്കിലും മാറ്റം വേണമെന്ന് തോന്നുന്നുണ്ടോ?"
+        }
+      }
+    },
+    {
+      "x": 2120,
+      "y": 40,
+      "id": "n_further_assistance",
+      "kind": "ask",
+      "label": "Further assistance check",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {
+            "no": [
+              "nahi",
+              "nahi ji",
+              "नहीं",
+              "नहीं जी",
+              "no",
+              "nope",
+              "bas",
+              "that's all",
+              "बस",
+              "और कुछ नहीं",
+              "nahi thank you",
+              "नहीं धन्यवाद",
+              "no thanks",
+              "ഇല്ല",
+              "വേണ്ട",
+              "വേറെ ഒന്നുമില്ല",
+              "ഇല്ല നന്ദി",
+              "ഇല്ല thank you"
+            ],
+            "yes": [
+              "haan",
+              "yes",
+              "ji",
+              "haan ji",
+              "हाँ",
+              "हां",
+              "जी",
+              "haan batao",
+              "ek question hai",
+              "അതെ",
+              "വേണം",
+              "ഒരു കാര്യം ചോദിക്കണം"
+            ]
+          },
+          "matchPrecedence": "A reply containing a question or request is a QUERY, not 'no'.",
+          "matchCanonicalValues": false
+        },
+        "question": "आपका feedback हमारे लिए बहुत महत्वपूर्ण है। इसके लिए बहुत धन्यवाद — इससे हमें अपनी services बेहतर बनाने में मदद मिलेगी। Conclude करने से पहले, क्या आज मैं आपकी किसी और चीज़ में मदद कर सकता/सकती हूँ?",
+        "variable": "wants_further_help",
+        "instructions": "Full line only the FIRST time; afterwards use questionOnRepeat. If the reply is itself a question/request (even if it starts with 'nahi' or 'haan'), treat it as a query and go straight to n_kb_answer - do not ask what they need again. HARD BLOCK (observed failure): a plain 'nahi/no/nope/नहीं' with nothing else is a 'no' answer to THIS question - it means no further help needed, route via edge e23 to n_closing and deliver the FULL closing script verbatim. A bare no/nahi here is NEVER, by itself, a hang-up request - do not route to n_call_end_request from it. n_call_end_request is reserved ONLY for explicit phrases like 'call cut karo', 'band karo', 'phone rakhna hai', 'bye' - none of which is a plain 'nahi'.",
+        "noInputTimeoutMs": 8000,
+        "questionOnRepeat": "क्या मैं आपकी किसी और चीज़ में मदद कर सकता/सकती हूँ?",
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "Feedback പറഞ്ഞതിന് നന്ദി. വേറെ എന്തെങ്കിലും സഹായം വേണോ?"
+        }
+      }
+    },
+    {
+      "x": 2120,
+      "y": 220,
+      "id": "n_query_intent",
+      "kind": "ask",
+      "label": "Identify further query intent",
+      "config": {
+        "entity": {
+          "dataType": "text",
+          "synonyms": {
+            "forex": [
+              "forex",
+              "foreign currency",
+              "currency exchange",
+              "travel card",
+              "फॉरेक्स",
+              "विदेशी मुद्रा"
+            ],
+            "branch": [
+              "branch",
+              "nearest branch",
+              "शाखा"
+            ],
+            "complaint": [
+              "complaint",
+              "issue",
+              "problem",
+              "शिकायत"
+            ],
+            "gold_loan": [
+              "gold loan",
+              "गोल्ड लोन"
+            ],
+            "human_agent": [
+              "agent",
+              "executive",
+              "human",
+              "customer care"
+            ],
+            "digital_wallet": [
+              "makash",
+              "makaksha",
+              "maksha",
+              "macash",
+              "makash wallet",
+              "digital wallet",
+              "मकाश",
+              "डिजिटल वॉलेट"
+            ],
+            "account_specific": [
+              "my loan",
+              "my balance",
+              "outstanding",
+              "mera loan"
+            ],
+            "online_gold_loan": [
+              "online gold loan",
+              "ogl",
+              "ऑनलाइन गोल्ड लोन"
+            ],
+            "redemption_release": [
+              "gold release",
+              "redemption",
+              "गोल्ड रिलीज"
+            ],
+            "other_mafil_services": [
+              "services",
+              "products",
+              "insurance",
+              "money transfer",
+              "other loans",
+              "business loan",
+              "सेवाएं"
+            ],
+            "interest_repayment_renewal": [
+              "interest",
+              "emi",
+              "renewal",
+              "ब्याज"
+            ]
+          },
+          "unmatchedFallback": "route_to_kb_answer",
+          "matchCanonicalValues": false
+        },
+        "question": "जी बताइए, आपको किस चीज़ में सहायता चाहिए?",
+        "variable": "customer_intent",
+        "instructions": "ANY question about MAFIL products/services/processes -> n_kb_answer (KB). Only human_agent, account_specific and complaint -> n_human. Unmatched intent is NOT a refusal: send it to n_kb_answer.",
+        "noInputTimeoutMs": 8000,
+        "waitForGenerationBeforeTimeout": true,
+        "textByLanguage": {
+          "ml": "എന്ത് സഹായമാണ് വേണ്ടതെന്ന് പറയാമോ?"
+        }
+      }
+    },
+    {
+      "x": 2380,
+      "y": 220,
+      "id": "n_kb_answer",
+      "kind": "message",
+      "label": "Answer further query from MAFIL KB",
+      "config": {
+        "kbId": "kb_mafil_master",
+        "message": "{kb_answer}",
+        "instructions": "Answer EVERY question about MAFIL products, services or processes (gold loan, online gold loan, MAkash digital wallet, forex/foreign currency, branches, documents, interest, renewal, release) by retrieving from the MAFIL Knowledge Base (kb_mafil_master). NEVER say 'I can only assist with feedback' and never refuse an in-scope question. Treat STT variants 'Makaksha/Maksha/Makash/Macash' as MAkash. Reply in the customer's language (including everyday spoken Malayalam when Malayalam is current), 2-4 short sentences. If the KB has no answer, say so honestly and offer a live executive - never guess. Account-specific or complaint -> offer live executive. End with the SHORT question 'क्या मैं आपकी किसी और चीज़ में मदद कर सकता/सकती हूँ?'. For Malayalam, use the system prompt Malayalam register. Never force a Hindi closing or help question on a Malayalam caller.",
+        "useKnowledgeBase": true,
+        "retrieveEveryTurn": true
+      }
+    },
+    {
+      "x": 1860,
+      "y": 400,
+      "id": "n_kb_interrupt_answer",
+      "kind": "message",
+      "label": "Handle mid-survey query interrupt",
+      "config": {
+        "kbId": "kb_mafil_master",
+        "message": "{kb_answer}",
+        "instructions": "Answer EVERY question about MAFIL products, services or processes (gold loan, online gold loan, MAkash digital wallet, forex/foreign currency, branches, documents, interest, renewal, release) by retrieving from the MAFIL Knowledge Base (kb_mafil_master). NEVER say 'I can only assist with feedback' and never refuse an in-scope question. Treat STT variants 'Makaksha/Maksha/Makash/Macash' as MAkash. Reply in the customer's language (including everyday spoken Malayalam when Malayalam is current), 2-4 short sentences. If the KB has no answer, say so honestly and offer a live executive - never guess. Account-specific or complaint -> offer live executive. Then return to the exact survey question that was pending ('जी, तो जैसा मैं पूछ रहा/रही था/थी...'); never restart or skip. If the customer accepts a live executive, go to n_human. For Malayalam, use the system prompt Malayalam register. Never force a Hindi closing or help question on a Malayalam caller.",
+        "entryCondition": "Customer asks a specific query/clarification while a survey question is pending.",
+        "useKnowledgeBase": true,
+        "retrieveEveryTurn": true
+      }
+    },
+    {
+      "x": 1860,
+      "y": 580,
+      "id": "n_call_end_request",
+      "kind": "message",
+      "label": "Customer explicitly asked to end the call",
+      "config": {
+        "note": "Only reachable via the call_termination_request global interrupt -- an EXPLICIT request to hang up. Never reachable from a plain negative/unclear survey answer. Skip the full closing script here since the customer asked to stop.",
+        "message": "ठीक है, कॉल बंद की जा रही है। धन्यवाद।",
+        "instructions": "OBSERVED FAILURE: after speaking this line the call must end immediately (route straight to n_end and hang up) - do NOT wait for or respond to anything further from the customer. This is the LAST line of the call, no further turn happens.",
+        "entryCondition": "Customer EXPLICITLY asks to hang up (e.g. 'call cut karo', 'band karo', 'phone rakhna hai'). Never from a plain 'nahi' answer. If it sounds like 'busy right now', go to callback offer instead. HARD BLOCK (observed failure): a bare 'nahi/no/नहीं' answer to n_further_assistance's 'kya aur madad kar sakta hoon' question is NOT a hang-up request - that case must go to n_closing (edge e23) with the full closing script, never here.",
+        "dispositionCode": "opted_out",
+        "textByLanguage": {
+          "ml": "ശരി, call അവസാനിപ്പിക്കാം. നന്ദി."
+        }
+      }
+    },
+    {
+      "x": 2640,
+      "y": 40,
+      "id": "n_closing",
+      "kind": "message",
+      "label": "Closing script",
+      "config": {
+        "message": "आगे किसी भी सहायता के लिए, आप हमारी nearest branch visit कर सकते हैं, हमारी website www.manappuram.com पर जा सकते हैं, या हमारे toll-free number 1800 420 2233 पर call कर सकते हैं। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो!",
+        "instructions": "Deliver the closing in the CURRENT conversation language. For Malayalam use textByLanguage.ml. Preserve all three support options, www.manappuram.com and 1800 420 2233. Short English words such as thank you, okay and a rating number do not switch the language. After this final line, end the call immediately via n_end; do not wait for further input.",
+        "dispositionCode": "survey_completed",
+        "textByLanguage": {
+          "ml": "വേറെ സഹായം വേണമെങ്കിൽ അടുത്തുള്ള branch-ൽ പോകാം, www.manappuram.com നോക്കാം, അല്ലെങ്കിൽ 1800 420 2233 എന്ന toll-free number-ൽ വിളിക്കാം. സമയം തന്നതിന് നന്ദി, നല്ലൊരു ദിവസം ആശംസിക്കുന്നു."
+        }
+      }
+    },
+    {
+      "x": 2900,
+      "y": 40,
+      "id": "n_human",
+      "kind": "handover",
+      "label": "Transfer to live support (escalation)",
+      "config": {
+        "message": "जी, इस मामले में specific assistance की जरूरत है। मैं आपको appropriate support team से connect करने में मदद करता/करती हूँ।",
+        "reasonVariable": "customer_intent",
+        "dispositionCode": "escalated_to_agent",
+        "textByLanguage": {
+          "ml": "ഈ കാര്യത്തിൽ support team-ന്റെ സഹായം വേണ്ടിവരും. അവരുമായി സംസാരിക്കാൻ സഹായിക്കാം."
+        }
+      }
+    },
+    {
+      "x": 3160,
+      "y": 40,
+      "id": "n_end",
+      "kind": "end",
+      "label": "End call",
+      "config": {
+        "action": "hangup",
+        "instructions": "OBSERVED FAILURE: the call was reaching this node but not actually disconnecting - the bot kept listening/responding after its final line. This node must ACTIVELY terminate/disconnect the telephony call the moment it is reached, immediately after the previous node's message finishes playing. Do NOT wait for, expect, or react to any further customer input (even a goodbye, 'bye', 'theek hai', or acknowledgement) - once any edge routes here, the call ends here, unconditionally, with no further turns.",
+        "waitForInput": false
+      }
+    },
+    {
+      "x": 820,
+      "y": 220,
+      "id": "n_recording_declined",
+      "kind": "message",
+      "label": "Recording consent declined / does not wish to continue (ONLY from n_identity_check)",
+      "config": {
+        "message": "जी ठीक है, कोई बात नहीं। आपके समय के लिए धन्यवाद।",
+        "dispositionCode": "opted_out",
+        "textByLanguage": {
+          "ml": "ശരി, പ്രശ്നമില്ല. സമയം തന്നതിന് നന്ദി."
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "to": "n_greeting",
+      "from": "n_start"
+    },
+    {
+      "id": "e2",
+      "to": "n_identity_check",
+      "from": "n_greeting"
+    },
+    {
+      "id": "e3",
+      "to": "n_purpose",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e4",
+      "to": "n_wrong_person_exit",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e5",
+      "to": "n_reschedule",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e6",
+      "to": "n_end",
+      "from": "n_wrong_person_exit"
+    },
+    {
+      "id": "e7",
+      "to": "n_end",
+      "from": "n_reschedule"
+    },
+    {
+      "id": "e8",
+      "to": "n_experience",
+      "from": "n_purpose"
+    },
+    {
+      "id": "e9",
+      "to": "n_rating",
+      "from": "n_experience"
+    },
+    {
+      "id": "e10",
+      "to": "n_experience_issue",
+      "from": "n_experience"
+    },
+    {
+      "id": "e11",
+      "to": "n_experience_ack",
+      "from": "n_experience_issue"
+    },
+    {
+      "id": "e12",
+      "to": "n_rating",
+      "from": "n_experience_ack"
+    },
+    {
+      "id": "e13",
+      "to": "n_rating_low_reason",
+      "from": "n_rating"
+    },
+    {
+      "id": "e14",
+      "to": "n_reuse",
+      "from": "n_rating"
+    },
+    {
+      "id": "e15",
+      "to": "n_rating_low_ack",
+      "from": "n_rating_low_reason"
+    },
+    {
+      "id": "e16",
+      "to": "n_reuse",
+      "from": "n_rating_low_ack"
+    },
+    {
+      "id": "e17",
+      "to": "n_reuse_reason",
+      "from": "n_reuse"
+    },
+    {
+      "id": "e18",
+      "to": "n_suggestions",
+      "from": "n_reuse"
+    },
+    {
+      "id": "e19",
+      "to": "n_reuse_ack",
+      "from": "n_reuse_reason"
+    },
+    {
+      "id": "e20",
+      "to": "n_suggestions",
+      "from": "n_reuse_ack"
+    },
+    {
+      "id": "e21",
+      "to": "n_further_assistance",
+      "from": "n_suggestions"
+    },
+    {
+      "id": "e22",
+      "to": "n_query_intent",
+      "from": "n_further_assistance"
+    },
+    {
+      "id": "e23",
+      "to": "n_closing",
+      "from": "n_further_assistance"
+    },
+    {
+      "id": "e24",
+      "to": "n_kb_answer",
+      "from": "n_query_intent"
+    },
+    {
+      "id": "e25",
+      "to": "n_human",
+      "from": "n_query_intent"
+    },
+    {
+      "id": "e26",
+      "to": "n_further_assistance",
+      "from": "n_kb_answer"
+    },
+    {
+      "id": "e27",
+      "to": "n_experience",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e28",
+      "to": "n_experience_issue",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e29",
+      "to": "n_rating",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e30",
+      "to": "n_rating_low_reason",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e31",
+      "to": "n_reuse",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e32",
+      "to": "n_reuse_reason",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e33",
+      "to": "n_suggestions",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e34",
+      "to": "n_identity_check",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e35",
+      "to": "n_end",
+      "from": "n_call_end_request"
+    },
+    {
+      "id": "e36",
+      "to": "n_end",
+      "from": "n_human"
+    },
+    {
+      "id": "e37",
+      "to": "n_end",
+      "from": "n_closing"
+    },
+    {
+      "id": "e38",
+      "to": "n_recording_declined",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e39",
+      "to": "n_end",
+      "from": "n_recording_declined"
+    },
+    {
+      "id": "e40",
+      "to": "n_experience_ack",
+      "from": "n_experience"
+    },
+    {
+      "id": "e43",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e44",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_experience"
+    },
+    {
+      "id": "e45",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_experience_issue"
+    },
+    {
+      "id": "e46",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_rating"
+    },
+    {
+      "id": "e47",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_rating_low_reason"
+    },
+    {
+      "id": "e48",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_reuse"
+    },
+    {
+      "id": "e49",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_reuse_reason"
+    },
+    {
+      "id": "e50",
+      "to": "n_kb_interrupt_answer",
+      "from": "n_suggestions"
+    },
+    {
+      "id": "e51",
+      "to": "n_call_end_request",
+      "from": "n_identity_check"
+    },
+    {
+      "id": "e52",
+      "to": "n_call_end_request",
+      "from": "n_experience"
+    },
+    {
+      "id": "e53",
+      "to": "n_call_end_request",
+      "from": "n_experience_issue"
+    },
+    {
+      "id": "e54",
+      "to": "n_call_end_request",
+      "from": "n_rating"
+    },
+    {
+      "id": "e55",
+      "to": "n_call_end_request",
+      "from": "n_rating_low_reason"
+    },
+    {
+      "id": "e56",
+      "to": "n_call_end_request",
+      "from": "n_reuse"
+    },
+    {
+      "id": "e57",
+      "to": "n_call_end_request",
+      "from": "n_reuse_reason"
+    },
+    {
+      "id": "e58",
+      "to": "n_call_end_request",
+      "from": "n_suggestions"
+    },
+    {
+      "id": "e59",
+      "to": "n_call_end_request",
+      "from": "n_further_assistance"
+    },
+    {
+      "id": "e60",
+      "to": "n_call_end_request",
+      "from": "n_query_intent"
+    },
+    {
+      "id": "e61",
+      "to": "n_human",
+      "from": "n_kb_interrupt_answer"
+    },
+    {
+      "id": "e_fa_kb",
+      "to": "n_kb_answer",
+      "from": "n_further_assistance"
+    },
+    {
+      "id": "e_kb_human",
+      "to": "n_human",
+      "from": "n_kb_answer"
+    }
+  ]
+}

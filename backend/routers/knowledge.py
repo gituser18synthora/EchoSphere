@@ -13,7 +13,6 @@ from backend.core.deps import (
     get_current_user,
     is_super_admin,
     require_permission,
-    require_tenant_admin,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
@@ -23,6 +22,7 @@ from backend.core.responses import ok, paginated
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import KnowledgeGap, KnowledgeSource, User, VoiceBot
+from shared.readiness import refresh_readiness_for_source
 from backend.serializers import serialize_knowledge, serialize_knowledge_gap
 
 router = APIRouter(tags=["Knowledge"])
@@ -177,7 +177,7 @@ def update_knowledge(
     source_id: str,
     body: UpdateKnowledgeRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     row = _get_source_checked(db, source_id, user)
@@ -194,6 +194,7 @@ def update_knowledge(
         if body.status == "indexed":
             row.last_sync_at = datetime.now(timezone.utc)
     row.updated_by = user.id
+    refresh_readiness_for_source(db, row)
     record_audit(
         db, user=user, action="Re-synced knowledge source" if body.resync else "Updated knowledge source",
         entity_type="knowledge_source", entity_id=row.id, target_label=row.name,
@@ -209,13 +210,14 @@ def delete_knowledge(
     source_id: str,
     request: Request,
     hard: bool = Query(False),
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     row = _get_source_checked(db, source_id, user)
     if hard:
         guard_hard_delete()
     soft_delete(row, user)
+    refresh_readiness_for_source(db, row)
     record_audit(
         db, user=user, action="Archived knowledge source", entity_type="knowledge_source",
         entity_id=row.id, target_label=row.name, tenant_id=row.tenant_id, request=request,

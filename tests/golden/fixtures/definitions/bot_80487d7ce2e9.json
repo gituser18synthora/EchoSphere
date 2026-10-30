@@ -1,0 +1,459 @@
+{
+ "bot": {
+  "id": "bot_80487d7ce2e9",
+  "name": "Bot-Dev",
+  "tenant_id": "tn_22a809aecf66",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf_0cd3c1c7c0c8",
+   "name": "Payment commitment",
+   "version": 9,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Customer agreed to pay"
+    },
+    {
+     "x": 40,
+     "y": 150,
+     "id": "n_type",
+     "kind": "intent",
+     "label": "Full or partial",
+     "config": {
+      "prompt": "क्या आप पूरा payment करेंगे, या अभी partial payment करेंगे?"
+     }
+    },
+    {
+     "x": 300,
+     "y": 260,
+     "id": "n_partial_amount",
+     "kind": "ask",
+     "label": "Partial amount",
+     "config": {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "((?:\\d[\\d,]*(?:\\.\\d+)?(?!\\d))|(?:एक|दो|तीन|चार|पाँच|पांच|छह|सात|आठ|नौ|दस|ग्यारह|बारह|पंद्रह|बीस|पच्चीस|तीस|चालीस|पचास)\\s*(?:सौ|हज़ार|हजार)?)(?!\\s*(?:तारीख|tarikh|tareekh|को\\b))"
+      },
+      "question": "आप आज कितना payment कर सकते हैं?",
+      "variable": "partial_amount"
+     }
+    },
+    {
+     "x": 300,
+     "y": 370,
+     "id": "n_balance_date",
+     "kind": "ask",
+     "label": "Balance date",
+     "config": {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "^\\s*(.*?(?:\\d{1,2}\\s*[/-]\\s*\\d{1,2}|\\d{4}-\\d{2}-\\d{2}|tarikh|tareekh|तारीख|जनवरी|फ़रवरी|फरवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|आज|कल|परसों|aaj|kal|parso|सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार|इतवार|monday|tuesday|wednesday|thursday|friday|saturday|sunday|ഇന്ന്|ഇന്നു|നാളെ|മറ്റന്നാൾ|അടുത്ത\\s*(?:ആഴ്ച|മാസം)|ഈ\\s*(?:ആഴ്ച|മാസം)|ആഴ്ച|തീയതി|തിങ്കൾ|തിങ്കളാഴ്ച|ചൊവ്വ|ബുധൻ|വ്യാഴം|വെള്ളി|ശനി|ഞായർ|ജനുവരി|ഫെബ്രുവരി|മാർച്ച്|ഏപ്രിൽ|മെയ്|ജൂൺ|ജൂലൈ|ഓഗസ്റ്റ്|സെപ്റ്റംബർ|ഒക്ടോബർ|നവംബർ|ഡിസംബർ|இன்று|இன்னைக்கு|நாளை|நாளைக்கு|நாளை\\s*மறுநாள்|அடுத்த\\s*(?:வாரம்|மாதம்)|இந்த\\s*(?:வாரம்|மாதம்)|வாரம்|தேதி|திங்கள்|செவ்வாய்|புதன்|வியாழன்|வெள்ளி|சனி|ஞாயிறு|ஜனவரி|பிப்ரவரி|மார்ச்|ஏப்ரல்|மே|ஜூன்|ஜூலை|ஆகஸ்ட்|செப்டம்பர்|அக்டோபர்|நவம்பர்|டிசம்பர்|today|tomorrow|day after|next\\s*(?:week|month)|this\\s*(?:week|month)|agle\\s*(?:hafte|mahine|saptah)|अगले\\s*(?:हफ्ते|हफ़्ते|महीने|सप्ताह)|इस\\s*(?:हफ्ते|हफ़्ते|महीने)).*?)\\s*$"
+      },
+      "question": "बाकी amount आप किस तारीख तक complete कर पाएंगे?",
+      "variable": "balance_date"
+     }
+    },
+    {
+     "x": 40,
+     "y": 480,
+     "id": "n_method",
+     "kind": "ask",
+     "label": "Mode of payment",
+     "config": {
+      "entity": {
+       "dataType": "text",
+       "synonyms": {
+        "UPI": [
+         "upi",
+         "यूपीआई",
+         "यू पी आई",
+         "भीम",
+         "bhim",
+         "paytm",
+         "पेटीएम",
+         "gpay",
+         "google pay",
+         "phonepe",
+         "फोन पे",
+         "qr",
+         "യുപിഐ",
+         "യു പി ഐ",
+         "ഗൂഗിൾ പേ",
+         "ഫോൺ പേ",
+         "ഫോൺപേ",
+         "പേടിഎം",
+         "ഭീം",
+         "யூபிஐ",
+         "யு பி ஐ",
+         "கூகுள் பே",
+         "போன் பே",
+         "போன்பே",
+         "பேடிஎம்",
+         "பீம்"
+        ],
+        "Debit Card": [
+         "debit",
+         "card",
+         "डेबिट",
+         "कार्ड",
+         "atm",
+         "एटीएम",
+         "ഡെബിറ്റ്",
+         "ഡെബിറ്റ് കാർഡ്",
+         "കാർഡ്",
+         "എടിഎം",
+         "டெபிட்",
+         "டெபிட் கார்டு",
+         "கார்டு",
+         "ஏடிஎம்"
+        ]
+       },
+       "allowedValues": [
+        "UPI",
+        "Debit Card"
+       ]
+      },
+      "question": "Payment आप किस माध्यम से करेंगे — U P I या डेबिट कार्ड?",
+      "variable": "payment_method"
+     }
+    },
+    {
+     "x": 40,
+     "y": 590,
+     "id": "n_verify",
+     "kind": "api",
+     "label": "payment_status",
+     "config": {
+      "connection": "payment_status"
+     }
+    },
+    {
+     "x": 300,
+     "y": 700,
+     "id": "n_paid",
+     "kind": "end",
+     "label": "Payment verified",
+     "config": {
+      "text": "आपका payment successfully receive हो गया है। समय देने के लिए धन्यवाद, आपका दिन शुभ हो।"
+     }
+    },
+    {
+     "x": 40,
+     "y": 700,
+     "id": "n_committed",
+     "kind": "end",
+     "label": "Commitment recorded",
+     "config": {
+      "text": "ठीक है, आपका commitment note कर लिया गया है। धन्यवाद, आपका दिन शुभ हो।"
+     }
+    },
+    {
+     "x": 560,
+     "y": 480,
+     "id": "n_agent",
+     "kind": "handover",
+     "label": "Agent",
+     "config": {
+      "queue": "collections"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1",
+     "to": "n_type",
+     "from": "n_start"
+    },
+    {
+     "id": "e2",
+     "to": "n_method",
+     "from": "n_type",
+     "label": "full/poora/pura/पूरा/complete/മുഴുവൻ/മുഴുവനും/പൂർണ്ണമായി/முழு/முழுவதும்/முழுசா"
+    },
+    {
+     "id": "e3",
+     "to": "n_partial_amount",
+     "from": "n_type",
+     "label": "partial/aadha/थोड़ा/किस्त/part/കുറച്ച്/കുറച്ചു/ഭാഗികമായി/പകുതി/பகுதி/பகுதியாக/கொஞ்சம்/பாதி"
+    },
+    {
+     "id": "e4",
+     "to": "n_balance_date",
+     "from": "n_partial_amount"
+    },
+    {
+     "id": "e5",
+     "to": "n_agent",
+     "from": "n_partial_amount",
+     "label": "fallback"
+    },
+    {
+     "id": "e6",
+     "to": "n_method",
+     "from": "n_balance_date"
+    },
+    {
+     "id": "e7",
+     "to": "n_agent",
+     "from": "n_balance_date",
+     "label": "fallback"
+    },
+    {
+     "id": "e8",
+     "to": "n_verify",
+     "from": "n_method"
+    },
+    {
+     "id": "e9",
+     "to": "n_agent",
+     "from": "n_method",
+     "label": "fallback"
+    },
+    {
+     "id": "e10",
+     "to": "n_committed",
+     "from": "n_verify",
+     "label": "failure"
+    },
+    {
+     "id": "e11",
+     "to": "n_paid",
+     "from": "n_verify",
+     "label": "success"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "int_eca96374fcd6",
+   "name": "payment_commitment",
+   "code": null,
+   "samples": [
+    "haan main aaj payment kar dunga",
+    "aaj kar deta hoon",
+    "theek hai payment karta hoon",
+    "haan pay kar dunga",
+    "हाँ आज कर दूँगा",
+    "मैं आज payment कर देता हूँ",
+    "ok i will pay today",
+    "yes i can pay now",
+    "abhi kar deta hoon",
+    "kar dunga payment",
+    "चलिए payment कर देता हूँ",
+    "alright let me pay"
+   ],
+   "route": "workflow",
+   "workflow_id": "wf_0cd3c1c7c0c8",
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 10
+  }
+ ],
+ "connections": [],
+ "context_schemas": [
+  {
+   "id": "rcs_f2f250d73a73",
+   "name": "User details",
+   "test_payload": {
+    "email": "mishra.d.dev@gmail.com",
+    "mobile": "8080813352",
+    "offers": {
+     "bhim_discount": {
+      "enabled": true,
+      "maximum_amount": 40
+     },
+     "paytm_voucher": {
+      "enabled": true,
+      "maximum_amount": 2000
+     },
+     "paytm_cashback": {
+      "enabled": true,
+      "maximum_amount": 300,
+      "minimum_amount": 10
+     },
+     "credit_limit_increase": {
+      "enabled": true,
+      "maximum_amount": 50000
+     }
+    },
+    "dcs_name": "Shubh",
+    "due_date": "2026-08-22",
+    "lender_name": "ई-डास",
+    "offer_terms": "Offers are subject to eligibility and applicable terms.",
+    "customer_name": "Gaurav Pandey",
+    "overdue_amount": 2000,
+    "payment_status": {
+     "status": "pending",
+     "paid_amount": 0,
+     "remaining_amount": 2000
+    },
+    "payment_methods": [
+     "UPI",
+     "DEBIT_CARD"
+    ],
+    "account_disputed": false,
+    "complaint_pending": false,
+    "grievance_contact": "grievance@edas.tech",
+    "previous_promises": [
+     {
+      "status": "missed",
+      "promised_amount": 2000,
+      "promised_payment_date": "2026-08-03"
+     }
+    ],
+    "total_outstanding": 2000,
+    "preferred_language": "hi-IN",
+    "loan_account_masked": "900923",
+    "credit_reporting_status": "reported_monthly",
+    "partial_payment_allowed": true,
+    "recording_notice_required": false,
+    "secure_payment_link_available": true
+   },
+   "fields": [
+    {
+     "key": "customer_name",
+     "type": "string",
+     "label": "Customer name",
+     "required": true
+    },
+    {
+     "key": "lender_name",
+     "type": "string",
+     "label": "Lender name",
+     "required": true
+    },
+    {
+     "key": "dcs_name",
+     "type": "string",
+     "label": "Agency / caller name"
+    },
+    {
+     "key": "preferred_language",
+     "type": "string",
+     "label": "Preferred language"
+    },
+    {
+     "key": "mobile",
+     "type": "string",
+     "label": "Mobile",
+     "maskKeep": 4,
+     "sensitive": true
+    },
+    {
+     "key": "email",
+     "type": "string",
+     "label": "Email",
+     "maskKeep": 4,
+     "sensitive": true
+    },
+    {
+     "key": "loan_account_masked",
+     "type": "string",
+     "label": "Loan account",
+     "maskKeep": 4,
+     "sensitive": true
+    },
+    {
+     "key": "overdue_amount",
+     "type": "number",
+     "label": "Overdue amount",
+     "required": true
+    },
+    {
+     "key": "total_outstanding",
+     "type": "number",
+     "label": "Total outstanding"
+    },
+    {
+     "key": "late_fee",
+     "type": "number",
+     "label": "Late fee / penalty"
+    },
+    {
+     "key": "due_date",
+     "type": "date",
+     "label": "Due date"
+    },
+    {
+     "key": "days_overdue",
+     "type": "integer",
+     "label": "Days overdue"
+    },
+    {
+     "key": "credit_reporting_status",
+     "type": "string",
+     "label": "Credit bureau status"
+    },
+    {
+     "key": "payment_methods",
+     "type": "array",
+     "label": "Supported payment methods"
+    },
+    {
+     "key": "partial_payment_allowed",
+     "type": "boolean",
+     "label": "Partial payment allowed"
+    },
+    {
+     "key": "secure_payment_link_available",
+     "type": "boolean",
+     "label": "Secure payment link available"
+    },
+    {
+     "key": "payment_status",
+     "type": "object",
+     "label": "Payment status"
+    },
+    {
+     "key": "previous_promises",
+     "type": "array",
+     "label": "Previous payment promises"
+    },
+    {
+     "key": "offers",
+     "type": "object",
+     "label": "Offers (eligibility map)"
+    },
+    {
+     "key": "offer_terms",
+     "type": "string",
+     "label": "Offer terms"
+    },
+    {
+     "key": "recording_notice_required",
+     "type": "boolean",
+     "label": "Recording notice required"
+    },
+    {
+     "key": "account_disputed",
+     "type": "boolean",
+     "label": "Account disputed"
+    },
+    {
+     "key": "complaint_pending",
+     "type": "boolean",
+     "label": "Complaint pending"
+    },
+    {
+     "key": "grievance_contact",
+     "type": "string",
+     "label": "Grievance contact"
+    },
+    {
+     "key": "callback_number",
+     "type": "string",
+     "label": "Callback number",
+     "maskKeep": 4,
+     "sensitive": true
+    }
+   ]
+  }
+ ]
+}

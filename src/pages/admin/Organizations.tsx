@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { listTenants, simulateAction } from "@/services/api";
+import { downloadTenantPackage } from "@/services/tenantTransfer";
+import { ImportTenantModal } from "@/pages/admin/ImportTenantModal";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button, ConfirmModal, Health, MenuButton, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
@@ -18,6 +20,16 @@ export default function Organizations() {
   const [status, setStatus] = useState("all");
   const [suspendTarget, setSuspendTarget] = useState<Tenant | null>(null);
   const [busy, setBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+
+  const exportTenantJson = async (t: Tenant) => {
+    try {
+      const { filename } = await downloadTenantPackage(t.id);
+      toast(`${filename} downloaded — import it on the target environment to deploy ${t.name}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tenant export failed.", "error");
+    }
+  };
 
   const rows = useMemo(() => {
     let r = tenantsQ.data ?? [];
@@ -67,6 +79,7 @@ export default function Organizations() {
           actions={[
             { label: "Open tenant", icon: "external", onClick: () => navigate(`/admin/tenants/${t.id}`) },
             { label: "View usage", icon: "chart", onClick: () => navigate("/admin/usage") },
+            { label: "Export tenant JSON", icon: "download", onClick: () => void exportTenantJson(t) },
             "sep",
             t.status === "suspended"
               ? { label: "Reactivate", icon: "check-circle", onClick: () => toast(`${t.name} reactivation requires a settled invoice — see Billing.`, "info") }
@@ -85,6 +98,7 @@ export default function Organizations() {
           <p className="page-sub">{tenantsQ.data ? `${tenantsQ.data.length} tenants` : "Loading tenants…"} · multi-tenant isolation enforced per row</p>
         </div>
         <div className="page-actions">
+          <Button icon="upload" onClick={() => setImportOpen(true)}>Import Tenant JSON</Button>
           <Button variant="primary" icon="plus" onClick={() => navigate("/admin/onboarding")}>New tenant</Button>
         </div>
       </div>
@@ -125,6 +139,12 @@ export default function Organizations() {
           }}
         />
       </div>
+
+      <ImportTenantModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => tenantsQ.reload()}
+      />
 
       <ConfirmModal
         open={suspendTarget !== null}

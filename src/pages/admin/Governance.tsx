@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  listGuardrails, listMaster, listModels, listTemplates, setMasterStatus,
-  updateGuardrail, updateModelStatus,
+  createMaster, listGuardrailProfiles, listGuardrails, listMaster, listModels,
+  listTemplates, setGuardrailProfileStatus, setMasterStatus,
+  updateGuardrail, updateGuardrailProfile, updateModelStatus,
 } from "@/services/api";
-import type { ProviderMaster, ProviderModelMaster, VoiceCapability } from "@/types/domain";
+import type { ApiRequestError } from "@/services/http";
+import type { Guardrail, GuardrailProfile, ProviderMaster, ProviderModelMaster, VoiceCapability } from "@/types/domain";
 import { DataTable } from "@/components/DataTable";
-import { Button, Callout, StatusChip, Tabs, Toggle, EmptyState, CardSkeleton, ErrorState } from "@/components/ui";
+import {
+  Button, Callout, CardSkeleton, EmptyState, ErrorState, Field, Modal,
+  StatusChip, Tabs, Toggle,
+} from "@/components/ui";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
 import { Icon } from "@/components/Icon";
@@ -73,6 +78,7 @@ function MatrixTab() {
   const canManage = hasPermission("manage_master_data");
   const [capability, setCapability] = useState<VoiceCapability>("llm");
   const [provider, setProvider] = useState<string>("");
+  const [addModelOpen, setAddModelOpen] = useState(false);
 
   const providersQ = useAsync(
     () => listMaster<ProviderMaster>("providers", { kind: capability, pageSize: 100 }).then((p) => p.items),
@@ -173,6 +179,18 @@ function MatrixTab() {
           <span className="card-title">
             Models — {provider ? <code>{provider}</code> : "select a provider"}
           </span>
+          {canManage && (
+            <Button
+              size="sm"
+              variant="primary"
+              icon="plus"
+              disabled={!provider}
+              title={provider ? `Add a model to ${provider}` : "Select a provider first"}
+              onClick={() => setAddModelOpen(true)}
+            >
+              Add model
+            </Button>
+          )}
         </div>
         <DataTable
           loading={modelsQ.loading} error={modelsQ.error} onRetry={modelsQ.reload}
@@ -197,22 +215,324 @@ function MatrixTab() {
           ]}
         />
       </div>
+      <AddProviderModelModal
+        open={addModelOpen}
+        capability={capability}
+        provider={provider}
+        providerName={providersQ.data?.find((p) => p.code === provider)?.name ?? provider}
+        hasDefault={Boolean(modelsQ.data?.some((m) => m.isDefault))}
+        onClose={() => setAddModelOpen(false)}
+        onCreated={modelsQ.reload}
+      />
     </>
+  );
+}
+
+interface ProviderModelForm {
+  code: string;
+  name: string;
+  description: string;
+  languages: string;
+  codecs: string;
+  sampleRates: string;
+  paramsSchema: string;
+  streaming: boolean;
+  isDefault: boolean;
+  sortOrder: string;
+}
+
+const emptyProviderModelForm = (capability: VoiceCapability): ProviderModelForm => ({
+  code: "",
+  name: "",
+  description: "",
+  languages: "",
+  codecs: "",
+  sampleRates: "",
+  paramsSchema: "{}",
+  streaming: capability === "stt" || capability === "tts",
+  isDefault: false,
+  sortOrder: "0",
+});
+
+const commaList = (value: string) => Array.from(new Set(
+  value.split(",").map((part) => part.trim()).filter(Boolean),
+));
+
+function AddProviderModelModal({
+  open, capability, provider, providerName, hasDefault, onClose, onCreated,
+}: {
+  open: boolean;
+  capability: VoiceCapability;
+  provider: string;
+  providerName: string;
+  hasDefault: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { toast } = useApp();
+  const [form, setForm] = useState<ProviderModelForm>(() => emptyProviderModelForm(capability));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    setForm(emptyProviderModelForm(capability));
+    setError(null);
+    setFieldErrors({});
+  }, [open, capability, provider]);
+
+  const set = <K extends keyof ProviderModelForm>(key: K, value: ProviderModelForm[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+    setFieldErrors((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    if (error) setError(null);
+  };
+
+  const save = async () => {
+    if (busy || !provider) return;
+
+    const nextErrors: Record<string, string> = {};
+    const code = form.code.trim();
+    const name = form.name.trim();
+    if (!code) nextErrors.code = "Model ID is required.";
+    if (!name) nextErrors.name = "Display name is required.";
+
+    const rateTokens = commaList(form.sampleRates);
+    const sampleRates = rateTokens.map(Number);
+    if (rateTokens.some((value, index) => !/^\d+$/.test(value) || sampleRates[index] <= 0)) {
+      nextErrors.sampleRates = "Use positive whole numbers separated by commas.";
+    }
+
+    const sortOrder = Number(form.sortOrder);
+    if (!Number.isInteger(sortOrder) || sortOrder < 0) {
+      nextErrors.sortOrder = "Sort order must be a non-negative whole number.";
+    }
+
+    let paramsSchema: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(form.paramsSchema || "{}");
+      if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+        nextErrors.paramsSchema = "Parameter schema must be a JSON object.";
+      } else {
+        paramsSchema = parsed as Record<string, unknown>;
+      }
+    } catch {
+      nextErrors.paramsSchema = "Enter valid JSON, for example {}.";
+    }
+
+    if (Object.keys(nextErrors).length) {
+      setFieldErrors(nextErrors);
+      setError("Fix the highlighted fields and try again.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      await createMaster<ProviderModelMaster>("provider-models", {
+        code,
+        name,
+        description: form.description.trim(),
+        providerCode: provider,
+        capability,
+        languages: commaList(form.languages),
+        codecs: commaList(form.codecs),
+        sampleRates,
+        paramsSchema,
+        streaming: form.streaming,
+        isDefault: !hasDefault && form.isDefault,
+        sortOrder,
+      });
+      toast(`${name} added to ${providerName} — audit entry created`);
+      onCreated();
+      onClose();
+    } catch (e) {
+      const api = e as ApiRequestError;
+      if (api.fieldErrors) setFieldErrors(api.fieldErrors);
+      setError(api instanceof Error ? api.message : "Model creation failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const capabilityLabel = CAPABILITIES.find((item) => item.id === capability)?.label ?? capability;
+
+  return (
+    <Modal
+      open={open}
+      onClose={busy ? () => undefined : onClose}
+      title="Add provider model"
+      sub="The model becomes active in the catalog immediately after it is created."
+      wide
+      footer={
+        <>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button variant="primary" busy={busy} onClick={() => void save()}>Add model</Button>
+        </>
+      }
+    >
+      <div className="col gap-16">
+        {error && <Callout tone="critical">{error}</Callout>}
+
+        <div className="grid grid-2">
+          <Field label="Capability">
+            <input className="input" value={capabilityLabel} disabled aria-label="Capability" />
+          </Field>
+          <Field label="Provider">
+            <input className="input" value={`${providerName} (${provider})`} disabled aria-label="Provider" />
+          </Field>
+          <Field label="Model ID" required error={fieldErrors.code}
+            hint="Exact provider API value, for example gpt-5-mini.">
+            <input
+              className="input"
+              value={form.code}
+              onChange={(e) => set("code", e.target.value)}
+              aria-label="Model ID"
+              aria-invalid={Boolean(fieldErrors.code) || undefined}
+              autoFocus
+            />
+          </Field>
+          <Field label="Display name" required error={fieldErrors.name}>
+            <input
+              className="input"
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              aria-label="Display name"
+              aria-invalid={Boolean(fieldErrors.name) || undefined}
+            />
+          </Field>
+        </div>
+
+        <Field label="Description" error={fieldErrors.description}>
+          <textarea
+            className="textarea"
+            rows={2}
+            value={form.description}
+            onChange={(e) => set("description", e.target.value)}
+            aria-label="Description"
+          />
+        </Field>
+
+        <div className="grid grid-2">
+          <Field label="Languages" error={fieldErrors.languages}
+            hint="Optional comma-separated locale codes, for example en, hi-IN.">
+            <input
+              className="input"
+              value={form.languages}
+              onChange={(e) => set("languages", e.target.value)}
+              aria-label="Languages"
+            />
+          </Field>
+          <Field label="Codecs" error={fieldErrors.codecs}
+            hint="Optional comma-separated values, for example pcm16, mulaw.">
+            <input
+              className="input"
+              value={form.codecs}
+              onChange={(e) => set("codecs", e.target.value)}
+              aria-label="Codecs"
+            />
+          </Field>
+          <Field label="Sample rates" error={fieldErrors.sampleRates}
+            hint="Optional Hz values separated by commas, for example 16000, 24000.">
+            <input
+              className="input"
+              value={form.sampleRates}
+              onChange={(e) => set("sampleRates", e.target.value)}
+              aria-label="Sample rates"
+              aria-invalid={Boolean(fieldErrors.sampleRates) || undefined}
+            />
+          </Field>
+          <Field label="Sort order" error={fieldErrors.sortOrder}>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              step={1}
+              value={form.sortOrder}
+              onChange={(e) => set("sortOrder", e.target.value)}
+              aria-label="Sort order"
+              aria-invalid={Boolean(fieldErrors.sortOrder) || undefined}
+            />
+          </Field>
+        </div>
+
+        <Field
+          label="Parameter schema (JSON)"
+          error={fieldErrors.paramsSchema}
+          hint={'Optional runtime controls keyed by parameter name; use {} when none are needed.'}
+        >
+          <textarea
+            className="textarea t-num"
+            rows={7}
+            spellCheck={false}
+            value={form.paramsSchema}
+            onChange={(e) => set("paramsSchema", e.target.value)}
+            aria-label="Parameter schema (JSON)"
+            aria-invalid={Boolean(fieldErrors.paramsSchema) || undefined}
+          />
+        </Field>
+
+        <div className="grid grid-2">
+          <div className="row-between">
+            <div>
+              <div className="field-label">Streaming</div>
+              <div className="field-hint">The provider can return partial output in real time.</div>
+            </div>
+            <Toggle
+              checked={form.streaming}
+              onChange={(value) => set("streaming", value)}
+              label="Streaming"
+            />
+          </div>
+          <div className="row-between">
+            <div>
+              <div className="field-label">Default model</div>
+              <div className="field-hint">
+                {hasDefault ? "This provider already has a default model." : "Preselect this model in new configurations."}
+              </div>
+            </div>
+            {hasDefault
+              ? <StatusChip status="info" label="Assigned" />
+              : (
+                <Toggle
+                  checked={form.isDefault}
+                  onChange={(value) => set("isDefault", value)}
+                  label="Default model"
+                />
+              )}
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
 function ModelsTab() {
   const q = useAsync(listModels, []);
   const { toast } = useApp();
+  const models = useMemo(
+    () => q.data
+      ? [...q.data].sort(
+          (a, b) => Number(a.status === "deprecated") - Number(b.status === "deprecated"),
+        )
+      : q.data,
+    [q.data],
+  );
   return (
     <div className="card">
       <DataTable
-        loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
+        loading={q.loading} error={q.error} onRetry={q.reload} rows={models}
         empty={{ icon: "brain", title: "No models registered" }}
         columns={[
           { key: "name", header: "Model", sortValue: (m) => m.name, render: (m) => <div><code className="t-strong" style={{ fontSize: 12.5 }}>{m.name}</code><div className="t-micro">{m.provider}</div></div> },
           { key: "purpose", header: "Purpose", sortValue: (m) => m.purpose, render: (m) => <span className="tag" style={{ textTransform: "capitalize" }}>{m.purpose}</span> },
-          { key: "status", header: "Status", render: (m) => <StatusChip status={m.status === "approved" ? "approved" : m.status === "testing" ? "testing" : "deprecated"} /> },
+          { key: "status", header: "Status", sortValue: (m) => m.status === "approved" ? 0 : m.status === "testing" ? 1 : 2, render: (m) => <StatusChip status={m.status === "approved" ? "approved" : m.status === "testing" ? "testing" : "deprecated"} /> },
           { key: "tenants", header: "Tenants", align: "right", sortValue: (m) => m.tenantsUsing, render: (m) => <span className="t-num">{m.tenantsUsing}</span> },
           { key: "cost", header: "Cost / 1K tok", align: "right", sortValue: (m) => m.costPer1k, render: (m) => <span className="t-num">${m.costPer1k}</span> },
           { key: "latency", header: "p50 latency", align: "right", sortValue: (m) => m.latencyP50, render: (m) => <span className="t-num">{fmtNum(m.latencyP50)}ms</span> },
@@ -244,25 +564,26 @@ function GuardrailsTab() {
   return (
     <>
       <Callout tone="warning" title="Production impact">
-        Guardrail changes apply to live traffic within one minute, are versioned, and are recorded in the audit log. Disabling a privacy guardrail requires a second approver.
+        Guardrail changes apply at the next call start and are recorded in the audit log. Mandatory platform guardrails cannot be disabled or weakened — they protect every tenant regardless of the assigned profile.
       </Callout>
       <div className="card mt-16">
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
           empty={{ icon: "shield", title: "No guardrails configured" }}
           columns={[
-            { key: "name", header: "Guardrail", sortValue: (g) => g.name, render: (g) => <div><div className="t-strong">{g.name}</div><div className="t-micro" style={{ maxWidth: 380 }}>{g.description}</div></div> },
+            { key: "name", header: "Guardrail", sortValue: (g) => g.name, render: (g) => <div><div className="t-strong">{g.name}{g.isMandatory && <span className="tag" style={{ marginLeft: 8 }}>Mandatory</span>}</div><div className="t-micro" style={{ maxWidth: 380 }}>{g.description}</div></div> },
             { key: "category", header: "Category", sortValue: (g) => g.category, render: (g) => <span className="tag">{g.category}</span> },
             { key: "enforcement", header: "Enforcement", render: (g) => <StatusChip status={g.enforcement === "block" ? "critical" : g.enforcement === "redact" ? "info" : "warning"} label={g.enforcement} /> },
             { key: "triggers", header: "Triggers (30d)", align: "right", sortValue: (g) => g.triggers30d, render: (g) => <span className="t-num">{fmtNum(g.triggers30d)}</span> },
             {
               key: "enabled", header: "Enabled",
-              render: (g) => (
+              render: (g) => g.isMandatory ? (
+                <span className="t-micro" title="Mandatory platform guardrails cannot be disabled">Always on</span>
+              ) : (
                 <Toggle
                   checked={g.enabled}
                   label={`Toggle ${g.name}`}
                   onChange={async (v) => {
-                    if (!v && g.category === "Privacy") { toast("Privacy guardrails need a second approver to disable", "error"); return; }
                     try {
                       await updateGuardrail(g.id, { enabled: v });
                       toast(`${g.name} ${v ? "enabled" : "disabled"} — audit entry created`);
@@ -277,7 +598,130 @@ function GuardrailsTab() {
           ]}
         />
       </div>
+      <GuardrailProfilesPanel guardrails={q.data ?? []} />
     </>
+  );
+}
+
+/** Guardrail profiles: named rule bundles assigned to tenants. Membership is
+    editable; deactivation blocks NEW assignments only — tenants already on
+    the profile keep enforcing it. */
+function GuardrailProfilesPanel({ guardrails }: { guardrails: Guardrail[] }) {
+  const q = useAsync(listGuardrailProfiles, []);
+  const { toast } = useApp();
+  const [editing, setEditing] = useState<GuardrailProfile | null>(null);
+  return (
+    <div className="card mt-16">
+      <div className="card-header">
+        <div className="col gap-2">
+          <span className="card-title">Guardrail profiles</span>
+          <span className="t-micro">Assigned per tenant at onboarding (industry suggests a default). Mandatory rules are implied in every profile and are not listed.</span>
+        </div>
+      </div>
+      <DataTable
+        loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
+        empty={{ icon: "shield", title: "No guardrail profiles", body: "Run the platform seed to create Standard, Healthcare and Finance." }}
+        columns={[
+          { key: "name", header: "Profile", sortValue: (p) => p.name, render: (p) => <div><div className="t-strong">{p.name} <span className="t-micro">v{p.version}</span></div><div className="t-micro" style={{ maxWidth: 360 }}>{p.description}</div></div> },
+          { key: "rules", header: "Profile rules", render: (p) => (
+              <div className="row wrap gap-4">
+                {p.guardrails.length === 0
+                  ? <span className="t-micro">Mandatory rules only</span>
+                  : p.guardrails.filter((g) => !g.isMandatory).map((g) => <span key={g.id} className="chip chip-neutral">{g.name}</span>)}
+              </div>
+            ) },
+          { key: "usage", header: "Tenants", align: "right", sortValue: (p) => p.usageCount, render: (p) => <span className="t-num">{p.usageCount}</span> },
+          { key: "status", header: "Status", render: (p) => <StatusChip status={p.status} /> },
+          { key: "actions", header: "", render: (p) => (
+              <div className="row gap-6" style={{ justifyContent: "flex-end" }}>
+                <Button size="sm" icon="edit" onClick={() => setEditing(p)}>Edit</Button>
+                <Button size="sm" onClick={async () => {
+                  const next = p.status === "active" ? "inactive" : "active";
+                  try {
+                    await setGuardrailProfileStatus(p.id, next);
+                    toast(`${p.name} ${next === "active" ? "activated" : "deactivated — existing tenant assignments keep working"}`);
+                    q.reload();
+                  } catch (e) {
+                    toast(e instanceof Error ? e.message : "Status change failed", "error");
+                  }
+                }}>{p.status === "active" ? "Deactivate" : "Activate"}</Button>
+              </div>
+            ) },
+        ]}
+      />
+      {editing && (
+        <EditGuardrailProfileModal
+          profile={editing}
+          guardrails={guardrails}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); q.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditGuardrailProfileModal({ profile, guardrails, onClose, onSaved }: {
+  profile: GuardrailProfile; guardrails: Guardrail[]; onClose: () => void; onSaved: () => void;
+}) {
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [name, setName] = useState(profile.name);
+  const [description, setDescription] = useState(profile.description);
+  const [ruleIds, setRuleIds] = useState<string[]>(profile.guardrailIds);
+  const selectable = guardrails.filter((g) => !g.isMandatory);
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateGuardrailProfile(profile.id, { name: name.trim(), description, guardrailIds: ruleIds });
+      toast(`${name.trim()} updated — version bumped, audit entry created`);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title={`Edit ${profile.name}`}
+      sub="Membership changes bump the profile version; live calls pick up the new rules at their next call start."
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="primary" icon="check" busy={busy} disabled={busy} onClick={() => void save()}>Save changes</Button>
+        </>
+      }>
+      <div className="col gap-14">
+        {err && <Callout tone="critical">{err}</Callout>}
+        <Field label="Name" required>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Description">
+          <textarea className="textarea" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        <Field label="Profile rules" hint="Mandatory platform guardrails apply to every tenant and cannot be removed here.">
+          <div className="col gap-6" role="group" aria-label="Profile rules">
+            {selectable.map((g) => {
+              const on = ruleIds.includes(g.id);
+              return (
+                <button key={g.id} type="button" aria-pressed={on}
+                  className="row-between card-pad-sm gap-12"
+                  style={{ border: `1px solid ${on ? "var(--brand-500)" : "var(--hairline)"}`, borderRadius: 10, background: on ? "var(--surface-2)" : "transparent", textAlign: "left", cursor: "pointer" }}
+                  onClick={() => setRuleIds(on ? ruleIds.filter((id) => id !== g.id) : [...ruleIds, g.id])}>
+                  <div>
+                    <div className="t-strong" style={{ fontSize: 13 }}>{g.name}</div>
+                    <div className="t-micro">{g.description}</div>
+                  </div>
+                  <span className="chip chip-neutral" style={{ textTransform: "capitalize" }}>{g.enforcement}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+      </div>
+    </Modal>
   );
 }
 

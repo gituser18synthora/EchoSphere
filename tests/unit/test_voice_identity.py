@@ -1,0 +1,282 @@
+"""Selected TTS catalog metadata drives prompt identity and grammar."""
+
+from shared.orchestration.voice_identity import (
+    VoiceIdentity,
+    adapt_authored_speaker_grammar,
+    active_voice_identity,
+    resolve_tts_engine,
+    voice_context_values,
+    voice_identity_instruction,
+    voice_identity_state,
+)
+from voice_runtime.tts_router import StreamingTTSRouter
+
+
+def test_default_voice_name_and_gender_are_catalog_driven():
+    identity = active_voice_identity({
+        "voice": "provider-wire-17",
+        "voice_name": "Arbitrary Catalog Speaker",
+        "voice_gender": "male",
+    }, "hi-IN")
+
+    assert identity == VoiceIdentity("Arbitrary Catalog Speaker", "male")
+    instruction = voice_identity_instruction(identity)
+    assert "Arbitrary Catalog Speaker" in instruction
+    assert "grammatically male forms" in instruction
+
+
+def test_a_persona_display_name_speaks_only_the_speaker_name():
+    # bulbul:v4-flash personas are catalogued as "Speaker · Language · Style";
+    # Manappuram (demo 2026-10-26) introduced itself with all three parts.
+    tts = {
+        "voice": "kavya_hi_conversational",
+        "voice_name": "Kavya · Hindi · Conversational",
+        "voice_gender": "female",
+    }
+    identity = active_voice_identity(tts, "hi-IN")
+
+    assert identity == VoiceIdentity("Kavya", "female")
+    assert voice_context_values(identity)["voice_speaker_name"] == "Kavya"
+    assert "·" not in voice_identity_instruction(identity, "hi-IN")
+    # Plain catalog names are untouched.
+    assert active_voice_identity({"voice_name": "Ritu"}, "hi-IN").name == "Ritu"
+    assert active_voice_identity({"voice": "shubh"}, "hi-IN").name == "shubh"
+
+
+def test_female_language_override_changes_the_active_identity():
+    tts = {
+        "streaming": True,
+        "voice_name": "Default Speaker",
+        "voice_gender": "male",
+        "language_map": {
+            "hi-IN": {
+                "voice_name": "Hindi Speaker",
+                "voice_gender": "female",
+            },
+        },
+    }
+
+    identity = active_voice_identity(tts, "hi-IN")
+    assert identity == VoiceIdentity("Hindi Speaker", "female")
+    assert "grammatically female forms" in voice_identity_instruction(identity)
+
+
+def test_base_locale_fallback_engine_and_identity_cannot_disagree():
+    tts = {
+        "streaming": True,
+        "provider": "sarvam",
+        "voice": "default-male",
+        "voice_name": "Default Male",
+        "voice_gender": "male",
+        "language_map": {
+            "hi": {
+                "provider": "sarvam",
+                "voice": "hindi-female",
+                "voice_name": "Hindi Female",
+                "voice_gender": "female",
+            },
+        },
+    }
+
+    engine = resolve_tts_engine(tts, "hi-IN")
+    identity = active_voice_identity(tts, "hi-IN")
+    assert engine["voice"] == "hindi-female"
+    assert identity == VoiceIdentity("Hindi Female", "female")
+
+
+def test_streaming_router_uses_the_same_base_locale_female_engine():
+    tts = {
+        "streaming": True,
+        "provider": "sarvam",
+        "model": "bulbul:v3",
+        "voice": "default-male",
+        "voice_name": "Default Male",
+        "voice_gender": "male",
+        "language_map": {
+            "hi": {
+                "provider": "sarvam",
+                "model": "bulbul:v3",
+                "voice": "hindi-female",
+                "voice_name": "Hindi Female",
+                "voice_gender": "female",
+            },
+        },
+    }
+    router = StreamingTTSRouter(
+        tts_config=tts, language="hi-IN", sample_rate=16000
+    )
+
+    assert router._engine_for_language("hi-IN")["voice"] == "hindi-female"
+    assert active_voice_identity(tts, "hi-IN").gender == "female"
+
+
+def test_non_streaming_engine_keeps_its_actual_default_voice():
+    identity = active_voice_identity({
+        "streaming": False,
+        "voice_name": "REST Speaker",
+        "voice_gender": "female",
+        "language_map": {
+            "hi-IN": {"voice_name": "Unused Override", "voice_gender": "male"},
+        },
+    }, "hi-IN")
+
+    assert identity == VoiceIdentity("REST Speaker", "female")
+
+
+def test_prompt_values_include_canonical_name_and_compatibility_alias():
+    values = voice_context_values(VoiceIdentity("Ritu", "female"))
+
+    assert values == {
+        "assistant_voice_gender": "female",
+        "assistant_voice_name": "Ritu",
+        "voice_speaker_gender": "female",
+        "voice_speaker_name": "Ritu",
+        "voice_bot_spiker_name": "Ritu",
+    }
+
+
+def test_runtime_instruction_overrides_authored_gender_examples():
+    female = voice_identity_instruction(VoiceIdentity("Catalog Female", "female"))
+    male = voice_identity_instruction(VoiceIdentity("Catalog Male", "male"))
+
+    assert "`assistant_voice_gender = female`" in female
+    assert "मैं समझ सकती हूँ" in female
+    assert "never use masculine" in female
+    assert "`assistant_voice_gender = male`" in male
+    assert "मैं समझ सकता हूँ" in male
+    assert "never use feminine" in male
+    assert "overrides contrary gender forms" in female
+
+
+def test_english_identity_instruction_does_not_inject_hindi_examples():
+    instruction = voice_identity_instruction(
+        VoiceIdentity("Catalog Male", "male"), "en-IN"
+    )
+
+    assert "`assistant_voice_gender = male`" in instruction
+    assert "required response language is en-IN" in instruction
+    assert "Do not switch languages" in instruction
+    assert "मैं" not in instruction
+    assert "समझ सकता" not in instruction
+
+
+def test_hindi_identity_instruction_keeps_gender_examples():
+    instruction = voice_identity_instruction(
+        VoiceIdentity("Catalog Female", "female"), "hi-IN"
+    )
+
+    assert "मैं समझ सकती हूँ" in instruction
+    assert "never use masculine" in instruction
+
+
+def test_goal_engine_state_uses_the_same_catalog_identity():
+    assert voice_identity_state(VoiceIdentity("Catalog Female", "female")) == {
+        "assistant_voice_name": "Catalog Female",
+        "assistant_voice_gender": "female",
+    }
+
+
+def test_unknown_catalog_gender_does_not_guess_male_or_female():
+    identity = active_voice_identity({
+        "voice_name": "Custom Clone",
+        "voice_gender": "unknown",
+    }, "hi-IN")
+
+    assert identity.gender == "neutral"
+    instruction = voice_identity_instruction(identity)
+    assert "does not specify a male/female" in instruction
+
+
+def test_fixed_hinglish_greeting_uses_female_catalog_grammar():
+    text = (
+        "नमस्कार! मैं edas की तरफ़ से Ritu bol raha hun. "
+        "क्या मेरी बात Seema ji से हो रही है?"
+    )
+
+    rendered = adapt_authored_speaker_grammar(text, VoiceIdentity("Ritu", "female"))
+
+    assert "bol rahi hun" in rendered
+    # The caller-facing clause is not a first-person bot self-reference.
+    assert "हो रही है" in rendered
+
+
+def test_fixed_devanagari_and_future_forms_work_in_both_directions():
+    female = adapt_authored_speaker_grammar(
+        "मैं बोल रहा हूँ और बाद में देख लूँगा।",
+        VoiceIdentity("Ritu", "female"),
+    )
+    male = adapt_authored_speaker_grammar(
+        "मैं बोल रही हूँ और बाद में देख लूँगी।",
+        VoiceIdentity("Shubh", "male"),
+    )
+
+    assert female == "मैं बोल रही हूँ और बाद में देख लूँगी।"
+    assert male == "मैं बोल रहा हूँ और बाद में देख लूँगा।"
+
+    assert adapt_authored_speaker_grammar(
+        "main kal dekh lunga aur phir karunga.",
+        VoiceIdentity("Ritu", "female"),
+    ) == "main kal dekh lungi aur phir karungi."
+
+
+def test_fixed_text_with_unknown_gender_is_not_changed():
+    text = "मैं बोल रहा हूँ।"
+    assert adapt_authored_speaker_grammar(
+        text, VoiceIdentity("Custom", "neutral")
+    ) == text
+
+
+def test_object_participles_are_not_regendered_with_the_speaker():
+    """cv_b80077e273d8: a male voice spoke "आपके द्वारा दी गया जानकारी" — the
+    passive participle agrees with जानकारी (feminine), not with the speaker.
+    Only the speaker's own predicate (the form before हूँ, or "रही थी") moves."""
+    male, female = VoiceIdentity("Abhishek", "male"), VoiceIdentity("Ritu", "female")
+    text = "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेती हूँ।"
+    assert adapt_authored_speaker_grammar(text, male) == (
+        "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।"
+    )
+    assert adapt_authored_speaker_grammar(text, female) == text
+    # The deduction "हुई थी" is about the deduction, never the speaker.
+    text = "जो 4 अगस्त को हुई थी, वो मैं note कर रहा हूँ।"
+    assert adapt_authored_speaker_grammar(text, male) == text
+    assert adapt_authored_speaker_grammar(text, female) == (
+        "जो 4 अगस्त को हुई थी, वो मैं note कर रही हूँ।"
+    )
+    # Speaker predicates still adapt in both directions.
+    assert adapt_authored_speaker_grammar("मैं समझ गई हूँ", male) == "मैं समझ गया हूँ"
+    assert adapt_authored_speaker_grammar("मैं समझ गया हूँ", female) == "मैं समझ गई हूँ"
+    assert adapt_authored_speaker_grammar("मैं कह रही थी कि", male) == "मैं कह रहा था कि"
+    assert adapt_authored_speaker_grammar("मैं आ चुका था", female) == "मैं आ चुकी थी"
+    assert adapt_authored_speaker_grammar("आपको जो order दिया गया था, मैं देख रही हूँ", male) == (
+        "आपको जो order दिया गया था, मैं देख रहा हूँ"
+    )
+
+
+class TestObjectAgreementIsNeverRegendered:
+    """cv_10dd1b13a5e1: a male voice spoke "fee ली जाता है" — the bare habitual
+    rules rewrote every -ती form in a first-person sentence part."""
+
+    def _male(self):
+        from shared.orchestration.voice_identity import VoiceIdentity
+        return VoiceIdentity(name="Abhishek", gender="male")
+
+    def _female(self):
+        from shared.orchestration.voice_identity import VoiceIdentity
+        return VoiceIdentity(name="Kavya", gender="female")
+
+    def test_third_person_forms_keep_their_noun_gender_for_a_male_voice(self):
+        from shared.orchestration.voice_identity import adapt_authored_speaker_grammar
+        text = ("थोड़ा बता देती हूँ — जब कोई नया rider Zepto join करता है, तो उससे "
+                "onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है।")
+        out = adapt_authored_speaker_grammar(text, self._male())
+        assert "बता देता हूँ" in out                       # speaker predicate adapted
+        assert "onboarding fee ली जाती है" in out           # object agreement untouched
+        assert "अलग हो सकती है" in out
+        assert "जाता है" not in out and "सकता है" not in out.replace("join करता है", "")
+
+    def test_first_person_modal_before_hoon_still_adapts_both_ways(self):
+        from shared.orchestration.voice_identity import adapt_authored_speaker_grammar
+        assert "समझ सकता हूँ" in adapt_authored_speaker_grammar("मैं समझ सकती हूँ।", self._male())
+        assert "समझ सकती हूँ" in adapt_authored_speaker_grammar("मैं समझ सकता हूँ।", self._female())
+        roman = adapt_authored_speaker_grammar("main samajh sakti hoon, fee li jaati hai", self._male())
+        assert "sakta hoon" in roman and "jaati hai" in roman

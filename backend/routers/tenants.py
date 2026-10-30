@@ -2,22 +2,30 @@
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import (
+    TENANT_ADMIN,
     get_current_user,
     is_super_admin,
     require_permission,
+    require_roles,
     require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
+from backend.core.api_keys import (
+    latest_api_key,
+    provision_api_key,
+    revoke_api_keys,
+    serialize_api_key,
+)
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.security import (
@@ -30,6 +38,7 @@ from shared.db.mysql import get_db
 from shared.models import (
     AiConfigProfile,
     DataRegion,
+    GuardrailProfile,
     Industry,
     Plan,
     Role,
@@ -41,6 +50,13 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_tenant, serialize_tenant_settings
+from shared.guardrails import load_effective_guardrails_sync
+from shared.tenant_languages import validate_language_assignment
+from shared.turn_detection import (
+    normalize_tenant_turn_detection,
+    tenant_turn_detection_payload,
+    validate_tenant_turn_detection,
+)
 
 
 def _validate_master_code(db: Session, model, value: str | None, label: str) -> str | None:
@@ -57,6 +73,50 @@ def _validate_master_code(db: Session, model, value: str | None, label: str) -> 
     if row is None or row.status != "active":
         raise ApiError(f"Unknown or inactive {label}: '{value}'.", 422)
     return row.code
+
+
+def _validate_guardrail_profile(db: Session, value: str) -> GuardrailProfile:
+    """Resolve a guardrail profile by id or code. Only ACTIVE profiles are
+    valid for new assignments; tenants already assigned to a profile keep it
+    (and stay readable) after deactivation."""
+    row = db.scalar(
+        select(GuardrailProfile).where(
+            or_(GuardrailProfile.id == value, GuardrailProfile.code == value),
+            GuardrailProfile.is_deleted.is_(False),
+        )
+    )
+    if row is None or row.status != "active":
+        raise ApiError(f"Unknown or inactive guardrail profile: '{value}'.", 422)
+    return row
+
+
+def _default_guardrail_profile(db: Session, industry_code: str | None) -> GuardrailProfile | None:
+    """Recommended default when onboarding didn't pick one: the industry's
+    default profile, else the platform 'standard' profile — active only."""
+    if industry_code:
+        default_id = db.scalar(
+            select(Industry.default_guardrail_profile_id).where(
+                Industry.code == industry_code, Industry.is_deleted.is_(False)
+            )
+        )
+        if default_id:
+            row = db.get(GuardrailProfile, default_id)
+            if row is not None and not row.is_deleted and row.status == "active":
+                return row
+    row = db.scalar(
+        select(GuardrailProfile).where(
+            GuardrailProfile.code == "standard",
+            GuardrailProfile.is_deleted.is_(False),
+        )
+    )
+    return row if row is not None and row.status == "active" else None
+
+
+def _profile_summary(p: GuardrailProfile | None) -> dict | None:
+    if p is None:
+        return None
+    return {"id": p.id, "code": p.code, "name": p.name,
+            "status": p.status, "version": p.version}
 
 router = APIRouter(tags=["Tenants"])
 
@@ -96,7 +156,8 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
     user_counts = dict(
         db.execute(
             select(User.tenant_id, func.count())
-            .where(User.tenant_id.in_(ids), User.is_deleted.is_(False))
+            .where(User.tenant_id.in_(ids), User.is_deleted.is_(False),
+                   User.is_service_account.is_(False))  # API-token identities are not seats
             .group_by(User.tenant_id)
         ).all()
     )
@@ -114,6 +175,17 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
     ).all()
     sub_map = {s[0]: {"plan": s[1], "mrr": float(s[2])} for s in subs}
     usage = _month_usage(db, ids)
+    tenant_languages = dict(db.execute(
+        select(TenantSetting.tenant_id, TenantSetting.default_languages)
+        .where(TenantSetting.tenant_id.in_(ids))
+    ).all())
+    profile_ids = {t.guardrail_profile_id for t in tenants if t.guardrail_profile_id}
+    profiles = {
+        p.id: p
+        for p in db.scalars(
+            select(GuardrailProfile).where(GuardrailProfile.id.in_(profile_ids))
+        )
+    } if profile_ids else {}
 
     out = []
     for t in tenants:
@@ -129,6 +201,10 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
                 minutes_month=u.get("minutes", 0.0),
                 mrr=s.get("mrr", 0.0),
                 ai_cost_month=u.get("ai_cost", 0.0),
+                default_languages=tenant_languages.get(t.id),
+                guardrail_profile=_profile_summary(
+                    profiles.get(t.guardrail_profile_id)
+                ),
             )
         )
     return out
@@ -179,6 +255,11 @@ class CreateTenantRequest(BaseModel):
     industry: str | None = None
     region: str | None = None
     ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
+    # Guardrail profile id or code. Omitted → the industry's recommended
+    # default, falling back to the platform 'standard' profile.
+    guardrail_profile_id: str | None = Field(
+        default=None, alias="guardrailProfileId"
+    )
     plan_code: str = Field(default="starter", alias="planCode")
     admin_email: EmailStr = Field(alias="adminEmail")
     admin_name: str = Field(default="Tenant Admin", alias="adminName")
@@ -187,6 +268,14 @@ class CreateTenantRequest(BaseModel):
     )
     status: str = Field(default="provisioning", pattern="^(active|trial|suspended|provisioning)$")
     seats: int | None = Field(default=None, ge=1)
+    default_languages: list[str] | None = Field(
+        default=None, alias="defaultLanguages"
+    )
+    # Post-call intelligence: both OFF unless the Super Admin opts in.
+    call_summary_enabled: bool = Field(default=False, alias="callSummaryEnabled")
+    use_previous_call_summary: bool = Field(
+        default=False, alias="usePreviousCallSummary"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -209,6 +298,21 @@ def create_tenant(
     industry = _validate_master_code(db, Industry, body.industry, "industry")
     region = _validate_master_code(db, DataRegion, body.region, "data region")
     ai_profile = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    if body.guardrail_profile_id:
+        guardrail_profile = _validate_guardrail_profile(db, body.guardrail_profile_id)
+    else:
+        guardrail_profile = _default_guardrail_profile(db, industry)
+    default_languages = None
+    if body.default_languages is not None:
+        default_languages, invalid = validate_language_assignment(
+            db, body.default_languages
+        )
+        if not default_languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
 
     code = (body.code or "").strip().lower() or None
     if code and db.scalar(select(Tenant).where(Tenant.code == code)):
@@ -223,9 +327,12 @@ def create_tenant(
         industry=industry,
         region=region,
         ai_profile_code=ai_profile,
+        guardrail_profile_id=guardrail_profile.id if guardrail_profile else None,
         status=body.status,
         health="neutral",
         admin_email=body.admin_email.lower(),
+        call_summary_enabled=body.call_summary_enabled,
+        use_previous_call_summary=body.use_previous_call_summary,
         created_by=user.id,
     )
     db.add(tenant)
@@ -250,6 +357,7 @@ def create_tenant(
             id=new_id("tset"),
             tenant_id=tenant.id,
             display_name=body.name,
+            default_languages=default_languages,
             created_by=user.id,
         )
     )
@@ -285,14 +393,108 @@ def create_tenant(
     record_audit(
         db, user=user, action="Created tenant", entity_type="tenant",
         entity_id=tenant.id, target_label=tenant.name, tenant_id=tenant.id,
-        new_value={"name": tenant.name, "domain": tenant.domain, "plan": plan.code},
+        new_value={"name": tenant.name, "domain": tenant.domain, "plan": plan.code,
+                   "guardrailProfile": guardrail_profile.code if guardrail_profile else None},
         request=request,
     )
+    # Every tenant gets its integration credential from day one. The
+    # plaintext is in THIS response only — afterwards the Super Admin can
+    # only rotate it (Tenant → API token card).
+    api_key, api_token = provision_api_key(db, tenant, user, request=request)
     db.commit()
     data = _tenant_context(db, [tenant])[0]
     if admin_user_payload:
         data["adminUser"] = admin_user_payload
+    data["apiToken"] = serialize_api_key(api_key, db.get(User, api_key.user_id), token=api_token)
     return ok(data)
+
+
+# ── Tenant API token (Super Admin) ───────────────────────────────────────────
+
+
+def _tenant_for_token(db: Session, tenant_id: str) -> Tenant:
+    t = db.get(Tenant, tenant_id)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    return t
+
+
+@router.get("/tenants/{tenant_id}/api-token")
+def get_tenant_api_token(
+    tenant_id: str,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Metadata of the tenant's current token (prefix, status, last use) —
+    never the token itself, which is not stored."""
+    tenant = _tenant_for_token(db, tenant_id)
+    row = latest_api_key(db, tenant.id)
+    account = db.get(User, row.user_id) if row is not None else None
+    return ok(serialize_api_key(row, account))
+
+
+@router.post("/tenants/{tenant_id}/api-token/rotate", status_code=201)
+def rotate_tenant_api_token(
+    tenant_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Generate a new token and revoke the previous one in the same
+    transaction. The plaintext is returned once, here, and nowhere else."""
+    tenant = _tenant_for_token(db, tenant_id)
+    row, token = provision_api_key(db, tenant, user, request=request)
+    db.commit()
+    return ok(serialize_api_key(row, db.get(User, row.user_id), token=token))
+
+
+@router.delete("/tenants/{tenant_id}/api-token")
+def revoke_tenant_api_token(
+    tenant_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Revoke without replacement — integrations stop until a rotation."""
+    tenant = _tenant_for_token(db, tenant_id)
+    revoked = revoke_api_keys(db, tenant, user, request=request)
+    db.commit()
+    row = latest_api_key(db, tenant.id)
+    account = db.get(User, row.user_id) if row is not None else None
+    data = serialize_api_key(row, account)
+    data["revoked"] = len(revoked)
+    return ok(data)
+
+
+@router.get("/tenants/{tenant_id}/effective-guardrails")
+def tenant_effective_guardrails(
+    tenant_id: str,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """The guardrails actually enforced for this tenant at runtime:
+    mandatory platform rules ∪ assigned-profile rules."""
+    if not is_super_admin(user) and user.tenant_id != tenant_id:
+        raise NotFoundError("Tenant")
+    t = db.get(Tenant, tenant_id)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    profile = db.get(GuardrailProfile, t.guardrail_profile_id) \
+        if t.guardrail_profile_id else None
+    if profile is not None and profile.is_deleted:
+        profile = None
+    effective = load_effective_guardrails_sync(tenant_id, session=db)
+    rules = sorted(effective.rules, key=lambda r: (not r.mandatory, r.name))
+    return ok({
+        "tenantId": tenant_id,
+        "profile": _profile_summary(profile),
+        "rules": [
+            {"guardrailId": r.guardrail_id or "", "code": r.code, "name": r.name,
+             "category": r.category, "action": r.action, "mandatory": r.mandatory}
+            for r in rules
+        ],
+        "degraded": effective.degraded,
+    })
 
 
 class UpdateTenantRequest(BaseModel):
@@ -301,10 +503,24 @@ class UpdateTenantRequest(BaseModel):
     industry: str | None = None
     region: str | None = None
     ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
+    # Explicit-only: changing the tenant's industry NEVER silently changes
+    # the assigned guardrail profile. Empty string clears the assignment.
+    guardrail_profile_id: str | None = Field(
+        default=None, alias="guardrailProfileId"
+    )
     plan_code: str | None = Field(default=None, alias="planCode")
     status: str | None = Field(default=None, pattern="^(active|trial|suspended|provisioning)$")
     health: str | None = Field(default=None, pattern="^(good|warning|serious|critical|neutral)$")
     admin_email: EmailStr | None = Field(default=None, alias="adminEmail")
+    default_languages: list[str] | None = Field(
+        default=None, alias="defaultLanguages"
+    )
+    call_summary_enabled: bool | None = Field(
+        default=None, alias="callSummaryEnabled"
+    )
+    use_previous_call_summary: bool | None = Field(
+        default=None, alias="usePreviousCallSummary"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -321,8 +537,12 @@ def update_tenant(
     if t is None or t.is_deleted:
         raise NotFoundError("Tenant")
     before = {"name": t.name, "status": t.status, "health": t.health,
-              "region": t.region, "code": t.code}
-    for field in ("name", "status", "health"):
+              "region": t.region, "code": t.code,
+              "guardrailProfileId": t.guardrail_profile_id,
+              "callSummaryEnabled": bool(t.call_summary_enabled),
+              "usePreviousCallSummary": bool(t.use_previous_call_summary)}
+    for field in ("name", "status", "health",
+                  "call_summary_enabled", "use_previous_call_summary"):
         val = getattr(body, field)
         if val is not None:
             setattr(t, field, val)
@@ -332,6 +552,14 @@ def update_tenant(
         t.region = _validate_master_code(db, DataRegion, body.region, "data region")
     if body.ai_profile_code is not None:
         t.ai_profile_code = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    if body.guardrail_profile_id is not None:
+        value = body.guardrail_profile_id.strip()
+        if not value:
+            t.guardrail_profile_id = None
+        elif value != t.guardrail_profile_id:
+            # Re-assignment requires an ACTIVE profile; keeping the current
+            # (possibly deactivated) one untouched is always allowed.
+            t.guardrail_profile_id = _validate_guardrail_profile(db, value).id
     if body.code is not None:
         code = body.code.strip().lower() or None
         if code and code != t.code and db.scalar(select(Tenant).where(Tenant.code == code)):
@@ -360,11 +588,38 @@ def update_tenant(
             )
     if body.admin_email:
         t.admin_email = body.admin_email.lower()
+    if body.default_languages is not None:
+        settings = _get_or_create_settings(db, t.id, user)
+        before["defaultLanguages"] = settings.default_languages or []
+        languages, invalid = validate_language_assignment(
+            db,
+            body.default_languages,
+            existing=settings.default_languages,
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        settings.default_languages = languages
+        settings.updated_by = user.id
     t.updated_by = user.id
     record_audit(
         db, user=user, action="Updated tenant", entity_type="tenant", entity_id=t.id,
         target_label=t.name, tenant_id=t.id, previous_value=before,
-        new_value={"name": t.name, "status": t.status, "health": t.health},
+        new_value={
+            "name": t.name,
+            "status": t.status,
+            "health": t.health,
+            "guardrailProfileId": t.guardrail_profile_id,
+            "callSummaryEnabled": bool(t.call_summary_enabled),
+            "usePreviousCallSummary": bool(t.use_previous_call_summary),
+            **(
+                {"defaultLanguages": settings.default_languages}
+                if body.default_languages is not None else {}
+            ),
+        },
         request=request,
     )
     db.commit()
@@ -394,6 +649,94 @@ def delete_tenant(
     return ok({"archived": True, "id": t.id})
 
 
+# ── Tenant export / import (Copy → Paste deployment) ─────────────────────────
+
+
+@router.get("/tenants/{tenant_id}/export")
+async def export_tenant_configuration(
+    tenant_id: str,
+    request: Request,
+    include_knowledge: bool = Query(True, alias="includeKnowledge"),
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Export the tenant's complete configuration (bots, prompts, voice,
+    workflows, tools, guardrail references, channels, knowledge, …) as a
+    portable id-preserving package for POST /tenants/import on another
+    environment. Secrets are exported as env:/secret:// references only."""
+    from backend.core.tenant_transfer import export_knowledge_plane, export_tenant
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or tenant.is_deleted:
+        raise NotFoundError("Tenant")
+    package = export_tenant(db, tenant)
+    if include_knowledge:
+        kb_ids = [k["id"] for k in package["resources"]["knowledge_sources"]]
+        package["knowledge_plane"] = await export_knowledge_plane(tenant.id, kb_ids)
+    record_audit(
+        db, user=user, action="Exported tenant configuration",
+        entity_type="tenant", entity_id=tenant.id, target_label=tenant.name,
+        tenant_id=tenant.id,
+        new_value={"includeKnowledge": include_knowledge,
+                   "bots": len(package["resources"]["bots"])},
+        request=request,
+    )
+    db.commit()
+    return ok(package)
+
+
+@router.post("/tenants/import")
+async def import_tenant_configuration(
+    request: Request,
+    package: dict = Body(...),
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Import a tenant package exported by GET /tenants/{id}/export,
+    PRESERVING every id (tenant, bots, workflows, tools, …). Idempotent:
+    creates what is missing, updates what already belongs to the same tenant,
+    and fails with 409 on any id owned by a different tenant/resource —
+    nothing is written on failure."""
+    from backend.core.bot_clone import delete_knowledge_documents
+    from backend.core.tenant_transfer import import_knowledge_plane, import_tenant
+
+    try:
+        report, kb_plane = import_tenant(db, package, user)
+        tenant_id = package["resources"]["tenant"]["id"]
+        record_audit(
+            db, user=user, action="Imported tenant configuration",
+            entity_type="tenant", entity_id=tenant_id,
+            target_label=package["resources"]["tenant"].get("name"),
+            tenant_id=tenant_id,
+            # The plaintext API token of a newly imported tenant must never
+            # land in the audit log.
+            new_value={k: v for k, v in report.items() if k not in ("warnings", "apiToken")},
+            request=request,
+        )
+    except Exception:
+        db.rollback()  # all-or-nothing: no partially deployed tenant survives
+        raise
+
+    # The knowledge plane lives in PostgreSQL, so it cannot join the MySQL
+    # transaction: it is written first and compensated (created documents
+    # deleted) if the MySQL commit fails — same pattern as bot cloning.
+    created_documents: list[str] = []
+    try:
+        kb_ids = {k["id"] for k in package["resources"].get("knowledge_sources") or []}
+        created_documents = await import_knowledge_plane(
+            kb_plane, tenant_id=tenant_id, kb_ids=kb_ids, user_id=user.id,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        await delete_knowledge_documents(created_documents)
+        raise
+
+    report["tenantId"] = tenant_id
+    report["knowledgeDocuments"] = len(created_documents)
+    return ok(report)
+
+
 # ── Tenant settings ───────────────────────────────────────────────────────────
 
 
@@ -407,6 +750,8 @@ class TenantSettingsRequest(BaseModel):
     notifications: list | None = None
     security: dict | None = None
     retention_days: int | None = Field(default=None, alias="retentionDays", ge=1, le=3650)
+    # Tenant-wide human speech naturalness overrides ({} clears them).
+    human_speech: dict | None = Field(default=None, alias="humanSpeech")
 
     model_config = {"populate_by_name": True}
 
@@ -423,7 +768,7 @@ def _get_or_create_settings(db: Session, tenant_id: str, user: User) -> TenantSe
 @router.get("/tenant/settings")
 def get_tenant_settings(
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("settings.manage", "tenants.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
@@ -432,6 +777,79 @@ def get_tenant_settings(
     s = _get_or_create_settings(db, tid, user)
     db.commit()
     return ok(serialize_tenant_settings(s))
+
+
+class TenantTurnDetectionRequest(BaseModel):
+    mode: str = "system_default"
+    overrides: dict = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+@router.get("/tenant/turn-detection")
+def get_tenant_turn_detection(
+    user: User = Depends(require_roles(TENANT_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated tenant's config and authoritative UI schema."""
+    tid = resolve_tenant_id(user, None)
+    if db.get(Tenant, tid) is None:
+        raise NotFoundError("Tenant")
+    settings = _get_or_create_settings(db, tid, user)
+    db.commit()
+    return ok(tenant_turn_detection_payload(settings.turn_detection))
+
+
+@router.put("/tenant/turn-detection")
+def update_tenant_turn_detection(
+    body: TenantTurnDetectionRequest,
+    request: Request,
+    user: User = Depends(require_roles(TENANT_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Replace this tenant's sparse profile; no cross-tenant id is accepted."""
+    tid = resolve_tenant_id(user, None)
+    settings = _get_or_create_settings(db, tid, user)
+    submitted = body.model_dump()
+    problems = validate_tenant_turn_detection(submitted)
+    if problems:
+        raise ApiError(
+            "Turn detection configuration is invalid.",
+            422,
+            errors=[{"field": "turnDetection", "message": problem} for problem in problems],
+        )
+    canonical = normalize_tenant_turn_detection(submitted)
+    before = settings.turn_detection
+    # System Default stores no override document at all. Existing and future
+    # runtime defaults therefore remain authoritative without copied values.
+    settings.turn_detection = None if canonical["mode"] == "system_default" else canonical
+    settings.updated_by = user.id
+    record_audit(
+        db,
+        user=user,
+        action="Updated tenant turn detection",
+        entity_type="tenant_settings",
+        entity_id=settings.id,
+        tenant_id=tid,
+        previous_value=before,
+        new_value=settings.turn_detection,
+        request=request,
+    )
+    db.commit()
+
+    # Tenant settings are resolved into bot snapshots once at session start.
+    # This rare admin write invalidates snapshots; active calls keep their
+    # in-memory copy and new sessions receive the new values.
+    from shared.bot_config import invalidate_tenant_bot_configs_sync
+
+    bot_ids = db.scalars(
+        select(VoiceBot.id).where(
+            VoiceBot.tenant_id == tid,
+            VoiceBot.is_deleted.is_(False),
+        )
+    ).all()
+    invalidate_tenant_bot_configs_sync(tid, list(bot_ids))
+    return ok(tenant_turn_detection_payload(settings.turn_detection))
 
 
 # ── Tenant profile ────────────────────────────────────────────────────────────
@@ -543,7 +961,16 @@ def update_tenant_profile(
     if body.timezone is not None:
         s.timezone = body.timezone
     if body.default_languages is not None:
-        s.default_languages = body.default_languages
+        languages, invalid = validate_language_assignment(
+            db, body.default_languages, existing=s.default_languages
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        s.default_languages = languages
     branding = dict(s.branding or {})
     if body.branding is not None:
         branding.update(body.branding)
@@ -579,9 +1006,33 @@ def update_tenant_settings(
     tid = resolve_tenant_id(user, tenant_id)
     s = _get_or_create_settings(db, tid, user)
     before = serialize_tenant_settings(s)
+    if body.default_languages is not None:
+        languages, invalid = validate_language_assignment(
+            db, body.default_languages, existing=s.default_languages
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        body.default_languages = languages
+    if body.human_speech:
+        from shared.orchestration.naturalness import validate_human_speech
+
+        problems = validate_human_speech(body.human_speech, existing=s.human_speech)
+        if problems:
+            raise ApiError(
+                "Human speech configuration is invalid.", 422,
+                errors=[{"field": "humanSpeech", "message": p} for p in problems],
+            )
+    human_speech_changed = (
+        body.human_speech is not None and body.human_speech != (s.human_speech or {})
+    )
     for field in (
         "display_name", "timezone", "default_languages", "branding",
         "business_hours", "holidays", "notifications", "security", "retention_days",
+        "human_speech",
     ):
         val = getattr(body, field)
         if val is not None:
@@ -593,4 +1044,10 @@ def update_tenant_settings(
         previous_value=before, new_value=serialize_tenant_settings(s), request=request,
     )
     db.commit()
+    if human_speech_changed:
+        # The tenant layer feeds every bot's resolved snapshot; drop them all
+        # (rare admin action, 300s TTL bounds the cost of the broad flush).
+        from shared.bot_config import invalidate_all_bot_configs_sync
+
+        invalidate_all_bot_configs_sync()
     return ok(serialize_tenant_settings(s))

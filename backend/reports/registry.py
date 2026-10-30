@@ -35,6 +35,9 @@ class ReportDefinition:
     columns: tuple[ReportColumn, ...]
     platform_only: bool = False
     supports_bot_filter: bool = True
+    # Entirely financial reports require the costs.view permission — roles
+    # without it (tenant_user) must not be able to export cost data at all.
+    requires_costs_view: bool = False
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ AI_COST_REPORT = ReportDefinition(
         ReportColumn("total_cost_inr", "Total Cost (INR)", "currency", 19),
         ReportColumn("exchange_rate_inr", "USD→INR Rate", "decimal", 15),
     ),
+    requires_costs_view=True,
 )
 
 REPORT_REGISTRY: dict[str, ReportDefinition] = {

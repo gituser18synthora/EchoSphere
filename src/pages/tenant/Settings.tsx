@@ -4,10 +4,14 @@ import { getTenantProfile, getTenantSettings, listLanguages, saveTenantProfile, 
 import type { TenantProfile, TenantSettings } from "@/types/domain";
 import { Button, Callout, CardSkeleton, ErrorState, Field, Tabs, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
+import {
+  HumanSpeechSettingsEditor,
+  validateHumanSpeechOverrides,
+} from "@/components/HumanSpeechSettings";
 import { useApp } from "@/state/AppContext";
 
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Berlin"];
-const ACCENTS = ["#6d55d9", "#2a78d6", "#1baf7a", "#eb6834"];
+const ACCENTS = ["#6a5af9", "#2a78d6", "#1baf7a", "#eb6834"];
 const OPEN_TIMES = ["7:00 AM", "8:00 AM", "9:00 AM", "10:00 AM"];
 const CLOSE_TIMES = ["1:00 PM", "5:00 PM", "6:00 PM", "8:00 PM"];
 
@@ -42,6 +46,11 @@ export default function Settings() {
 
   const save = async () => {
     if (!form) return;
+    const humanSpeechErrors = validateHumanSpeechOverrides(form.humanSpeech, { ambiencePresets: form.ambiencePresets });
+    if (humanSpeechErrors.length) {
+      toast(humanSpeechErrors[0], "error");
+      return;
+    }
     setBusy(true);
     try {
       const saved = await saveTenantSettings(form);
@@ -125,6 +134,18 @@ export default function Settings() {
                   ))}
                 </div>
               </Field>
+            </section>
+
+            <section className="card card-pad col gap-14">
+              <span className="card-title">Natural conversation defaults</span>
+              <HumanSpeechSettingsEditor
+                scope="tenant"
+                override={form.humanSpeech}
+                inherited={form.humanSpeechInherited}
+                inheritedSources={form.humanSpeechInheritedSources}
+                ambiencePresets={form.ambiencePresets}
+                onChange={(humanSpeech) => patch({ humanSpeech })}
+              />
             </section>
           </div>
 

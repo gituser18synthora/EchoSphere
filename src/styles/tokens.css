@@ -1,65 +1,76 @@
 /* ============================================================
    AUREXION EchoSphere — Design Tokens
-   Light is the primary experience; dark is a selected theme.
-   Chart palette validated with dataviz six-checks (light & dark).
+   Synthora-aligned brand (#6A5AF9).
+
+   Theme strategy
+   - Light is the primary experience (Synthora chrome + surfaces).
+   - Dark uses Aurexion navy / purple (page, chrome, accents).
+   - Light :root tokens are never altered by dark overrides except
+     via :root[data-theme="dark"].
    ============================================================ */
 
 :root {
-  /* Brand */
-  --brand-50: #f3f0fe;
-  --brand-100: #e6e0fc;
-  --brand-200: #cfc4f8;
-  --brand-300: #ab99f0;
-  --brand-400: #8a72e6;
-  --brand-500: #6d55d9;
-  --brand-600: #5a41c4;
-  --brand-700: #4a34a4;
-  --brand-800: #3a2a80;
-  --brand-900: #241a4e;
+  /* Brand — Synthora primary #6A5AF9 / hover #7354F0 / secondary #8C52FF */
+  --brand-50: #f3f1ff;
+  --brand-100: #e8e5fe;
+  --brand-200: #d2ccfd;
+  --brand-300: #b0a6fb;
+  --brand-400: #8f84f7;
+  --brand-500: #6a5af9;
+  --brand-600: #5948e6;
+  --brand-700: #4838c4;
+  --brand-800: #382c9a;
+  --brand-900: #241c62;
 
   /* Surfaces & ink (light) */
-  --page: #f6f6f9;
+  --page: #f7f8fa;
   --surface: #ffffff;
-  --surface-2: #fafafc;
-  --surface-3: #f1f1f6;
+  --surface-2: #f8f9ff;
+  --surface-3: #eef0f8;
   --chart-surface: #fcfcfd;
-  --sidebar-bg: #171422;
-  --sidebar-ink: #b9b3cf;
-  --sidebar-ink-strong: #ffffff;
-  --sidebar-active: rgba(138, 114, 230, 0.22);
-  --sidebar-border: rgba(255, 255, 255, 0.08);
 
-  --ink: #17161d;
-  --ink-2: #514f5c;
-  --ink-3: #86848f;
-  --border: rgba(23, 22, 29, 0.11);
-  --border-strong: rgba(23, 22, 29, 0.2);
-  --hairline: #e7e6ee;
-  --grid-line: #e6e5ed;
-  --axis-line: #c6c4d2;
+  /* Synthora chrome — shared across themes */
+  --topbar-bg: linear-gradient(90deg, rgba(143, 148, 251, 0.3) 0%, #6a5af9 100%);
+  --topbar-ink: #ffffff;
+  --sidebar-bg: linear-gradient(90deg, #6a5af9 0%, #8364ff 100%);
+  --sidebar-ink: rgba(255, 255, 255, 0.92);
+  --sidebar-ink-strong: #ffffff;
+  --sidebar-active: linear-gradient(90deg, #5948e6 0%, #7354f0 100%);
+  --sidebar-active-border: #7354f0;
+  --sidebar-item-border: rgba(255, 255, 255, 0.95);
+  --sidebar-border: rgba(255, 255, 255, 0.25);
+  --sidebar-collapse-bg: linear-gradient(90deg, #5948e6 0%, #7354f0 100%);
+
+  --ink: #1b1b1b;
+  --ink-2: #4b5563;
+  --ink-3: #6b7280;
+  --border: rgba(27, 27, 27, 0.1);
+  --border-strong: rgba(27, 27, 27, 0.18);
+  --hairline: #e6e8f0;
+  --grid-line: #e6e8f0;
+  --axis-line: #c4c9d4;
 
   --shadow-1: 0 1px 2px rgba(23, 22, 29, 0.05);
-  --shadow-2: 0 2px 8px rgba(23, 22, 29, 0.07);
-  --shadow-3: 0 12px 32px rgba(23, 22, 29, 0.14);
-  --shadow-pop: 0 4px 16px rgba(23, 22, 29, 0.1), 0 16px 48px rgba(23, 22, 29, 0.16);
+  --shadow-2: 0 2px 8px rgba(106, 90, 249, 0.08);
+  --shadow-3: 0 12px 32px rgba(106, 90, 249, 0.14);
+  --shadow-pop: 0 4px 16px rgba(23, 22, 29, 0.1), 0 16px 48px rgba(106, 90, 249, 0.16);
 
-  /* Status (reserved — never used as series colors) */
+  /* Status */
   --status-good: #0f8c0f;
   --status-good-bg: #e9f6e9;
   --status-warning: #9a6700;
   --status-warning-bg: #fdf3d7;
   --status-serious: #b4501f;
   --status-serious-bg: #fdeee5;
-  --status-critical: #c22f2f;
+  --status-critical: #e51c1c;
   --status-critical-bg: #fce9e9;
   --status-info: #1c5cab;
   --status-info-bg: #e7f0fc;
   --status-neutral: #5b5966;
   --status-neutral-bg: #efeef4;
 
-  /* Categorical chart palette — validated light mode
-     worst adjacent CVD ΔE 13.3 (≥12 target). Fixed order, never cycled. */
-  --series-1: #6d55d9;
+  /* Categorical chart palette */
+  --series-1: #6a5af9;
   --series-2: #1baf7a;
   --series-3: #eda100;
   --series-4: #2a78d6;
@@ -68,103 +79,134 @@
   --series-7: #e87ba4;
   --series-8: #eb6834;
 
-  /* Sequential ramp (brand purple, light→dark) */
-  --seq-100: #e6e0fc;
-  --seq-200: #cfc4f8;
-  --seq-300: #ab99f0;
-  --seq-400: #8a72e6;
-  --seq-500: #6d55d9;
-  --seq-600: #5a41c4;
-  --seq-700: #43318f;
+  /* Sequential ramp */
+  --seq-100: #e8e5fe;
+  --seq-200: #d2ccfd;
+  --seq-300: #b0a6fb;
+  --seq-400: #8f84f7;
+  --seq-500: #6a5af9;
+  --seq-600: #5948e6;
+  --seq-700: #4838c4;
 
-  /* Diverging poles */
   --div-neg: #d03b3b;
   --div-mid: #f0efec;
   --div-pos: #2a78d6;
 
-  /* Chart status (marks on chart surfaces) */
   --viz-good: #0ca30c;
   --viz-warning: #fab219;
   --viz-serious: #ec835a;
   --viz-critical: #d03b3b;
 
-  /* Typography */
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto,
+  --font: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 
-  /* Radii */
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
   --r-xl: 20px;
   --r-full: 999px;
 
-  /* Focus */
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-400);
+
+  --sidebar-width: 260px;
+  --sidebar-width-collapsed: 72px;
 
   color-scheme: light;
 }
 
+/* Aurexion dark theme — deep navy surfaces + purple chrome */
 :root[data-theme="dark"] {
-  --page: #0f0e14;
-  --surface: #191721;
-  --surface-2: #1f1d29;
-  --surface-3: #262331;
-  --chart-surface: #191721;
-  --sidebar-bg: #12101a;
-  --sidebar-border: rgba(255, 255, 255, 0.07);
+  /* Surfaces — Deep Navy / Midnight Blue / Navy Slate */
+  --page: #040917;
+  --surface: #091026;
+  --surface-2: #19203c;
+  --surface-3: #3a3f57;
+  --chart-surface: #091026;
 
-  --ink: #f2f1f7;
-  --ink-2: #b4b1c2;
-  --ink-3: #817e90;
-  --border: rgba(242, 241, 247, 0.12);
-  --border-strong: rgba(242, 241, 247, 0.24);
-  --hairline: #2a2735;
-  --grid-line: #2a2836;
-  --axis-line: #45424f;
+  /* Ink — White + lavender support steps */
+  --ink: #fefefe;
+  --ink-2: #acbae4;
+  --ink-3: #8588b7;
+  --border: rgba(254, 254, 254, 0.1);
+  --border-strong: rgba(254, 254, 254, 0.18);
+  --hairline: #3a3f57;
+  --grid-line: #3a3f57;
+  --axis-line: #61677b;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45);
-  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.55);
-  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.6);
+  /* Elevation on deep navy */
+  --shadow-1: 0 1px 2px rgba(4, 9, 23, 0.45);
+  --shadow-2: 0 2px 12px rgba(4, 9, 23, 0.55);
+  --shadow-3: 0 12px 32px rgba(4, 9, 23, 0.65);
+  --shadow-pop: 0 8px 28px rgba(4, 9, 23, 0.7), 0 0 0 1px rgba(150, 114, 220, 0.18);
 
-  --status-good: #4fbf4f;
-  --status-good-bg: rgba(12, 163, 12, 0.16);
-  --status-warning: #fab219;
-  --status-warning-bg: rgba(250, 178, 25, 0.14);
-  --status-serious: #f0956f;
-  --status-serious-bg: rgba(236, 131, 90, 0.15);
-  --status-critical: #e66767;
-  --status-critical-bg: rgba(208, 59, 59, 0.17);
-  --status-info: #6da7ec;
-  --status-info-bg: rgba(42, 120, 214, 0.16);
-  --status-neutral: #a7a4b5;
-  --status-neutral-bg: rgba(167, 164, 181, 0.14);
+  /* Brand — Aurexion Purple scale for dark */
+  --brand-50: #19203c;
+  --brand-100: #2a2458;
+  --brand-200: #412cab;
+  --brand-300: #9672dc;
+  --brand-400: #9672dc;
+  --brand-500: #412cab;
+  --brand-600: #5e2fa0;
+  --brand-700: #772f93;
+  --brand-800: #412cab;
+  --brand-900: #19203c;
 
-  /* Categorical palette — dark steps, validated (worst adjacent ΔE 13.4) */
-  --series-1: #8f7cf0;
-  --series-2: #199e70;
-  --series-3: #c98500;
-  --series-4: #3987e5;
-  --series-5: #e66767;
-  --series-6: #008300;
-  --series-7: #d55181;
-  --series-8: #d95926;
+  /* Status — readable on deep navy */
+  --status-good: #4caf50;
+  --status-good-bg: rgba(76, 175, 80, 0.16);
+  --status-warning: #d4a017;
+  --status-warning-bg: rgba(212, 160, 23, 0.16);
+  --status-serious: #e07a45;
+  --status-serious-bg: rgba(224, 122, 69, 0.16);
+  --status-critical: #e85a5a;
+  --status-critical-bg: rgba(232, 90, 90, 0.16);
+  --status-info: #95b8ec;
+  --status-info-bg: rgba(149, 184, 236, 0.16);
+  --status-neutral: #8588b7;
+  --status-neutral-bg: rgba(133, 136, 183, 0.16);
 
-  --seq-100: #2c2547;
-  --seq-200: #3a2f66;
-  --seq-300: #4c3d91;
-  --seq-400: #6d55d9;
-  --seq-500: #8a72e6;
-  --seq-600: #ab99f0;
-  --seq-700: #cfc4f8;
+  /* Charts — CTA / icon accent palette */
+  --series-1: #9672dc;
+  --series-2: #95b8ec;
+  --series-3: #e0a020;
+  --series-4: #5e2fa0;
+  --series-5: #ef6f75;
+  --series-6: #2aa34a;
+  --series-7: #772f93;
+  --series-8: #e8743c;
 
-  --div-neg: #e66767;
-  --div-mid: #383835;
-  --div-pos: #3987e5;
+  --seq-100: #19203c;
+  --seq-200: #2a2458;
+  --seq-300: #412cab;
+  --seq-400: #5e2fa0;
+  --seq-500: #9672dc;
+  --seq-600: #acbae4;
+  --seq-700: #95b8ec;
+
+  --div-neg: #ef6f75;
+  --div-mid: #3a3f57;
+  --div-pos: #95b8ec;
+
+  --viz-good: #4caf50;
+  --viz-warning: #d4a017;
+  --viz-serious: #e07a45;
+  --viz-critical: #e85a5a;
 
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-400);
+
+  /* Aurexion chrome (header + sidebar) — dark only */
+  --topbar-bg: linear-gradient(90deg, #19203c 0%, #412cab 58%, #5e2fa0 100%);
+  --topbar-base: #040917;
+  --topbar-ink: #fefefe;
+  --sidebar-bg: linear-gradient(180deg, #091026 0%, #412cab 52%, #5e2fa0 100%);
+  --sidebar-ink: rgba(254, 254, 254, 0.92);
+  --sidebar-ink-strong: #fefefe;
+  --sidebar-active: linear-gradient(90deg, #19203c 0%, #412cab 100%);
+  --sidebar-active-border: #5e2fa0;
+  --sidebar-item-border: rgba(150, 114, 220, 0.45);
+  --sidebar-border: rgba(254, 254, 254, 0.16);
+  --sidebar-collapse-bg: linear-gradient(135deg, #412cab 0%, #5e2fa0 100%);
 
   color-scheme: dark;
 }

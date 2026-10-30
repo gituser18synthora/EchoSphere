@@ -10,8 +10,12 @@ Wire protocol (docs.sarvam.ai/api-reference/text-to-speech/stream):
         | {"type":"error","data":{"message":..., "code":<int>}}
 
 Sarvam has no per-generation contexts: exactly one generation is active at a
-time, and ``cancel`` closes the socket to stop server-side synthesis (the next
-generation reconnects lazily). Re-sending config mid-connection is supported
+time, and ``cancel`` closes the socket to stop server-side synthesis. A second,
+already-configured socket is kept warm (``SARVAM_TTS_WARM_SPARE``, default on)
+and promoted at once, so the reply after a barge-in never waits for a
+handshake; without a ready spare a background reconnect rebuilds the socket.
+A dispatch that still had to wait for a socket reports a ``cold_connect``
+event (``waited_ms``, ``reason``). Re-sending config mid-connection is supported
 by the API (it auto-flushes) and is how voice/language switches avoid a
 reconnect. The server idles out after ~60s, so a ping is sent every 20s.
 """
@@ -35,6 +39,12 @@ from shared.providers.languages import (
     to_platform_language,
     to_provider_language,
 )
+from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
+from shared.providers.tts.sarvam_voices import (
+    NoV4Equivalent,
+    is_v4_model,
+    v4_speaker,
+)
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
     TTSStreamEvent,
@@ -46,12 +56,29 @@ logger = logging.getLogger("providers.tts.sarvam_ws")
 # Overridable for self-hosted gateways and mocked end-to-end verification.
 _WS_URL = os.environ.get("SARVAM_TTS_WS_URL", "wss://api.sarvam.ai/text-to-speech/ws")
 _KEEPALIVE_SECONDS = 20
-_MAX_CONNECT_ATTEMPTS = 3
+# Connect attempts happen inline on the reply path: two short attempts, then
+# error/fallback — never tens of seconds of handshake retries while the
+# caller waits in silence.
+_MAX_CONNECT_ATTEMPTS = 2
+_CONNECT_TIMEOUT_S = 3.0
+# How long a new dispatch waits for a still-rendering previous generation
+# before superseding it (Sarvam has no server-side generation contexts).
+_GENERATION_HANDOFF_TIMEOUT_S = 1.5
+# Keep a second configured socket ready for the reply after a barge-in cancel.
+# Costs one idle WebSocket per call (pinged with the primary); no characters
+# are billed on it until it is promoted.
+_WARM_SPARE = os.environ.get("SARVAM_TTS_WARM_SPARE", "true").strip().lower() not in (
+    "0", "false", "no", "off",
+)
 
-# Parameters the two bulbul generations accept on the config message.
+# Parameters the bulbul generations accept on the config message. bulbul:v4
+# (v4-flash) keeps the v3 contract; only its speakers changed (persona ids,
+# shared.providers.tts.sarvam_voices). ``loudness`` is added for the models
+# that offer it (shared.providers.tts.delivery), its range validated per
+# model from the catalog schema before it reaches a config.
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing", "dict_id"}
-_V2_PARAMS = {"pace", "pitch", "loudness", "min_buffer_size", "max_chunk_length",
+_V2_PARAMS = {"pace", "pitch", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing"}
 
 
@@ -65,57 +92,122 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         self._keepalive_task: asyncio.Task | None = None
         self._current_generation: str | None = None
         self._send_lock = asyncio.Lock()
+        # Serializes concurrent connect() calls (a post-cancel background
+        # reconnect racing the next dispatch) so only one socket is opened.
+        self._connect_lock = asyncio.Lock()
+        self._reconnect_task: asyncio.Task | None = None
+        # Config last sent on the CURRENT socket — a resend auto-flushes
+        # server-side, so identical configs are skipped.
+        self._last_config: dict | None = None
+        # Warm spare socket (see module docstring) and the config it carries.
+        self._warm_spare = _WARM_SPARE
+        self._spare_ws = None
+        self._spare_config: dict | None = None
+        self._spare_task: asyncio.Task | None = None
+        # Old sockets being closed in the background after a promotion.
+        self._closing: set[asyncio.Task] = set()
+        # Why no socket is open, reported with the next dispatch's
+        # cold_connect event: first | after_cancel | disconnected.
+        self._down_reason: str | None = "first"
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> None:
         if self._closed:
             raise RuntimeError("provider is closed")
-        if self._ws is not None and self._ws.state is State.OPEN:
-            return
-        model = self._settings.model or "bulbul:v3"
-        url = f"{_WS_URL}?model={model}&send_completion_event=true"
-        last_category = "timeout"
-        for attempt in range(_MAX_CONNECT_ATTEMPTS):
-            try:
-                self._ws = await asyncio.wait_for(
-                    websocket_connect(
-                        url,
-                        additional_headers={"api-subscription-key": self._settings.api_key},
-                    ),
-                    timeout=self._settings.timeout_seconds,
-                )
-                break
-            except InvalidStatus as exc:  # HTTP handshake rejection
-                status = exc.response.status_code
-                category = self.categorize_close(status)
-                await self._emit_error(category, f"Sarvam TTS handshake rejected ({status})")
-                if category == "auth":
-                    raise ProviderError(self.name, "auth",
-                                        "Sarvam rejected the API key") from exc
-                last_category = category
-            except (TimeoutError, OSError, ConnectionClosed):
-                last_category = "timeout"
-                await asyncio.sleep(0.2 * (attempt + 1))
-        else:
-            await self._emit_error(last_category, "Could not connect to Sarvam TTS")
-            raise ProviderError(self.name, last_category, "Could not connect to Sarvam TTS")
+        async with self._connect_lock:
+            if self._ws is not None and self._ws.state is State.OPEN:
+                return
+            model = self._settings.model or "bulbul:v3"
+            # Validate the speaker BEFORE opening a socket: a bulbul:v4-flash
+            # voice with no persona equivalent fails loudly here instead of
+            # leaving an open, unconfigured socket behind.
+            self._build_config()
+            url = f"{_WS_URL}?model={model}&send_completion_event=true"
+            last_category = "timeout"
+            for attempt in range(_MAX_CONNECT_ATTEMPTS):
+                try:
+                    self._ws = await asyncio.wait_for(
+                        websocket_connect(
+                            url,
+                            additional_headers={"api-subscription-key": self._settings.api_key},
+                        ),
+                        timeout=min(_CONNECT_TIMEOUT_S, self._settings.timeout_seconds),
+                    )
+                    break
+                except InvalidStatus as exc:  # HTTP handshake rejection
+                    status = exc.response.status_code
+                    category = self.categorize_close(status)
+                    await self._emit_error(category, f"Sarvam TTS handshake rejected ({status})")
+                    if category == "auth":
+                        raise ProviderError(self.name, "auth",
+                                            "Sarvam rejected the API key") from exc
+                    last_category = category
+                except (TimeoutError, OSError, ConnectionClosed):
+                    last_category = "timeout"
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            else:
+                await self._emit_error(last_category, "Could not connect to Sarvam TTS")
+                raise ProviderError(self.name, last_category, "Could not connect to Sarvam TTS")
 
-        await self._send_config()
-        if self._receive_task is None or self._receive_task.done():
-            self._receive_task = asyncio.create_task(self._receive_loop())
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            # A fresh socket always gets a config, whatever was sent before.
+            self._last_config = None
+            await self._send_config()
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = asyncio.create_task(self._receive_loop())
+            if self._keepalive_task is None or self._keepalive_task.done():
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            self._down_reason = None
+        self._schedule_spare()
 
     async def configure(self, settings: TTSStreamSettings) -> None:
         """Swap voice/language/params. Reuses the connection when open."""
         self._settings = settings
         if self._ws is not None and self._ws.state is State.OPEN:
             await self._send_config()
+        # The spare is re-configured when it is promoted (_promote_spare).
 
     async def synthesize_stream(self, text: str, *, generation_id: str) -> None:
         if not text:
             return
-        await self.connect()
+        if self._ws is None or self._ws.state is not State.OPEN:
+            # The reply path has to wait for a socket: measured and reported
+            # so cold handshakes on live calls are visible per reason.
+            loop = asyncio.get_running_loop()
+            reason = self._down_reason or "disconnected"
+            started = loop.time()
+            await self.connect()
+            await self._emit(TTSStreamEvent(
+                kind="cold_connect", generation_id=generation_id,
+                info={"waited_ms": round((loop.time() - started) * 1000, 1),
+                      "reason": reason},
+            ))
+        else:
+            await self.connect()
+        previous = self._current_generation
+        if (
+            previous is not None
+            and previous != generation_id
+            and self.generation_alive(previous)
+        ):
+            # Sarvam has no server-side generation contexts: dispatching new
+            # text while the previous generation is still rendering would
+            # misattribute its remaining audio and its final. Wait briefly
+            # for the in-flight generation to complete; supersede if it
+            # doesn't (its tail audio is then attributed to this generation,
+            # which is at least in playback order).
+            deadline = asyncio.get_running_loop().time() + _GENERATION_HANDOFF_TIMEOUT_S
+            while (
+                self.generation_alive(previous)
+                and self._current_generation == previous
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            if self.generation_alive(previous) and self._current_generation == previous:
+                logger.info(
+                    "sarvam-tts: superseding still-open generation before a new dispatch"
+                )
+                self._end_generation(previous)
+                await self._emit(TTSStreamEvent(kind="final", generation_id=previous))
         self._begin_generation(generation_id)
         self._current_generation = generation_id
         await self._send({"type": "text", "data": {"text": text}})
@@ -125,16 +217,138 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             await self._send({"type": "flush"})
 
     async def cancel(self, generation_id: str) -> None:
-        """Sarvam cannot cancel server-side synthesis: drop the connection."""
+        """Sarvam cannot cancel server-side synthesis: drop the connection.
+
+        The warm spare, when ready, becomes the live socket at once; otherwise
+        the socket is rebuilt in the background.
+        """
         self._end_generation(generation_id)
         if self._current_generation == generation_id:
             self._current_generation = None
+            if await self._promote_spare():
+                return
             await self._teardown_socket()
+            self._down_reason = "after_cancel"
+            self._schedule_reconnect()
+
+    # ── warm spare ───────────────────────────────────────────────────────
+    def _schedule_spare(self) -> None:
+        if not self._warm_spare or self._closed:
+            return
+        if self._spare_ws is not None and self._spare_ws.state is State.OPEN:
+            return
+        if self._spare_task is not None and not self._spare_task.done():
+            return
+        self._spare_task = asyncio.create_task(self._open_spare())
+
+    async def _open_spare(self) -> None:
+        model = self._settings.model or "bulbul:v3"
+        url = f"{_WS_URL}?model={model}&send_completion_event=true"
+        try:
+            config = self._build_config()
+            ws = await asyncio.wait_for(
+                websocket_connect(
+                    url, additional_headers={"api-subscription-key": self._settings.api_key},
+                ),
+                timeout=min(_CONNECT_TIMEOUT_S, self._settings.timeout_seconds),
+            )
+            await ws.send(json.dumps({"type": "config", "data": config}))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a cancel then reconnects instead
+            logger.info("sarvam-tts: warm spare socket unavailable; cancel will reconnect")
+            return
+        if self._closed:
+            self._close_in_background(ws)
+            return
+        old, self._spare_ws = self._spare_ws, ws
+        self._spare_config = config
+        if old is not None:
+            self._close_in_background(old)
+
+    async def _promote_spare(self) -> bool:
+        """Make the warm spare the live socket; False when none is ready."""
+        spare = self._spare_ws
+        if spare is None or spare.state is not State.OPEN:
+            return False
+        self._spare_ws, spare_config, self._spare_config = None, self._spare_config, None
+        for task in (self._receive_task, self._keepalive_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._receive_task = None
+        self._keepalive_task = None
+        old, self._ws = self._ws, spare
+        if old is not None:
+            # Closing the old socket is what stops Sarvam rendering the
+            # cancelled reply; nobody needs to wait for its close handshake.
+            self._close_in_background(old)
+        self._last_config = spare_config
+        self._receive_task = asyncio.create_task(self._receive_loop())
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        try:
+            # Voice/language may have changed since the spare was configured.
+            await self._send_config()
+        except Exception:  # noqa: BLE001 — the next dispatch reconnects
+            logger.info("sarvam-tts: promoted spare rejected its config; reconnecting")
+            await self._teardown_socket()
+            self._down_reason = "after_cancel"
+            self._schedule_reconnect()
+            return True
+        self._down_reason = None
+        self._schedule_spare()
+        return True
+
+    def _close_in_background(self, ws) -> None:
+        async def _close() -> None:
+            try:
+                await ws.close()
+            except Exception:  # noqa: BLE001 — best-effort close
+                pass
+        task = asyncio.create_task(_close())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+
+    def _schedule_reconnect(self) -> None:
+        """Rebuild the socket in the background after a barge-in teardown so
+        the next reply doesn't pay the cold-connect handshake inline."""
+        if self._closed:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        try:
+            await self.connect()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — the next dispatch reconnects lazily
+            logger.info(
+                "sarvam-tts: background reconnect after cancel failed; the "
+                "next dispatch will reconnect"
+            )
 
     async def close(self) -> None:
         self._closed = True
         self._current_generation = None
         self._live_generations.clear()
+        for attr in ("_reconnect_task", "_spare_task"):
+            task = getattr(self, attr)
+            setattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001 — best-effort teardown
+                    pass
+        spare, self._spare_ws = self._spare_ws, None
+        if spare is not None:
+            try:
+                await spare.close()
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
         await self._teardown_socket()
 
     # ── internals ────────────────────────────────────────────────────────
@@ -147,14 +361,17 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
     def _build_config(self) -> dict:
         s = self._settings
         model = s.model or "bulbul:v3"
-        is_v3 = model.startswith("bulbul:v3")
+        v4 = is_v4_model(model)
+        is_v3 = v4 or model.startswith("bulbul:v3")
         allowed = _V3_PARAMS if is_v3 else _V2_PARAMS
+        if sarvam_accepts_loudness(model):
+            allowed = allowed | {"loudness"}
         params = dict(s.params or {})
 
         # Canonical language mapping shared with the REST implementation: bare
         # ISO codes expand to full locales ("en" → "en-IN") and the platform
         # Odia alias is applied. Sarvam 422-rejects the whole config message on
-        # an unsupported target_language_code (no audio at all), so anything
+        # an unsupported language_code (no audio at all), so anything
         # outside the supported set is normalized to en-IN — loudly, never
         # silently — mirroring the REST implementation's Latin-text fallback.
         language = to_provider_language("sarvam", s.language) or "en-IN"
@@ -170,7 +387,21 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         # it is never silently replaced here; only a MISSING speaker falls
         # back to the model default, and that fallback is logged.
         speaker = str(s.voice or "").strip().lower()
-        if not speaker:
+        if v4:
+            # v4-flash rejects v3 short names (400): a v3 voice maps to its
+            # reviewed persona for this language, or fails loudly — another
+            # speaker is never substituted.
+            try:
+                persona = v4_speaker(speaker, language)
+            except NoV4Equivalent as exc:
+                raise ProviderError(self.name, "invalid_input", str(exc)) from exc
+            if persona != speaker:
+                logger.debug(
+                    "sarvam-tts: %s speaker '%s' -> persona '%s' (%s)",
+                    model, speaker or "(default)", persona, language,
+                )
+            speaker = persona
+        elif not speaker:
             speaker = "shubh" if is_v3 else "anushka"
             logger.info(
                 "sarvam-tts: no speaker configured; using model default '%s' for %s",
@@ -178,15 +409,18 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             )
         config = {
             "model": model,
-            "target_language_code": language,
+            "language_code": language,
             "speaker": speaker,
             "speech_sample_rate": str(s.sample_rate),
             "output_audio_codec": codec,
         }
         if is_v3:
-            # v3 always preprocesses; the flag is not negotiable.
+            # v3 (and v4-flash) always preprocess; the flag is not negotiable.
             params["enable_preprocessing"] = True
 
+        # ``loudness`` is never sent at the API default of 1.0: unchanged
+        # audio, minimal config.
+        params = omit_default_loudness(params)
         ignored: list[str] = []
         for key, value in params.items():
             if value is None or key in ("send_completion_event",):
@@ -203,7 +437,14 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         return config
 
     async def _send_config(self) -> None:
-        await self._send({"type": "config", "data": self._build_config()})
+        # A config resend auto-flushes server-side — skipped when nothing
+        # changed on the current socket. Fresh sockets always send (the cache
+        # resets on connect/teardown).
+        config = self._build_config()
+        if config == self._last_config:
+            return
+        await self._send({"type": "config", "data": config})
+        self._last_config = config
 
     async def _receive_loop(self) -> None:
         ws = self._ws
@@ -230,8 +471,21 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         except Exception:
             logger.exception("sarvam-tts: receive loop failed")
         finally:
+            if self._receive_task is asyncio.current_task():
+                # connect() only spawns a new receive loop when the old one is
+                # gone; clearing here (not just on teardown) closes the race
+                # where a reconnect lands while this task is still finishing.
+                self._receive_task = None
+            if not self._closed and self._ws is ws:
+                # Only the LIVE socket's end matters: a socket replaced by a
+                # promoted spare ends here too and must not mark it down.
+                self._down_reason = "disconnected"
             if not self._closed:
                 await self._emit(TTSStreamEvent(kind="disconnected"))
+                # Whatever ended this socket (server idle-out, post-error
+                # close), rebuild it in the background so the next reply does
+                # not pay the cold handshake. Deduplicated inside.
+                self._schedule_reconnect()
 
     async def _handle_message(self, message: dict) -> None:
         kind = message.get("type")
@@ -262,6 +516,12 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
                 code if isinstance(code, int) else None, message_text
             )
             await self._emit_error(category, message_text[:200], generation_id=generation)
+            # Sarvam closes the socket right after an in-band error (observed
+            # live: 422 → close 1000). Drop the failed generation now so the
+            # close is not reported as a SECOND mid-generation failure; the
+            # receive loop's exit schedules the reconnect.
+            self._end_generation(generation)
+            self._current_generation = None
 
     async def _keepalive_loop(self) -> None:
         try:
@@ -270,6 +530,13 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
                 if self._ws is not None and self._ws.state is State.OPEN:
                     async with self._send_lock:
                         await self._ws.send(json.dumps({"type": "ping"}))
+                spare = self._spare_ws
+                if spare is not None and spare.state is State.OPEN:
+                    try:
+                        await spare.send(json.dumps({"type": "ping"}))
+                    except ConnectionClosed:
+                        self._spare_ws = None
+                        self._schedule_spare()
         except (asyncio.CancelledError, ConnectionClosed):
             pass
 
@@ -279,6 +546,7 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
                 task.cancel()
         self._receive_task = None
         self._keepalive_task = None
+        self._last_config = None
         ws, self._ws = self._ws, None
         if ws is not None:
             try:

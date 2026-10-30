@@ -21,6 +21,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Mandatory secret-leakage guardrail at the logging boundary: no handler can
+# write a provider credential, whichever library raised.
+from shared.logging_utils import install_log_redaction  # noqa: E402
+
+install_log_redaction()
 logger = logging.getLogger("backend")
 
 
@@ -45,11 +50,16 @@ async def lifespan(app: FastAPI):
         _run_migrations()
     await Mongo.connect()
     await create_indexes()
-    if settings.enable_database_seed:
+    if settings.startup_seed_enabled:
         # Idempotent base seed only (roles, permissions, super admin, catalogs).
         from backend.seeds.base_seed import run_base_seed
 
         run_base_seed()
+    elif settings.enable_database_seed:
+        logger.info(
+            "ENABLE_DATABASE_SEED is ignored in production — initialise the database "
+            "explicitly with `python -m backend.cli init-production`"
+        )
 
     # Knowledge ingestion is a Postgres poll queue — without a running worker
     # every upload stays "queued" forever. Embed the worker here unless a
@@ -99,10 +109,13 @@ def create_app() -> FastAPI:
         audit,
         auth,
         billing,
+        bot_transfer,
         bots,
         catalog,
         channels,
+        compliance,
         conversations,
+        customer_context,
         exports,
         integrations,
         intents,
@@ -110,11 +123,14 @@ def create_app() -> FastAPI:
         knowledge_documents,
         knowledge_review,
         master_data,
+        natural_conversation,
         platform,
         prompts,
+        pronunciation,
         providers,
         releases,
         reports,
+        runtime_context,
         telephony,
         tenants,
         testing,
@@ -127,10 +143,12 @@ def create_app() -> FastAPI:
 
     prefix = "/api/v1"
     for module in (
-        auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
+        auth, users, tenants, billing, bot_transfer, bots, catalog, knowledge, knowledge_documents,
         knowledge_review, prompts, intents, apis, workflows, channels, testing, releases,
-        conversations, exports, platform, integrations, audit, analytics, reports, voice_sessions, telephony,
-        master_data, providers, usage, voice_clones,
+        conversations, customer_context, runtime_context, exports, platform, compliance, integrations,
+        audit, analytics, reports,
+        voice_sessions, telephony, master_data, providers, usage, voice_clones,
+        pronunciation, natural_conversation,
     ):
         app.include_router(module.router, prefix=prefix)
 

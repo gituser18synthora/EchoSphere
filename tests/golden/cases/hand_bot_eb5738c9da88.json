@@ -1,0 +1,136 @@
+{
+ "bot": "bot_eb5738c9da88",
+ "cases": [
+  {
+   "bot": "bot_eb5738c9da88",
+   "name": "0-07 female: full happy path",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan pay kar dunga"
+    },
+    {
+     "text": "UPI"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "theek hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "wf_5ca4148162a7"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aapke profile par ek loan overdue dikh raha hai jiska total amount ₹2000 hai, aur ye 5 dino se overdue chal raha hai. Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi bhi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan pay kar dunga",
+     "signal": "payment_intent",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:0 to 07 collection call (Female)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_ptype"
+     ],
+     "reply": "Bahut achha! Kya aap apna poora overdue amount pay karenge, ya partial payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "UPI",
+     "signal": "payment_intent",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:0 to 07 collection call (Female)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ptype"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:0 to 07 collection call (Female)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ptype"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "theek hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:0 to 07 collection call (Female)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ptype"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

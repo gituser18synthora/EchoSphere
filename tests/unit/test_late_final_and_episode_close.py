@@ -1,0 +1,360 @@
+"""Finals that arrive after their turn, and a Smart Turn close that is still
+waiting for its own final.
+
+Live 2026-10-23, after 5f82302bb (demo, SARVAM_REALTIME_STT=false):
+
+- cv_2d1119054a92 (Haier): the caller said "haan. call karke bahut ulta
+  seedha bola" over two VAD episodes. The flush retry recovered "call" from
+  the first; Smart Turn then closed the second episode with a confident
+  verdict and the brain dispatched "…call" at once because SOMETHING was
+  buffered — the second episode's own final ("karke bahut ulta seedha bola")
+  landed 36 ms later and ran as a separate turn ("sorry, I did not get
+  that"). A short-circuit needs the final of the CURRENT speech episode;
+  older buffered text waits for it, bounded.
+- cv_0f224432545d (MDND): finals arrived with no VAD at all for a short
+  "haan ji, haan" over the bot's audio; the turn they opened ended on
+  pipecat's transcript fallback timer, the strategy still reported
+  ``endpoint_by=smart_turn`` and the brain short-circuited on the PREVIOUS
+  turn's verdict (p 0.71). A verdict belongs to the turn it was computed in.
+- A final delivered long after its turn closed, with no caller audio seen
+  since by the VAD or the gate, is the provider's old speech: it is logged
+  (``stt_final_late``) and dropped instead of answering a newer question.
+- The bounded turn-stop never closes a turn EMPTY before the Sarvam
+  adapter's flush retry (2 x 0.65 s) could still deliver the final; the
+  caller's pause window stays the outer bound.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+from pipecat.clocks.system_clock import SystemClock
+from pipecat.frames.frames import (
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
+from pipecat.metrics.metrics import TurnMetricsData
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
+from pipecat.utils.asyncio.task_manager import TaskManager
+
+import voice_runtime.brain as brain_module
+from tests.unit.test_smart_turn_short_circuit import _dispatched, _vad_stop, _verdict, make_brain
+from tests.unit.test_turn_endpointing import transcript
+from voice_runtime.smart_turn import EndpointReportingSmartTurnStrategy
+from voice_runtime.turn_metrics import TurnLatencyTracker
+from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+
+async def _speech(brain, tracker):
+    tracker.mark_speech_started()
+    await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+
+class _Gate:
+    """Caller-audio gate stub: when caller audio last passed it."""
+
+    def __init__(self):
+        self.last = None
+
+    def speech_snapshot(self):
+        return {"snr_db": 25.0, "during_bot_audio": False}
+
+    def stats(self):
+        return {"opens": 1, "suppressed_ms": 0.0}
+
+    def last_speech_at(self):
+        return self.last
+
+
+class TestEpisodeFinal:
+    @pytest.mark.asyncio
+    async def test_a_confident_close_waits_for_its_own_episodes_final(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.4)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)                         # episode 1 ("haan" — flush answered late)
+        await brain.process_frame(transcript("call"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await _vad_stop(brain, tracker)                         # episode 2: its final is still in flight
+        _verdict(tracker, 0.978)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+        assert dispatched == [] and brain._smart_turn_closed is True   # "call" alone is not the turn
+        await brain.process_frame(transcript("करके बहुत उल्टा सीधा बोला।"), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "call करके बहुत उल्टा सीधा बोला।"   # one turn, one reply
+        assert brain._recorder.event("smart_turn_short_circuit")["final_after_close"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_final_inside_the_stop_window_dispatches_on_the_verdict(self):
+        # Live Manappuram 2026-10-26 (cv_0bc0c91206ce turn 3): Sarvam's final
+        # landed 110 ms before the VAD stop (stop_secs 0.25 — the caller had
+        # already stopped), was buffered as a mid-utterance segment, and the
+        # COMPLETE verdict (p 0.97) at +176 ms still sat out the 1.5 s wait:
+        # dispatch at +1,681 ms. It is this episode's final.
+        brain, tracker, dispatched = make_brain()          # the real 1.5 s wait
+        await _speech(brain, tracker)
+        await asyncio.sleep(0.2)                            # the caller speaks
+        await brain.process_frame(transcript("दो की रख लो।"), FrameDirection.DOWNSTREAM)
+        assert "stt_mid_utterance_segment_buffered" in brain._recorder.event_kinds()
+        await asyncio.sleep(0.11)
+        await _vad_stop(brain, tracker)                     # stop window 0.25 s: final was inside it
+        await asyncio.sleep(0.05)
+        _verdict(tracker, 0.972)
+        closed_at = time.monotonic()
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "दो की रख लो।"
+        assert dispatched[0][1] - closed_at < 0.1           # on the verdict, not 1.5 s later
+        event = brain._recorder.event("smart_turn_short_circuit")
+        assert 90 <= event["final_before_stop_ms"] <= 250
+        assert event["final_after_close"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_final_the_caller_kept_speaking_past_still_waits(self, monkeypatch):
+        # A flush while the caller is mid-sentence: they speak on for longer
+        # than the stop window, so the rest of the sentence is still in flight
+        # when the verdict closes the turn — it must not be cut off.
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.4)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await brain.process_frame(transcript("मैंने customer को call"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.4)                            # ...and kept speaking 400 ms
+        await _vad_stop(brain, tracker)
+        _verdict(tracker, 0.97)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+        assert dispatched == [] and brain._smart_turn_closed is True
+        await brain.process_frame(transcript("किया था।"), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "मैंने customer को call किया था।"
+        assert brain._recorder.event("smart_turn_short_circuit")["final_after_close"] is True
+
+    @pytest.mark.asyncio
+    async def test_without_a_stop_window_a_pre_stop_final_keeps_the_old_rule(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.3)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await brain.process_frame(transcript("हाँ जी"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+        tracker.mark_speech_stopped()
+        await brain.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)  # no stop_secs
+        _verdict(tracker, 0.95)
+        closed_at = time.monotonic()
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][1] - closed_at >= 0.25         # the bounded wait, as before
+
+    @pytest.mark.asyncio
+    async def test_buffered_text_still_dispatches_when_no_final_ever_comes(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.3)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        await brain.process_frame(transcript("call"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await _vad_stop(brain, tracker)
+        _verdict(tracker, 0.95)
+        closed_at = time.monotonic()
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "call"
+        assert 0.25 <= dispatched[0][1] - closed_at < 0.6      # the bounded wait, not forever
+
+    @pytest.mark.asyncio
+    async def test_the_previous_turns_verdict_never_short_circuits_a_vad_less_turn(self):
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        _verdict(tracker, 0.71)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)                    # turn 1: a real verdict
+        dispatched.clear()
+        # Turn 2 opens from a transcript the VAD never saw (bot echo, quiet
+        # "haan ji"): no VAD frames, no new verdict.
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert tracker.smart_turn_probability is None          # marks reset for the new turn
+        await brain.process_frame(transcript("हाँ जी, हाँ।"), FrameDirection.DOWNSTREAM)
+        tracker.mark_endpoint_by("transcript_timeout")          # what the strategy now reports
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        events = [k for k, _ in brain._recorder.events if k == "smart_turn_short_circuit"]
+        assert len(events) == 1                                 # only turn 1's
+
+
+class TestLateFinal:
+    @pytest.mark.asyncio
+    async def test_old_speech_after_the_window_is_logged_and_dropped(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.2)
+        brain, tracker, dispatched = make_brain()
+        gate = _Gate()
+        brain._audio_gate = gate
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        gate.last = time.monotonic()
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        dispatched.clear()
+        await asyncio.sleep(0.35)                               # past the window, nothing heard since
+        await brain.process_frame(transcript("पुरानी बात जो कभी नहीं पूछी गई"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.3)
+        assert dispatched == [] and brain._pending_segments == []
+        late = brain._recorder.event("stt_final_late")
+        assert late["delay_ms"] >= 200 and late["words"] == 7
+        assert tracker.counts.get("late_finals_dropped") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_final_inside_the_window_still_runs(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.5)
+        brain, tracker, dispatched = make_brain()
+        brain._audio_gate = _Gate()
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)   # closed empty
+        await asyncio.sleep(0.1)
+        await brain.process_frame(transcript("हाँ बोलिए।"), FrameDirection.DOWNSTREAM)     # the retry's final
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "हाँ बोलिए।"
+        assert "stt_final_late" not in brain._recorder.event_kinds()
+
+    @pytest.mark.asyncio
+    async def test_speech_the_gate_saw_after_the_close_is_never_late(self, monkeypatch):
+        # The "hmm" case: Silero stays shut, the gate opens, Sarvam segments
+        # it on its own seconds later — that IS the caller, not old speech.
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.2)
+        brain, tracker, dispatched = make_brain()
+        gate = _Gate()
+        brain._audio_gate = gate
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        dispatched.clear()
+        await asyncio.sleep(0.35)
+        gate.last = time.monotonic()                            # caller audio passed the gate just now
+        await brain.process_frame(transcript("हम्म।"), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert "stt_final_late" not in brain._recorder.event_kinds()
+
+
+# ── the strategy reports a verdict only for the turn it was computed in ─────
+
+class _Analyzer:
+    params = type("P", (), {"stop_secs": 0.7})()
+
+    def set_sample_rate(self, rate):
+        pass
+
+    def update_vad_start_secs(self, secs):
+        pass
+
+    def append_audio(self, audio, is_speech):
+        return EndOfTurnState.INCOMPLETE
+
+    async def analyze_end_of_turn(self):
+        return EndOfTurnState.COMPLETE, TurnMetricsData(
+            processor="BaseSmartTurn", is_complete=True, probability=0.9, e2e_processing_time_ms=80.0)
+
+    def clear(self):
+        pass
+
+    async def cleanup(self):
+        pass
+
+
+class TestStrategyVerdictScope:
+    @pytest.mark.asyncio
+    async def test_no_verdict_in_this_turn_is_not_a_smart_turn_close(self, monkeypatch):
+        tracker = TurnLatencyTracker(session_id="s")
+        strategy = EndpointReportingSmartTurnStrategy(turn_analyzer=_Analyzer(), wait_for_transcript=True, tracker=tracker)
+        await strategy.setup(FrameProcessorSetup(
+            clock=SystemClock(), task_manager=TaskManager(), audio_in_sample_rate=8000,
+            audio_out_sample_rate=8000, pipeline_worker=None))
+        triggered = []
+
+        async def _trigger(self_inner, **kwargs):
+            triggered.append(True)
+
+        async def _push(frame, direction=None):
+            pass
+
+        monkeypatch.setattr(strategy, "push_frame", _push)
+        monkeypatch.setattr(type(strategy).__mro__[1], "trigger_user_turn_stopped", _trigger)
+        try:
+            await strategy.handle_user_turn_started()
+            await strategy.trigger_user_turn_stopped()          # transcript fallback: no verdict
+            assert tracker.endpoint_by == "transcript_timeout"
+            tracker.mark_speech_started()
+            await strategy.handle_user_turn_started()
+            await strategy._handle_prediction_result(TurnMetricsData(
+                processor="BaseSmartTurn", is_complete=True, probability=0.93, e2e_processing_time_ms=80.0))
+            await strategy.trigger_user_turn_stopped()
+            assert tracker.endpoint_by == "smart_turn" and tracker.verdict_at is not None
+            tracker.mark_speech_started()
+            await strategy.handle_user_turn_started()           # the flag resets per turn
+            await strategy.trigger_user_turn_stopped()
+            assert tracker.endpoint_by == "transcript_timeout"
+        finally:
+            await strategy.cleanup()
+
+
+# ── empty close never pre-empts the adapter's retry ─────────────────────────
+
+class TestEmptyCloseOrdering:
+    async def _run(self, monkeypatch, *, pause_window: float, retry_window: float | None, ttfs: float = 0.5):
+        tracker = TurnLatencyTracker(session_id="s")
+        strategy = FinalBoundedTurnStopStrategy(
+            user_speech_timeout=pause_window, wait_for_transcript=True, tracker=tracker,
+            stt_retry_window=retry_window)
+        await strategy.setup(FrameProcessorSetup(
+            clock=SystemClock(), task_manager=TaskManager(), audio_in_sample_rate=8000,
+            audio_out_sample_rate=8000, pipeline_worker=None))
+        triggered: list[float] = []
+        t0 = time.monotonic()
+
+        async def _trigger(self_inner, **kwargs):
+            triggered.append(time.monotonic() - t0)
+
+        async def _push(frame, direction=None):
+            pass
+
+        monkeypatch.setattr(strategy, "push_frame", _push)
+        monkeypatch.setattr(type(strategy).__mro__[1], "trigger_user_turn_stopped", _trigger)
+        strategy._stt_timeout = ttfs
+        await strategy.handle_user_turn_started()
+        try:
+            await strategy.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.25, timestamp=time.time()))
+            await asyncio.sleep(max(pause_window, retry_window or 0) + 0.3)
+        finally:
+            await strategy.cleanup()
+        return triggered, strategy
+
+    @pytest.mark.asyncio
+    async def test_stt_wait_is_floored_at_the_retry_window_within_the_pause_window(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.45, retry_window=1.5)
+        assert strategy._stt_timeout == pytest.approx(0.7)       # min(1.5, 0.45 + 0.25)
+        assert len(triggered) == 1 and triggered[0] >= 0.45 - 0.02   # closes on the pause window, never earlier
+
+    @pytest.mark.asyncio
+    async def test_a_longer_pause_window_still_bounds_the_wait(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.8, retry_window=0.6)
+        assert strategy._stt_timeout == pytest.approx(0.6)       # the retry window itself
+        assert len(triggered) == 1 and 0.78 <= triggered[0] <= 1.1
+
+    @pytest.mark.asyncio
+    async def test_without_a_retry_window_nothing_changes(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.45, retry_window=None)
+        assert strategy._stt_timeout == pytest.approx(0.5)
+        assert len(triggered) == 1

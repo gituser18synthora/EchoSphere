@@ -1,0 +1,321 @@
+[
+ {
+  "id": "pickup_hinglish_handover",
+  "customer": "Maine device already de diya hai.",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_hinglish_done",
+  "customer": "Pickup ho chuka hai.",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_courier_yesterday",
+  "customer": "Kal courier wala le gaya.",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_english",
+  "customer": "Device already collected.",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_phone_handover",
+  "customer": "Phone pehle hi handover kar diya.",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_hindi",
+  "customer": "डिवाइस कल दे दिया था, अब मेरे पास नहीं है।",
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_request",
+  "customer": "Pickup karwa do, abhi router mere paas hai.",
+  "expected": {},
+  "allowed": {
+   "already_picked_up": [
+    "No",
+    null
+   ]
+  },
+  "rationale": "A pickup request must never be marked collected; conservative abstention is allowed without a literal denial."
+ },
+ {
+  "id": "pickup_future",
+  "customer": "कल engineer को device दे दूँगा।",
+  "expected": {},
+  "allowed": {
+   "already_picked_up": [
+    null,
+    "No"
+   ]
+  },
+  "note": "A promise to hand the device over tomorrow may be read as 'not collected yet' (No); it must never be Yes."
+ },
+ {
+  "id": "pickup_denied",
+  "customer": "Pickup nahi hua hai.",
+  "expected": {
+   "already_picked_up": "No"
+  }
+ },
+ {
+  "id": "pickup_status_only",
+  "customer": "Pickup hua kya? Mujhe pata nahi.",
+  "expected": {
+   "already_picked_up": null
+  }
+ },
+ {
+  "id": "pickup_uncertain",
+  "customer": "Shayad courier le gaya hoga, confirm nahi hai.",
+  "expected": {
+   "already_picked_up": null
+  }
+ },
+ {
+  "id": "pickup_disconnected_only",
+  "customer": "Connection disconnect ho gaya hai.",
+  "expected": {
+   "already_picked_up": null
+  }
+ },
+ {
+  "id": "pickup_unrelated_parcel",
+  "customer": "Courier ne kapdon ka parcel le liya, router yahin hai.",
+  "expected": {
+   "already_picked_up": "No"
+  }
+ },
+ {
+  "id": "pickup_corrected_no",
+  "customer": "De diya tha—nahi, doosra parcel tha, router abhi mere paas hai.",
+  "expected": {
+   "already_picked_up": "No"
+  }
+ },
+ {
+  "id": "pickup_corrected_yes",
+  "turns": [
+   {
+    "role": "user",
+    "text": "Abhi nahi liya."
+   },
+   {
+    "role": "user",
+    "text": "Sorry, mummy se poochha, engineer kal router le gaya tha."
+   }
+  ],
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "pickup_bot_only",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "Your device is already collected."
+   },
+   {
+    "role": "user",
+    "text": "Mujhe maloom nahi."
+   }
+  ],
+  "expected": {
+   "already_picked_up": null
+  }
+ },
+ {
+  "id": "pickup_context_yes",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "क्या आप device पहले ही engineer को दे चुके हैं?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ, दे दिया।"
+   }
+  ],
+  "expected": {
+   "already_picked_up": "Yes"
+  }
+ },
+ {
+  "id": "address_pickup_date_unrelated",
+  "customer": "Address badal do, naya pata baad mein bataunga. Pickup kal karna.",
+  "expected": {
+   "already_picked_up": null
+  }
+ },
+ {
+  "id": "address_ambiguous_status",
+  "customer": "Address update hua kya? Mujhe yaad nahi request ki thi ya nahi.",
+  "expected": {}
+ },
+ {
+  "id": "refund_hinglish",
+  "customer": "Mujhe mere paise wapas chahiye.",
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_hindi",
+  "customer": "मुझे रिफंड चाहिए।",
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_return_payment",
+  "customer": "Mera payment return kar do.",
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_english",
+  "customer": "I want my money back.",
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_when",
+  "customer": "Refund kab milega?",
+  "expected": {
+   "refund_status": "status_inquiry",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_existing_request",
+  "customer": "Refund request pehle di thi, status kya hai?",
+  "expected": {
+   "refund_status": "status_inquiry",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_received",
+  "customer": "Paise wapas mil gaye, refund aa gaya.",
+  "expected": {
+   "refund_status": "reported_refunded",
+   "refund_requested": "No"
+  }
+ },
+ {
+  "id": "refund_not_received_request",
+  "customer": "Refund nahi mila, paise wapas karo.",
+  "expected": {
+   "refund_requested": "Yes"
+  },
+  "allowed": {
+   "refund_status": [
+    "requested",
+    "status_inquiry"
+   ]
+  },
+  "note": "A complaint plus a demand in one breath: either status is acceptable; the derived refund_requested must be Yes."
+ },
+ {
+  "id": "refund_withdrawn",
+  "customer": "Refund nahi chahiye, request cancel kar do.",
+  "expected": {
+   "refund_status": "withdrawn",
+   "refund_requested": "No"
+  }
+ },
+ {
+  "id": "refund_retracted",
+  "customer": "Paise wapas karo—nahi, refund mat karna, request cancel kar do.",
+  "expected": {
+   "refund_status": "withdrawn",
+   "refund_requested": "No"
+  }
+ },
+ {
+  "id": "refund_payment_only",
+  "customer": "Maine bill ka payment kar diya hai.",
+  "expected": {}
+ },
+ {
+  "id": "refund_hypothetical",
+  "customer": "Agar connection cancel karu toh refund milega kya? Bas policy pooch raha hoon.",
+  "expected": {},
+  "allowed": {
+   "refund_status": [
+    null,
+    "status_inquiry"
+   ],
+   "refund_requested": [
+    null,
+    "Yes"
+   ]
+  },
+  "note": "A conditional refund question may be read as a status inquiry; it must never be 'requested'."
+ },
+ {
+  "id": "refund_bot_offer_only",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "You can request a refund."
+   },
+   {
+    "role": "user",
+    "text": "Mujhe abhi kuch decide nahi karna."
+   }
+  ],
+  "expected": {}
+ },
+ {
+  "id": "refund_approved_not_received",
+  "customer": "Refund approve ho gaya bola tha, ab kab milega?",
+  "expected": {
+   "refund_status": "status_inquiry",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "refund_another_after_received",
+  "customer": "Pehle wale paise mil gaye, lekin is baar ke extra charge ka refund chahiye.",
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "all_three_independent",
+  "customer": "Device already collected. Address already updated hai. I want my money back.",
+  "expected": {
+   "already_picked_up": "Yes",
+   "refund_status": "requested",
+   "refund_requested": "Yes"
+  }
+ },
+ {
+  "id": "no_mentions",
+  "customer": "अभी busy हूँ, बाद में बात करेंगे।",
+  "expected": {}
+ }
+]

@@ -20,6 +20,9 @@ pytestmark = pytest.mark.integration
 
 API = "/api/v1"
 _SUFFIX = uuid.uuid4().hex[:8]
+# A per-run number so voice tests never claim a demo-data or concurrent-run number.
+_TEST_NUMBER = "+1999" + str(int(_SUFFIX, 16))[:7].zfill(7)
+_TEST_NUMBER_2 = "+1998" + str(int(_SUFFIX, 16))[:7].zfill(7)
 
 
 @pytest.fixture(scope="module")
@@ -70,11 +73,34 @@ def other_admin():
     return _bearer("alex.rivera@aurexion.com")  # different-org context (super admin)
 
 
+def _enabled_language() -> str:
+    """Any currently-enabled platform language (shared dev DB is user-curated,
+    so a hardcoded 'en-US' can be disabled at any time — never assume it)."""
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import SupportedLanguage
+
+    session = get_sessionmaker()()
+    try:
+        codes = session.scalars(
+            select(SupportedLanguage.code).where(SupportedLanguage.enabled.is_(True))
+        ).all()
+        for preferred in ("en-US", "en-IN", "hi-IN"):
+            if preferred in codes:
+                return preferred
+        assert codes, "no enabled platform language to create a test bot with"
+        return codes[0]
+    finally:
+        session.close()
+
+
 @pytest.fixture(scope="module")
 def test_bot(client, tenant_admin):
     """A dedicated tn-001 bot, forced to published so activation paths work."""
     created = _data(client.post(f"{API}/bots", headers=tenant_admin, json={
-        "name": f"Channel Test Bot {_SUFFIX}", "useCase": "channels", "languages": ["en-US"],
+        "name": f"Channel Test Bot {_SUFFIX}", "useCase": "channels",
+        "languages": [_enabled_language()],
     }))
     bot_id = created["id"]
 
@@ -119,6 +145,9 @@ def _purge_bot(bot_id: str) -> None:
         for table in ("channel_configs", "voice_bot_settings", "voice_bot_readiness",
                       "bot_languages", "workflows", "phone_numbers", "prompts"):
             conn.execute(sa_text(f"DELETE FROM `{table}` WHERE bot_id = :b"), {"b": bot_id})
+        # released numbers have bot_id NULL, so clear this run's numbers by value too
+        conn.execute(sa_text("DELETE FROM phone_numbers WHERE number IN (:n1, :n2)"),
+                     {"n1": _TEST_NUMBER, "n2": _TEST_NUMBER_2})
         conn.execute(sa_text("DELETE FROM voice_bots WHERE id = :b"), {"b": bot_id})
 
 
@@ -253,7 +282,7 @@ def test_activate_deactivate_cycle(client, tenant_admin, test_bot):
 def test_activate_requires_published_bot(client, tenant_admin):
     """Voice/WhatsApp/SMS need a published bot before going live."""
     draft = _data(client.post(f"{API}/bots", headers=tenant_admin, json={
-        "name": f"Draft Bot {_SUFFIX}", "useCase": "x", "languages": ["en-US"]}))
+        "name": f"Draft Bot {_SUFFIX}", "useCase": "x", "languages": [_enabled_language()]}))
     draft_id = draft["id"]
     try:
         _data(client.put(f"{API}/bots/{draft_id}/channels/sms", headers=tenant_admin, json={
@@ -304,8 +333,8 @@ def test_unauthorized_user_cannot_manage(client, tenant_user, test_bot):
     assert client.post(f"{API}/bots/{bot_id}/channels/web/test", headers=tenant_user).status_code == 403
     assert client.post(f"{API}/bots/{bot_id}/channels/web/deactivate", headers=tenant_user).status_code == 403
     assert client.delete(f"{API}/bots/{bot_id}/channels/web", headers=tenant_user).status_code == 403
-    # ...but a tenant member may still read.
-    assert client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_user).status_code == 200
+    # The Channels section is entirely off-limits to tenant users — reads too.
+    assert client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_user).status_code == 403
 
 
 def test_cross_tenant_access_denied(client, test_bot):
@@ -345,6 +374,90 @@ def test_archive_channel(client, tenant_admin, test_bot):
     rows = _data(client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_admin))
     mobile = next(r for r in rows if r["type"] == "mobile")
     assert mobile["status"] == "not_configured"  # archived row excluded
+
+
+def test_reconfigure_after_archive_revives_channel(client, tenant_admin, test_bot):
+    """Re-creating an archived channel must revive its row, not 409 on the
+    (bot, type) unique key that the soft-deleted row still occupies."""
+    bot_id = test_bot["id"]
+    config = {"platform": "android", "bundleIds": ["com.example.revived"]}
+    first = _data(client.put(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin,
+                             json={"config": config}))
+    _data(client.delete(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin))
+
+    response = client.put(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin,
+                          json={"config": config})
+    assert response.status_code == 200, response.json()
+    revived = _data(response)
+    assert revived["id"] == first["id"]          # same row, not a duplicate
+    assert revived["status"] == "configured"
+    assert revived["enabled"] is True
+
+
+def test_reconfigure_voice_after_archive(client, tenant_admin, test_bot):
+    """The voice case that surfaced the bug: archive, then re-add the number."""
+    bot_id = test_bot["id"]
+    config = {"phoneNumber": _TEST_NUMBER, "telephonyProvider": "freeswitch"}
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": config}))
+    _data(client.delete(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin))
+
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import PhoneNumber
+
+    session = get_sessionmaker()()
+    try:
+        released = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER))
+        assert released is not None
+        assert released.bot_id is None
+        assert released.tenant_id is None
+        assert released.status == "available"
+    finally:
+        session.close()
+
+    response = client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                          json={"config": config})
+    assert response.status_code == 200, response.json()
+    assert _data(response)["config"]["phoneNumber"] == _TEST_NUMBER
+
+
+def test_changing_voice_number_releases_old_number_globally(
+    client, tenant_admin, test_bot,
+):
+    """Removing a number from a bot must clear both bot and tenant ownership."""
+    bot_id = test_bot["id"]
+    original = {"phoneNumber": _TEST_NUMBER, "telephonyProvider": "freeswitch"}
+    replacement = {"phoneNumber": _TEST_NUMBER_2, "telephonyProvider": "freeswitch"}
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": original}))
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": replacement}))
+
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import PhoneNumber
+
+    session = get_sessionmaker()()
+    try:
+        released = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER))
+        assert released is not None
+        assert released.bot_id is None
+        assert released.tenant_id is None
+        assert released.status == "available"
+
+        claimed = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER_2))
+        assert claimed is not None
+        assert claimed.bot_id == bot_id
+        assert claimed.tenant_id == "tn-001"
+        assert claimed.status == "assigned"
+    finally:
+        session.close()
 
 
 # ── Audit ───────────────────────────────────────────────────────────────────

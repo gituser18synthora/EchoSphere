@@ -13,10 +13,15 @@ def guard_hard_delete() -> None:
         raise HardDeleteBlockedError()
 
 
-def soft_delete(row, user: User | None) -> None:
+def soft_delete(row, user: User | None, *, keep_status: bool = False) -> None:
+    """Flag ``row`` deleted. By default the row's ``status`` also becomes
+    ``archived``; pass ``keep_status=True`` for rows whose lifecycle status must
+    survive as history (a deleted bot's tombstone keeps saying what it was)."""
     row.is_deleted = True
     row.deleted_at = datetime.now(timezone.utc)
     row.deleted_by = user.id if user else None
+    if keep_status:
+        return
     if hasattr(row, "status") and getattr(row, "status", None) not in ("archived",):
         row.status = "archived"
 

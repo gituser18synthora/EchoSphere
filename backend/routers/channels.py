@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.bot_lifecycle import assert_bot_operational
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
@@ -46,6 +47,7 @@ from shared.models import (
     VoiceBot,
     VoiceBotSetting,
 )
+from shared.readiness import refresh_readiness
 from shared.telephony import SUPPORTED_PROVIDERS
 
 router = APIRouter(tags=["Channels"])
@@ -256,6 +258,22 @@ def _get_channel(db: Session, bot: VoiceBot, channel_type: str) -> ChannelConfig
     )
 
 
+def _get_archived_channel(db: Session, bot: VoiceBot, channel_type: str) -> ChannelConfig | None:
+    """The archived row for this (bot, type), if any.
+
+    Archiving is a soft delete, so the row keeps occupying the
+    `uq_channel_bot_type` unique key. Re-configuring the channel must revive
+    that row — inserting a second one raises a duplicate-key IntegrityError,
+    which the global handler turns into an opaque 409.
+    """
+    return db.scalar(
+        select(ChannelConfig).where(
+            ChannelConfig.bot_id == bot.id, ChannelConfig.type == channel_type,
+            ChannelConfig.is_deleted.is_(True),
+        )
+    )
+
+
 def _binding(db: Session, bot: VoiceBot) -> dict:
     """What this channel routes to: tenant, bot, published config, prompt,
     knowledge access and language/voice settings."""
@@ -263,7 +281,7 @@ def _binding(db: Session, bot: VoiceBot) -> dict:
     prompt_published = db.scalar(
         select(func.count()).select_from(Prompt).where(
             Prompt.bot_id == bot.id, Prompt.type == "system",
-            Prompt.state == "published", Prompt.is_deleted.is_(False),
+            Prompt.published_version.isnot(None), Prompt.is_deleted.is_(False),
         )
     )
     kb_count = db.scalar(
@@ -296,13 +314,20 @@ def _binding(db: Session, bot: VoiceBot) -> dict:
 
 
 def _release_phone_number(db: Session, bot: VoiceBot, config: dict | None) -> None:
-    """Unassign the channel's phone number if it is assigned to this bot."""
+    """Return this bot's channel number to the global available pool.
+
+    A tenant owns a number only while one of its bots owns the corresponding
+    voice channel.  Keeping ``tenant_id`` after clearing ``bot_id`` strands an
+    otherwise available number in the old tenant and prevents another tenant
+    from claiming it.
+    """
     number = (config or {}).get("phoneNumber")
     if not number:
         return
     row = _find_phone_number(db, number)
     if row is not None and row.bot_id == bot.id:
         row.bot_id = None
+        row.tenant_id = None
         row.status = "available"
 
 
@@ -340,24 +365,29 @@ def _assign_phone_number(db: Session, bot: VoiceBot, config: dict, user: User) -
     if row.tenant_id and row.tenant_id != bot.tenant_id:
         raise ApiError("This phone number is already assigned to another channel.", 409,
                        errors=[{"field": "phoneNumber", "message": "Number already in use."}])
+    if not row.is_active and row.bot_id != bot.id:
+        # New claims on a deactivated number are rejected; a bot re-saving the
+        # channel that already holds the number keeps working (deactivation
+        # must never break an existing deployment).
+        raise ApiError("This phone number is deactivated and cannot take new "
+                       "assignments. Ask a platform admin to activate it.", 409,
+                       errors=[{"field": "phoneNumber", "message": "Number is inactive."}])
     row.tenant_id = bot.tenant_id
     row.bot_id = bot.id
     row.status = "assigned"
     row.provider = config.get("telephonyProvider") or row.provider
     row.updated_by = user.id
+    if row.is_deleted:
+        # Claiming a soft-deleted row must undelete it: inbound routing resolves
+        # numbers with is_deleted = false, so leaving the flag set would save a
+        # channel that passes its test but drops every real call.
+        row.is_deleted = False
+        row.deleted_at = None
+        row.deleted_by = None
 
 
 def _refresh_readiness(db: Session, bot: VoiceBot) -> None:
-    live_count = db.scalar(
-        select(func.count()).select_from(ChannelConfig).where(
-            ChannelConfig.bot_id == bot.id,
-            ChannelConfig.is_deleted.is_(False),
-            ChannelConfig.status.in_(["live", "configured"]),
-        )
-    )
-    for item in bot.readiness_items:
-        if item.item_key == "r6":
-            item.done = bool(live_count)
+    refresh_readiness(db, bot, keys=("r6",))
 
 
 # ── Read endpoints ────────────────────────────────────────────────────────────
@@ -365,7 +395,9 @@ def _refresh_readiness(db: Session, bot: VoiceBot) -> None:
 
 @router.get("/bots/{bot_id}/channels")
 def list_bot_channels(
-    bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    bot_id: str,
+    user: User = Depends(require_permission("manage_channels")),
+    db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
     rows = db.scalars(
@@ -391,7 +423,8 @@ def list_bot_channels(
 @router.get("/bots/{bot_id}/channels/{channel_type}")
 def get_bot_channel(
     bot_id: str, channel_type: str,
-    user: User = Depends(get_current_user), db: Session = Depends(get_db),
+    user: User = Depends(require_permission("manage_channels")),
+    db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
     row = _get_channel(db, bot, channel_type)
@@ -423,13 +456,19 @@ def upsert_channel(
     server-derived: a saved channel is `configured` until a connection test
     promotes it to `live` (or demotes it to `failed`)."""
     bot = _bot_checked(db, bot_id, user)
+    # Saving a channel claims phone numbers and re-arms webhooks; a parked bot
+    # keeps its channels exactly as they were until it is restored.
+    assert_bot_operational(bot, action="edit its channels")
     if channel_type not in CHANNEL_TYPES:
         raise NotFoundError("Channel type")
     config = _validate_config(channel_type, body.config or {})
 
     row = _get_channel(db, bot, channel_type)
     created = row is None
-    previous_config = dict(row.config or {}) if row else {}
+    # An archived channel still holds the (bot, type) unique key, so a re-create
+    # revives it instead of inserting a colliding row.
+    archived = _get_archived_channel(db, bot, channel_type) if created else None
+    previous_config = dict((row or archived).config or {}) if (row or archived) else {}
 
     if channel_type == "voice":
         old_number = previous_config.get("phoneNumber")
@@ -438,11 +477,18 @@ def upsert_channel(
         _assign_phone_number(db, bot, config, user)
 
     if created:
-        row = ChannelConfig(
-            id=new_id("ch"), tenant_id=bot.tenant_id, bot_id=bot.id,
-            type=channel_type, created_by=user.id, enabled=True,
-        )
-        db.add(row)
+        if archived is not None:
+            row = archived
+            row.is_deleted = False
+            row.deleted_at = None
+            row.deleted_by = None
+            row.enabled = True
+        else:
+            row = ChannelConfig(
+                id=new_id("ch"), tenant_id=bot.tenant_id, bot_id=bot.id,
+                type=channel_type, created_by=user.id, enabled=True,
+            )
+            db.add(row)
     row.config = config
     row.detail = _derive_detail(channel_type, config)
     row.status = "configured"
@@ -487,6 +533,7 @@ def activate_channel(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="activate a channel")
     row = _load_configured_channel(db, bot, channel_type)
     if not row.config:
         raise ApiError("Configure the channel before activating it.", 422)
@@ -719,6 +766,7 @@ async def test_channel(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="test a channel connection")
     row = _load_configured_channel(db, bot, channel_type)
     result = await _run_channel_test(db, bot, row)
     row.last_test = {"at": datetime.now(timezone.utc).isoformat() + "Z",

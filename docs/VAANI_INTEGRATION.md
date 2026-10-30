@@ -117,11 +117,11 @@ headers = {"X-Webhook-Signature": sig, "X-Webhook-Timestamp": ts,
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `To` | string | **yes** | The **EchoSphere-mapped phone number** (DID) registered for the tenant — for outbound campaign calls too, send the EchoSphere-mapped number here, **not** the customer's number. It must match the registered number **character-for-character** (including spaces, e.g. `+91 80 4522 1010`). Aliases accepted: `to`, `CallTo`, `called_number`. |
+| `To` | string | **yes** | The **EchoSphere-mapped phone number** (DID) registered for the tenant — for outbound campaign calls too, send the EchoSphere-mapped number here, **not** the customer's number. It must match the registered number **character-for-character** (including spaces, e.g. `+91 80 4522 1010`). Aliases accepted: `to`, `CallTo`, `called_number`. **Direct bot routing:** a value starting with `bot_` is treated as a bot id (pattern `^[A-Za-z0-9_-]{1,64}$`) and routes to that bot directly, with no DID assignment required (used by the FreeSWITCH bridge); the bot must be published and its voice channel enabled. |
 | `From` | string | no | Caller/customer number. Stored (masked) on the call record. Aliases: `from`, `caller_number`. |
-| `callId` | string | no | Your call identifier for cross-system tracing (converted to a string and truncated after 64 chars). Aliases: `CallSid`, `call_id`. Strongly recommended and unique per call, but not used for deduplication. |
+| `callId` | string | no | Your call identifier for cross-system tracing (converted to a string and truncated after 64 chars). Aliases: `CallSid`, `call_id`. Strongly recommended and unique per call, but not used for deduplication. Stored on the conversation: `GET /api/v1/conversations/{callId}` and `GET /api/v1/conversations?callId=…` (tenant API token) return the call afterwards. |
 | `botId` | string | no | Selects which of the tenant's bots answers this call (per-campaign routing over the shared DID). Pattern `^[A-Za-z0-9_-]{1,64}$`. Alias: `bot_id`. Omitted → the DID's default bot. |
-| `variables` | object | no | Per-call values passed to the bot as reference context (names, amounts, dates). Max **20** keys; key pattern `[A-Za-z0-9_.-]{1,40}`; values must be scalars (string/number/bool) and are stringified and truncated to **200 chars**. Entries violating the rules are silently dropped, never an error. |
+| `variables` | object | no | Per-call values passed to the bot as reference context (names, amounts, dates). Max **50** keys (the first 50 valid entries in the order sent); key pattern `[A-Za-z0-9_.-]{1,40}`; values must be scalars (string/number/bool) and are stringified and truncated to **200 chars**. Entries violating the rules or past the cap are dropped without an error, but their names are logged and recorded on the call trace (`call_started.variables_dropped`). For bots whose runtime-context schema flags a field `sessionOverride`, a non-blank variable of that name (`customer_name` or `customerName`) replaces the field's User Details API value for the call; omitted or blank variables fall back to the API. |
 
 Unknown top-level fields are ignored. `To` and `From` should be strings;
 the webhook does not normalize phone numbers or validate E.164 at call time.
@@ -193,9 +193,11 @@ validation errors may also add an `errors` array.
 | `404` | Wrong provider segment in the path | `Unsupported telephony provider '…'` |
 | `404` | `To` doesn't match a registered, assigned number | `A bot assignment for this number not found.` |
 | `404` | `botId` unknown, archived, or belongs to another tenant (existence is deliberately not revealed) | `Bot not found.` |
+| `404` | `To` is a bot id that is unknown or archived | `Bot not found.` |
 | `404` | Selected/default bot has no published release | `Bot has no published release not found.` |
 | `422` | No dialed number in the payload | `Webhook payload missing the dialed number` |
 | `422` | `botId` fails the pattern | `Invalid botId in webhook payload` |
+| `422` | `To` starts with `bot_` but fails the bot-id pattern | `Invalid bot id in the To field` |
 | `503` | Bot's AI provider disabled under platform governance | `Voice engine unavailable: …` |
 | `503` | Control-plane database temporarily unavailable | `The database is temporarily unavailable. Please try again shortly.` |
 | `500` | Unexpected server error, including a non-object JSON body | `An unexpected error occurred.` |
@@ -392,7 +394,10 @@ the call and operational logging/connection close to report a transport error.
 
 Outbound chunk guarantees (per the platform playback guidance):
 * size is always a **multiple of 320 bytes** (zero-padded when needed),
-* at least **3,200 bytes** except the final flush of an utterance,
+* at least **3,200 bytes** in steady state — except the final flush of an
+  utterance, and the first packets of each utterance, which ramp up from
+  **640 → 1,280 → 2,560 bytes** so the bot's first audio arrives sooner
+  (all still 320-byte aligned),
 * never more than the nominal **100,000-byte** limit (the largest aligned
   regular chunk produced by the current code is 99,840 bytes),
 * `chunk` is a sequential **string** counter, `timestamp` is epoch **seconds**.
@@ -455,7 +460,7 @@ handled internally where possible; fatal setup failures use close codes.
 | Channels | 1 (mono) | 1 (mono) |
 | JSON transport | Standard base64 in `media.payload`; no data-URI prefix | Same |
 | Frame quantum | Use multiples of 320 bytes = 160 samples = 20 ms | Always emitted on 320-byte boundaries |
-| Recommended packet | 320 bytes every 20 ms, or a paced multiple up to 3,200 bytes | Normally buffered to at least 3,200 bytes; final utterance chunk may be shorter |
+| Recommended packet | 320 bytes every 20 ms, or a paced multiple up to 3,200 bytes | Normally buffered to at least 3,200 bytes; the first packets of an utterance ramp up from 640 bytes and the final utterance chunk may be shorter |
 | Maximum | Contract maximum 100,000 decoded bytes | 99,840 bytes effective aligned maximum |
 
 At 8 kHz × 16-bit × mono, the stream is 16,000 bytes/s. Therefore 320 bytes
@@ -809,7 +814,7 @@ EchoSphere requirement.
 |---|---|---|---|---|
 | Audio | 8 kHz, 16-bit PCM, mono, base64 | Raw signed PCM16 little-endian, 8 kHz, mono, base64, no WAV header | Yes | Vaani must not send μ-law/A-law despite stale DB metadata. |
 | 320-byte unit | Required multiple of 320 | Outbound always aligned; inbound alignment not enforced | Partial | Vaani sends aligned frames; EchoSphere remains tolerant inbound. |
-| Minimum chunk | 3.2 KB “≈100 ms”, bidirectional | Outbound buffers to 3,200 bytes except final; inbound accepts 320-byte/20 ms frames | Partial | Vaani accepts short final output. PDF arithmetic is wrong: 3,200 bytes is 200 ms. |
+| Minimum chunk | 3.2 KB “≈100 ms”, bidirectional | Outbound buffers to 3,200 bytes in steady state (utterance-start packets ramp from 640 bytes, final flush may be short); inbound accepts 320-byte/20 ms frames | Partial | Vaani accepts short leading/final output. PDF arithmetic is wrong: 3,200 bytes is 200 ms. |
 | Maximum chunk | 100 KB | Outbound effective maximum 99,840 aligned bytes; inbound contract cap 100,000 decoded bytes with a 140,000-character base64 guard | Compatible | Keep decoded input ≤100,000 bytes. |
 | Barge-in | `clear` flushes ongoing playback | VAD detects caller audio, cancels generation, clears server buffer, sends `clear` | Yes | Vaani must make buffer flush low latency. |
 | Reconnect | Exponential backoff | Pre-pipeline `4400`/`4429` may retry the still-issued URL; established call cannot resume and needs a fresh webhook | Partial | **Vaani distinguishes setup retry from call resume.** |

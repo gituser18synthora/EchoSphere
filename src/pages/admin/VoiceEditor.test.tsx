@@ -84,7 +84,10 @@ function installMocks() {
     Promise.resolve((MODELS[code] ?? []) as never));
   vi.mocked(api.getProviderCatalog).mockResolvedValue({ tts: [] } as never);
   vi.mocked(api.getModelLanguages).mockResolvedValue({
-    languages: [{ code: "hi-IN", name: "Hindi", nativeName: "हिन्दी" }],
+    languages: [
+      { code: "hi-IN", name: "Hindi", nativeName: "हिन्दी" },
+      { code: "en-IN", name: "English (India)", nativeName: "English" },
+    ],
     supportsAutoDetect: false, languageAgnostic: false,
   } as never);
   createMaster.mockResolvedValue({ id: "vp_new" } as never);
@@ -220,6 +223,58 @@ describe("VoiceEditor — provider-specific fields", () => {
     await user.click(screen.getByRole("button", { name: "Reset" }));
     expect(screen.getByLabelText("Display name")).toHaveValue("");
     expect(screen.getByLabelText("TTS provider")).toHaveValue("");
+  });
+
+  it("assigns a voice to several languages at once", async () => {
+    const user = userEvent.setup();
+    await openAddVoice(user);
+    await pickProvider(user, "ElevenLabs");
+    await user.selectOptions(screen.getByLabelText("Model"), ["eleven_flash_v2_5"]);
+    await user.type(screen.getByLabelText("Display name"), "Bilingual");
+    await user.type(await screen.findByLabelText("ElevenLabs voice ID"), "voice123");
+
+    const picker = await screen.findByRole("combobox", { name: "Languages" });
+    await user.click(picker);
+    await user.click(await screen.findByRole("option", { name: /Hindi/ }));
+    await user.click(screen.getByRole("option", { name: /English/ }));
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
+    expect(createMaster.mock.calls[0][1]).toMatchObject({
+      languages: ["hi-IN", "en-IN"],
+      locale: "hi-IN", // first pick stays the voice's primary language
+    });
+  });
+
+  it("edit mode seeds the picker from a legacy locale-only row", async () => {
+    listMaster.mockImplementation((mtype: string, opts?: { kind?: string }) => {
+      if (mtype === "voices") {
+        return Promise.resolve(paged([{ ...SAVED_VOICE, locale: "hi-IN", languages: [] }]) as never);
+      }
+      if (mtype === "providers" && opts?.kind === "tts") {
+        return Promise.resolve(paged([
+          { id: "p1", code: "elevenlabs", name: "ElevenLabs", status: "active", kind: "tts" },
+        ]) as never);
+      }
+      return Promise.resolve(paged([]) as never);
+    });
+    const user = userEvent.setup();
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Voices"));
+    await screen.findByText("Monika");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await screen.findByRole("dialog", { name: "Edit voice" });
+
+    const picker = await screen.findByRole("combobox", { name: "Languages" });
+    expect(picker).toHaveTextContent("hi-IN");
+
+    await user.click(picker);
+    await user.click(await screen.findByRole("option", { name: /English/ }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.updateMaster).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateMaster).mock.calls[0][2]).toMatchObject({
+      languages: ["hi-IN", "en-IN"],
+    });
   });
 
   it("a failed save keeps the entered form data", async () => {

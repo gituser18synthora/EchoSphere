@@ -1,0 +1,384 @@
+"""Tool executor — the backend validation ladder around tenant tools.
+
+Everything the LLM cannot be trusted with is enforced here: tenant/bot
+scoping, intent/workflow allow-lists, verification-before-action, input
+schema, idempotent state changes, and masked traces. Mocked execution
+(Testing Studio) must pass the same ladder with only the HTTP hop replaced.
+"""
+
+import pytest
+
+import shared.orchestration.tool_executor as tool_executor_module
+from shared.orchestration.tool_executor import ToolExecutor, validate_args
+
+CONNECTION = {
+    "id": "api_1", "name": "check_payment_status", "method": "POST",
+    "url": "https://lms.example/payments/status", "auth_type": "bearer",
+    "secret_ref": "secret://LMS_KEY", "headers": {}, "query_params": {},
+    "path_params": {}, "body_template": None,
+    "request_schema": {
+        "properties": {
+            "loan_account": {"type": "string"},
+            "payment_date": {"type": "string"},
+        },
+        "required": ["loan_account"],
+    },
+    "success_condition": "status < 400",
+    "sensitive_masks": ["loan_account"],
+    "allowed_intents": ["already_paid"],
+    "allowed_workflows": [],
+    "is_state_changing": False,
+    "require_confirmation": False,
+    "timeout_ms": 4000, "retries": 1,
+    "response_mapping": [{"source": "data.status", "target": "payment_status"}],
+}
+
+
+def _patch_connection(monkeypatch, connection):
+    def _load(tenant_id, bot_id, tool):
+        if connection is None:
+            return None
+        return dict(connection)
+
+    monkeypatch.setattr(tool_executor_module, "_load_connection_sync", _load)
+
+
+class TestValidateArgs:
+    def test_required_and_types(self):
+        schema = CONNECTION["request_schema"]
+        assert validate_args(schema, {"loan_account": "LN1"}) == []
+        assert "missing required argument 'loan_account'" in \
+            validate_args(schema, {})[0]
+        assert "must be string" in \
+            validate_args(schema, {"loan_account": 123})[0]
+
+    def test_enum(self):
+        schema = {"properties": {"mode": {"type": "string", "enum": ["full", "partial"]}}}
+        assert validate_args(schema, {"mode": "full"}) == []
+        assert validate_args(schema, {"mode": "other"})
+
+    def test_numeric_string_contract(self):
+        schema = {"properties": {"amount": {"type": "string", "pattern": r"^[0-9]+(?:\.[0-9]{1,2})?$"}}}
+        assert validate_args(schema, {"amount": "500.50"}) == []
+        assert validate_args(schema, {"amount": "banana"})
+
+
+class TestResponseContract:
+    @pytest.mark.parametrize("mocked", [True, False])
+    @pytest.mark.parametrize("body,expected", [
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": True}, True),
+        ({"status": "failed", "ticket_id": "T1", "verification_recorded": False}, False),
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": False}, False),
+        ({"status": "updated", "verification_recorded": True}, False),
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": "true"}, False),
+        ([], False),
+    ])
+    async def test_http_200_and_mock_require_business_success(self, monkeypatch, mocked, body, expected):
+        connection = {**CONNECTION, "response_schema": {
+            "type": "object", "required": ["status", "ticket_id", "verification_recorded"],
+            "properties": {
+                "status": {"type": "string", "enum": ["updated"]},
+                "ticket_id": {"type": "string"},
+                "verification_recorded": {"type": "boolean", "enum": [True]},
+            },
+        }}
+        _patch_connection(monkeypatch, connection)
+
+        async def fake_request(self, conn, args, context):
+            return {"status_code": 200, "body": body}, None
+
+        monkeypatch.setattr(ToolExecutor, "_request", fake_request)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"},
+            mock_results={"check_payment_status": body} if mocked else None,
+        )
+        assert result.ok is expected
+        assert result.mocked is mocked
+        if not expected:
+            assert result.status == "error" and result.error
+            assert result.mapped == {}
+
+
+class TestValidationLadder:
+    async def test_unknown_tool_is_not_found(self, monkeypatch):
+        _patch_connection(monkeypatch, None)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="ghost", args={},
+        )
+        assert result.status == "not_found" and result.ok is False
+
+    async def test_intent_allow_list_enforced(self, monkeypatch):
+        _patch_connection(monkeypatch, CONNECTION)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, intent="book_appointment",
+        )
+        assert result.status == "denied"
+        assert "not allowed for intent" in result.error
+
+    async def test_verification_required_for_state_change(self, monkeypatch):
+        connection = {**CONNECTION, "is_state_changing": True,
+                      "require_confirmation": True, "allowed_intents": []}
+        _patch_connection(monkeypatch, connection)
+        executor = ToolExecutor()
+        denied = await executor.execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, customer_verified=False,
+        )
+        assert denied.status == "denied"
+        assert "verified" in denied.error
+        # Verified caller passes the gate (and hits the mock, not HTTP).
+        allowed = await executor.execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, customer_verified=True,
+            mock_results={"check_payment_status": {"data": {"status": "completed"}}},
+        )
+        assert allowed.ok is True and allowed.mocked is True
+
+    async def test_invalid_args_rejected_before_any_call(self, monkeypatch):
+        _patch_connection(monkeypatch, CONNECTION)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"payment_date": "kal"}, intent="already_paid",
+            mock_results={"check_payment_status": {"ok": True}},
+        )
+        assert result.status == "invalid_args"
+
+
+class TestMockedExecution:
+    async def test_mock_result_flows_through_mapping_and_masking(self, monkeypatch):
+        _patch_connection(monkeypatch, CONNECTION)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN00123456"}, intent="already_paid",
+            mock_results={"check_payment_status": {
+                "data": {"status": "completed"}, "loan_account": "LN00123456",
+            }},
+        )
+        assert result.ok and result.mocked
+        assert result.mapped == {"payment_status": "completed"}
+        # Sensitive fields masked in the trace, both directions.
+        assert result.trace["request"]["args"]["loan_account"] != "LN00123456"
+        assert result.trace["response"]["loan_account"] != "LN00123456"
+
+    async def test_unmocked_tool_in_mock_mode_still_validates(self, monkeypatch):
+        _patch_connection(monkeypatch, CONNECTION)
+        # mock_results present but not for this tool → real execution path;
+        # SSRF policy blocks the fake host, so it fails safely.
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, intent="already_paid",
+            mock_results={"other_tool": {}},
+        )
+        assert result.ok is False
+
+
+class TestIdempotency:
+    async def test_state_changing_replay_returns_recorded_result(self, monkeypatch):
+        connection = {**CONNECTION, "is_state_changing": True,
+                      "allowed_intents": [], "require_confirmation": False}
+        _patch_connection(monkeypatch, connection)
+        stored: dict = {}
+
+        async def fake_get(key):
+            return stored.get(key)
+
+        async def fake_put(key, payload):
+            stored[key] = payload
+
+        monkeypatch.setattr(ToolExecutor, "_idempotency_get",
+                            staticmethod(fake_get))
+        monkeypatch.setattr(ToolExecutor, "_idempotency_put",
+                            staticmethod(fake_put))
+
+        calls = {"n": 0}
+
+        async def fake_request(self, conn, args, ctx):
+            calls["n"] += 1
+            return {"status_code": 200, "body": {"data": {"status": "completed"}}}, None
+
+        monkeypatch.setattr(ToolExecutor, "_request", fake_request)
+        executor = ToolExecutor()
+        first = await executor.execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, session_id="sess-1",
+        )
+        assert first.ok and calls["n"] == 1
+        replay = await executor.execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, session_id="sess-1",
+        )
+        assert replay.status == "duplicate"
+        assert calls["n"] == 1  # the action ran exactly once
+        assert replay.mapped == {"payment_status": "completed"}
+
+    async def test_different_args_are_not_deduplicated(self, monkeypatch):
+        connection = {**CONNECTION, "is_state_changing": True,
+                      "allowed_intents": []}
+        _patch_connection(monkeypatch, connection)
+        stored: dict = {}
+        monkeypatch.setattr(ToolExecutor, "_idempotency_get",
+                            staticmethod(lambda key: _async(stored.get(key))))
+        monkeypatch.setattr(ToolExecutor, "_idempotency_put",
+                            staticmethod(lambda key, payload: _async(stored.__setitem__(key, payload))))
+        calls = {"n": 0}
+
+        async def fake_request(self, conn, args, ctx):
+            calls["n"] += 1
+            return {"status_code": 200, "body": {}}, None
+
+        monkeypatch.setattr(ToolExecutor, "_request", fake_request)
+        executor = ToolExecutor()
+        await executor.execute(tenant_id="t", bot_id="b", tool="x",
+                               args={"loan_account": "LN1"}, session_id="s")
+        await executor.execute(tenant_id="t", bot_id="b", tool="x",
+                               args={"loan_account": "LN2"}, session_id="s")
+        assert calls["n"] == 2
+
+
+async def _async(value):
+    return value
+
+
+class TestSecrets:
+    async def test_resolved_secret_never_in_result_or_trace(self, monkeypatch):
+        monkeypatch.setenv("LMS_KEY", "super-secret-token")
+        _patch_connection(monkeypatch, CONNECTION)
+        captured = {}
+
+        def fake_fetch_json(*, method, url, headers, params, json_body, timeout_ms):
+            captured["headers"] = headers
+
+            class _Resp:
+                status_code = 200
+                ok = True
+                latency_ms = 5
+                body = {"data": {"status": "completed"}}
+                error = None
+                truncated = False
+
+            return _Resp()
+
+        import shared.safe_http as safe_http_module
+
+        monkeypatch.setattr(safe_http_module, "fetch_json", fake_fetch_json)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"}, intent="already_paid",
+        )
+        # The credential reached the wire…
+        assert captured["headers"]["Authorization"] == "Bearer super-secret-token"
+        # …and exists nowhere in what the caller (and the LLM) can see.
+        assert "super-secret-token" not in str(result.trace)
+        assert "super-secret-token" not in str(result.data)
+
+
+class _FakeConnectionRow:
+    response_schema = None
+    """Attribute bag mirroring the ApiConnection columns _load_connection_sync reads."""
+
+    def __init__(self, **overrides):
+        self.id = "api_1"
+        self.name = "check_payment_status"
+        self.bot_id = "b"
+        self.method = "POST"
+        self.url = "https://lms.example/payments/status"
+        self.auth_type = "bearer"
+        self.secret_ref = "secret://LMS_KEY"
+        self.headers = {}
+        self.query_params = {}
+        self.path_params = {}
+        self.body_template = None
+        self.request_schema = None
+        self.success_condition = "status < 400"
+        self.sensitive_masks = []
+        self.allowed_intents = []
+        self.allowed_workflows = []
+        self.is_state_changing = False
+        self.require_confirmation = False
+        self.timeout_ms = 4000
+        self.retries = 1
+        self.response_mapping = []
+        for key, value in overrides.items():
+            setattr(self, key, value)
+
+
+class _FakeConnectionQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeConnectionSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, model):
+        return _FakeConnectionQuery(self._rows)
+
+    def close(self):
+        pass
+
+
+class TestConnectionCache:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        tool_executor_module._connection_cache.clear()
+        yield
+        tool_executor_module._connection_cache.clear()
+
+    def _patch_db(self, monkeypatch, rows):
+        import shared.db.mysql as mysql_db
+
+        counters = {"sessions": 0}
+
+        def factory():
+            counters["sessions"] += 1
+            return _FakeConnectionSession(rows)
+
+        monkeypatch.setattr(mysql_db, "get_sessionmaker", lambda: factory)
+        return counters
+
+    def test_second_resolution_within_ttl_never_hits_the_db(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        first = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert first is not None and first["id"] == "api_1"
+        second = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert second == first
+        assert counters["sessions"] == 1  # served from the cache
+
+    def test_cached_entry_is_a_copy_not_a_shared_dict(self, monkeypatch):
+        self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        first = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        first["url"] = "https://tampered.example"
+        second = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert second["url"] == "https://lms.example/payments/status"
+
+    def test_miss_is_not_cached(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [])
+        assert tool_executor_module._load_connection_sync("tn-a", "b", "ghost") is None
+        assert tool_executor_module._load_connection_sync("tn-a", "b", "ghost") is None
+        assert counters["sessions"] == 2  # a fresh tool resolves immediately
+
+    def test_expired_entry_requeries(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        monkeypatch.setattr(
+            tool_executor_module, "_CONNECTION_CACHE_TTL_SECONDS", 0.0
+        )
+        tool_executor_module._load_connection_sync("tn-a", "b", "check_payment_status")
+        tool_executor_module._load_connection_sync("tn-a", "b", "check_payment_status")
+        assert counters["sessions"] == 2

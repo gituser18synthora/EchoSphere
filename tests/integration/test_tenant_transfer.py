@@ -1,0 +1,1417 @@
+"""Tenant Copy/Paste deployment: GET /tenants/{id}/export + POST /tenants/import.
+
+The exported package carries the tenant's complete configuration plane and the
+import recreates it PRESERVING every id, so a tenant built locally can be
+deployed to live and keep the same tenant_id / bot_id / workflow_id / ….
+Verified here:
+
+1. first import (after the source rows are gone) creates everything with the
+   original ids,
+2. a second import updates in place — no duplicate bots/resources,
+3. an id owned by a different tenant is rejected (409) and nothing is written,
+4. references (intent → workflow/API/KB, schema → API connection, guardrail
+   profile assignment, prompt versions, knowledge chunks) stay valid,
+5. secrets are only ever env:/secret:// references — packages carrying raw
+   secrets are rejected.
+"""
+
+import copy
+import json
+import uuid
+from datetime import datetime
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import delete, select
+
+from backend.core.security import create_access_token
+from backend.main import app
+from shared.db.mysql import get_sessionmaker
+from shared.ids import new_id
+from shared.models import (
+    ApiConnection,
+    AuditLog,
+    BotLanguage,
+    ChannelConfig,
+    CompliancePolicy,
+    ComplianceWording,
+    EntityDef,
+    Guardrail,
+    GuardrailProfile,
+    GuardrailProfileRule,
+    Intent,
+    KnowledgeSource,
+    PhoneNumber,
+    Prompt,
+    PromptVersion,
+    PronunciationDictionary,
+    Role,
+    RuntimeContextSchema,
+    SupportedLanguage,
+    Tenant,
+    TenantSetting,
+    TestScenario,
+    User,
+    VoiceBot,
+    VoiceBotReadiness,
+    VoiceBotSetting,
+    VoiceProfile,
+    Workflow,
+)
+
+pytestmark = pytest.mark.integration
+
+API = "/api/v1"
+
+
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def _db():
+    return get_sessionmaker()()
+
+
+def _bearer(email: str = "admin@aurexion.com") -> dict:
+    session = _db()
+    try:
+        user = session.execute(select(User).where(User.email == email)).scalar_one()
+        token = create_access_token(
+            user_id=user.id, role=user.role.code, tenant_id=user.tenant_id
+        )
+        return {"Authorization": f"Bearer {token}"}
+    finally:
+        session.close()
+
+
+@pytest.fixture(scope="module")
+def super_admin():
+    return _bearer()
+
+
+def _data(response, expected: int = 200):
+    assert response.status_code == expected, response.text
+    body = response.json()
+    assert body.get("success") is True, body
+    return body["data"]
+
+
+def _purge_tenant_graph(tenant_ids: list[str]) -> None:
+    """Hard-delete every MySQL row of the given tenants (test rows only)."""
+    session = _db()
+    try:
+        bot_ids = session.scalars(
+            select(VoiceBot.id).where(VoiceBot.tenant_id.in_(tenant_ids))).all()
+        prompt_ids = session.scalars(
+            select(Prompt.id).where(Prompt.tenant_id.in_(tenant_ids))).all()
+        policy_ids = session.scalars(
+            select(CompliancePolicy.id).where(
+                CompliancePolicy.tenant_id.in_(tenant_ids))).all()
+        if prompt_ids:
+            session.execute(delete(PromptVersion).where(
+                PromptVersion.prompt_id.in_(prompt_ids)))
+        if policy_ids:
+            session.execute(delete(ComplianceWording).where(
+                ComplianceWording.policy_id.in_(policy_ids)))
+        if bot_ids:
+            session.execute(delete(BotLanguage).where(BotLanguage.bot_id.in_(bot_ids)))
+            session.execute(delete(VoiceBotReadiness).where(
+                VoiceBotReadiness.bot_id.in_(bot_ids)))
+        for model in (RuntimeContextSchema, Prompt, Intent, EntityDef,
+                      ApiConnection, Workflow, TestScenario, KnowledgeSource,
+                      ChannelConfig, VoiceBotSetting, PronunciationDictionary,
+                      CompliancePolicy, VoiceProfile, PhoneNumber, AuditLog,
+                      VoiceBot, TenantSetting, User):
+            session.execute(delete(model).where(model.tenant_id.in_(tenant_ids)))
+        session.execute(delete(Tenant).where(Tenant.id.in_(tenant_ids)))
+        session.commit()
+    finally:
+        session.close()
+
+
+async def _purge_knowledge_plane(kb_ids: list[str]) -> None:
+    from sqlalchemy import delete as sa_delete
+
+    from shared.db.postgres import get_pg_sessionmaker
+    from shared.knowledge.models import (
+        IngestionJob, KnowledgeChunk, KnowledgeDocument,
+    )
+
+    async with get_pg_sessionmaker()() as pg:
+        doc_ids = (await pg.execute(
+            select(KnowledgeDocument.id).where(KnowledgeDocument.kb_id.in_(kb_ids))
+        )).scalars().all()
+        if doc_ids:
+            await pg.execute(sa_delete(IngestionJob).where(
+                IngestionJob.document_id.in_(doc_ids)))
+            await pg.execute(sa_delete(KnowledgeChunk).where(
+                KnowledgeChunk.document_id.in_(doc_ids)))
+            await pg.execute(sa_delete(KnowledgeDocument).where(
+                KnowledgeDocument.id.in_(doc_ids)))
+        await pg.commit()
+
+
+@pytest.fixture(scope="module")
+async def workspace():
+    """A fully configured source tenant (the 'local' side), a foreign tenant
+    for collision checks, and the shared platform rows the tenant references."""
+    suffix = uuid.uuid4().hex[:10]
+    session = _db()
+    try:
+        admin_role = session.execute(
+            select(Role).where(Role.code == "tenant_admin")).scalar_one()
+
+        guardrail = Guardrail(
+            id=new_id("gr"), code=f"gtest_{suffix}", name=f"No profanity {suffix}",
+            category="conduct", enforcement="block", enabled=True,
+        )
+        session.add(guardrail)
+        session.flush()
+        profile = GuardrailProfile(
+            id=new_id("gp"), code=f"gp_{suffix}", name=f"Transfer profile {suffix}",
+            status="active", version=3,
+        )
+        session.add(profile)
+        session.flush()
+        session.add(GuardrailProfileRule(
+            id=new_id("gpr"), profile_id=profile.id, guardrail_id=guardrail.id))
+
+        platform_voice = VoiceProfile(
+            id=new_id("vp"), tenant_id=None, source="platform",
+            name=f"Transfer Platform Voice {suffix}", gender="female",
+            provider="sarvam", provider_voice_id="anushka", status="active",
+        )
+        session.add(platform_voice)
+
+        tenant = Tenant(
+            id=new_id("tn"), name=f"Transfer Source {suffix}",
+            code=f"tr_{suffix}", domain=f"transfer-{suffix}.example.test",
+            status="active", guardrail_profile_id=profile.id,
+            admin_email=f"ops.{suffix}@example.test",
+        )
+        foreign_tenant = Tenant(
+            id=new_id("tn"), name=f"Transfer Foreign {suffix}",
+            code=f"trf_{suffix}", domain=f"transfer-f-{suffix}.example.test",
+            status="active",
+        )
+        session.add_all([tenant, foreign_tenant])
+        session.flush()
+
+        session.add(TenantSetting(
+            id=new_id("tset"), tenant_id=tenant.id, timezone="Asia/Kolkata",
+            default_languages=["hi-IN"], branding={"logo": "acme.png"},
+        ))
+
+        admin = User(
+            id=new_id("usr"), email=f"transfer.admin.{suffix}@example.test",
+            name="Transfer Admin", password_hash="x", role_id=admin_role.id,
+            tenant_id=tenant.id, status="active",
+        )
+        session.add(admin)
+        session.flush()
+
+        cloned_voice = VoiceProfile(
+            id=new_id("vp"), tenant_id=tenant.id, source="cloned",
+            name=f"Cloned Brand Voice {suffix}", gender="male",
+            provider="elevenlabs", provider_voice_id="abc123", status="active",
+        )
+        session.add(cloned_voice)
+
+        languages = session.scalars(
+            select(SupportedLanguage.code)
+            .where(SupportedLanguage.enabled.is_(True))
+            .order_by(SupportedLanguage.sort_order, SupportedLanguage.code)
+            .limit(2)
+        ).all()
+        assert languages, "seeded platform languages are required"
+
+        bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"Transfer Bot {suffix}",
+            use_case="Order support", status="published", version="v1.2.0",
+            live_version="v1.2.0", published_at=datetime(2026, 8, 20, 10, 0),
+            voice_id=platform_voice.id, guardrail_profile_id=profile.id,
+            owner_user_id=admin.id,
+        )
+        foreign_bot = VoiceBot(
+            id=new_id("bot"), tenant_id=foreign_tenant.id,
+            name=f"Transfer Foreign Bot {suffix}", status="draft",
+        )
+        session.add_all([bot, foreign_bot])
+        session.flush()
+
+        for code in languages:
+            session.add(BotLanguage(bot_id=bot.id, language_code=code))
+        session.add(VoiceBotReadiness(
+            id=new_id("rd"), bot_id=bot.id, item_key="r1",
+            label="Knowledge sources indexed", done=True, studio_tab="knowledge",
+            sort_order=0,
+        ))
+
+        settings_row = VoiceBotSetting(
+            id=new_id("vbs"), bot_id=bot.id, tenant_id=tenant.id,
+            voice_id=cloned_voice.id, speed=1.1, pause_ms=300,
+            language_voice_map={"default": languages[0],
+                                languages[0]: cloned_voice.id},
+            stt_provider="sarvam", tts_provider="elevenlabs",
+            llm_provider="openai", llm_model="gpt-4o-mini",
+            goal_policy={"role": "Order assistant"},
+        )
+        session.add(settings_row)
+
+        bot_api = ApiConnection(
+            id=new_id("api"), tenant_id=tenant.id, bot_id=bot.id,
+            name="Fetch order", method="GET",
+            url="https://orders.example.test/{{id}}",
+            auth_type="api_key", secret_ref="secret://orders-api-key",
+        )
+        shared_api = ApiConnection(
+            id=new_id("api"), tenant_id=tenant.id, bot_id=None,
+            name="Shared CRM", method="GET",
+            url="https://crm.example.test/{{id}}",
+        )
+        session.add_all([bot_api, shared_api])
+
+        kb = KnowledgeSource(
+            id=new_id("ks"), tenant_id=tenant.id, bot_id=bot.id, scope="bot",
+            type="document", name=f"Order FAQ {suffix}", status="indexed",
+            chunks=1, size_kb=4,
+        )
+        session.add(kb)
+        session.flush()
+
+        workflow = Workflow(
+            id=new_id("wf"), tenant_id=tenant.id, bot_id=bot.id,
+            name="Order journey", version=2, status="approved",
+            nodes=[{"id": "n1", "kind": "start"},
+                   {"id": "n2", "kind": "api", "config": {"connectionId": bot_api.id}},
+                   {"id": "n3", "kind": "end"}],
+            edges=[{"id": "e1", "from": "n1", "to": "n2"},
+                   {"id": "e2", "from": "n2", "to": "n3"}],
+            issues=[],
+        )
+        session.add(workflow)
+
+        prompt = Prompt(
+            id=new_id("pr"), tenant_id=tenant.id, bot_id=bot.id, type="system",
+            name="Core prompt", state="published", active_version=2,
+            published_version=2,
+        )
+        session.add(prompt)
+        session.flush()
+        session.add_all([
+            PromptVersion(id=new_id("prv"), prompt_id=prompt.id, version=1,
+                          compiled_prompt="You are v1."),
+            PromptVersion(id=new_id("prv"), prompt_id=prompt.id, version=2,
+                          compiled_prompt="You are v2."),
+        ])
+
+        entity = EntityDef(
+            id=new_id("en"), tenant_id=tenant.id, name=f"order_id_{suffix}",
+            kind="custom", data_type="text",
+        )
+        session.add(entity)
+
+        intent = Intent(
+            id=new_id("in"), tenant_id=tenant.id, bot_id=bot.id,
+            name="Order status", samples=["where is my order"],
+            entities=[entity.name], workflow_id=workflow.id,
+            api_connection_id=bot_api.id, kb_ids=[kb.id],
+        )
+        session.add(intent)
+        session.flush()
+        bot_api.allowed_intents = [intent.id]
+        bot_api.allowed_workflows = [workflow.id]
+
+        session.add(TestScenario(
+            id=new_id("ts"), tenant_id=tenant.id, bot_id=bot.id,
+            name="Happy path", suite="Regression", steps=3,
+            last_run={"pass": True},
+        ))
+
+        schema = RuntimeContextSchema(
+            id=new_id("rcs"), tenant_id=tenant.id, bot_id=bot.id,
+            name="Customer details", source_mode="api",
+            api_connection_id=bot_api.id,
+            fields=[{"key": "name", "type": "string"}],
+        )
+        session.add(schema)
+
+        voice_channel = ChannelConfig(
+            id=new_id("ch"), tenant_id=tenant.id, bot_id=bot.id, type="voice",
+            status="configured", enabled=True,
+            config={"phoneNumber": "+14155550119", "telephonyProvider": "twilio",
+                    "publicWsBase": "wss://media.example.test",
+                    "authTokenReference": "env:TWILIO_AUTH_TOKEN"},
+        )
+        wa_channel = ChannelConfig(
+            id=new_id("ch"), tenant_id=tenant.id, bot_id=bot.id, type="whatsapp",
+            status="configured", enabled=True,
+            config={"whatsappNumber": "+14155550118", "provider": "meta",
+                    "phoneNumberId": "1234567890",
+                    "apiKeyReference": "env:WA_API_KEY",
+                    "webhookSecretReference": "env:WA_WEBHOOK_SECRET"},
+        )
+        session.add_all([voice_channel, wa_channel])
+
+        policy = CompliancePolicy(
+            id=new_id("cp"), tenant_id=tenant.id, code=f"pol_{suffix}",
+            version=1, name="Calling windows", status="active",
+            timezone="Asia/Kolkata",
+            calling_windows=[{"days": [0, 1, 2, 3, 4], "start": "08:00",
+                              "end": "19:00"}],
+        )
+        session.add(policy)
+        session.flush()
+        wording = ComplianceWording(
+            id=new_id("cw"), policy_id=policy.id, code="mini_miranda",
+            language="en", version=1, text="This is an attempt to collect a debt.",
+        )
+        session.add(wording)
+
+        pron = PronunciationDictionary(
+            id=new_id("pd"), tenant_id=tenant.id, provider="sarvam",
+            provider_dict_id=f"dict_{suffix}", name="Brand names",
+        )
+        session.add(pron)
+        session.commit()
+
+        # PostgreSQL knowledge plane: one document with one chunk.
+        from shared.db.postgres import get_pg_sessionmaker
+        from shared.knowledge.models import KnowledgeChunk, KnowledgeDocument
+
+        doc_id = new_id("kdoc")
+        chunk_id = new_id("chk")
+        async with get_pg_sessionmaker()() as pg:
+            pg.add(KnowledgeDocument(
+                id=doc_id, tenant_id=tenant.id, kb_id=kb.id,
+                file_name="faq.txt", file_ext="txt", mime_type="text/plain",
+                size_bytes=64, content_hash="h" * 64, status="completed",
+                chunk_count=1,
+            ))
+            await pg.flush()
+            pg.add(KnowledgeChunk(
+                id=chunk_id, tenant_id=tenant.id, kb_id=kb.id,
+                document_id=doc_id, chunk_index=0,
+                content="Orders ship within 2 business days.",
+                content_hash="c" * 64, embedding=[0.25] * 1536,
+                embedding_model="mock", embedding_dimension=1536,
+            ))
+            await pg.commit()
+
+        def bearer(u: User, role_code: str) -> dict:
+            token = create_access_token(
+                user_id=u.id, role=role_code, tenant_id=u.tenant_id)
+            return {"Authorization": f"Bearer {token}"}
+
+        yield {
+            "suffix": suffix,
+            "tenant_id": tenant.id,
+            "foreign_tenant_id": foreign_tenant.id,
+            "foreign_bot_id": foreign_bot.id,
+            "bot_id": bot.id,
+            "bot_name": bot.name,
+            "admin_id": admin.id,
+            "tenant_admin": bearer(admin, "tenant_admin"),
+            "languages": languages,
+            "profile_id": profile.id,
+            "guardrail_id": guardrail.id,
+            "platform_voice_id": platform_voice.id,
+            "cloned_voice_id": cloned_voice.id,
+            "settings_id": settings_row.id,
+            "workflow_id": workflow.id,
+            "prompt_id": prompt.id,
+            "intent_id": intent.id,
+            "entity_id": entity.id,
+            "bot_api_id": bot_api.id,
+            "shared_api_id": shared_api.id,
+            "kb_id": kb.id,
+            "doc_id": doc_id,
+            "chunk_id": chunk_id,
+            "schema_id": schema.id,
+            "voice_channel_id": voice_channel.id,
+            "policy_id": policy.id,
+            "wording_id": wording.id,
+        }
+    finally:
+        session.rollback()
+        session.close()
+        tenant_ids = [tenant.id, foreign_tenant.id]
+        await _purge_knowledge_plane([kb.id])
+        _purge_tenant_graph(tenant_ids)
+        cleanup = _db()
+        try:
+            cleanup.execute(delete(GuardrailProfileRule).where(
+                GuardrailProfileRule.profile_id == profile.id))
+            cleanup.execute(delete(GuardrailProfile).where(
+                GuardrailProfile.id == profile.id))
+            cleanup.execute(delete(Guardrail).where(Guardrail.id == guardrail.id))
+            cleanup.execute(delete(VoiceProfile).where(
+                VoiceProfile.id == platform_voice.id))
+            cleanup.commit()
+        finally:
+            cleanup.close()
+
+
+@pytest.fixture(scope="module")
+def package(client, workspace, super_admin):
+    """The exported package — the JSON the operator copies from local."""
+    return _data(client.get(
+        f"{API}/tenants/{workspace['tenant_id']}/export", headers=super_admin))
+
+
+# ── Access control ────────────────────────────────────────────────────────────
+
+
+class TestAccessControl:
+    def test_export_requires_authentication(self, client, workspace):
+        response = client.get(f"{API}/tenants/{workspace['tenant_id']}/export")
+        assert response.status_code == 401
+
+    def test_export_requires_super_admin(self, client, workspace):
+        response = client.get(
+            f"{API}/tenants/{workspace['tenant_id']}/export",
+            headers=workspace["tenant_admin"])
+        assert response.status_code == 403
+
+    def test_import_requires_super_admin(self, client, workspace):
+        response = client.post(
+            f"{API}/tenants/import", headers=workspace["tenant_admin"], json={})
+        assert response.status_code == 403
+
+
+# ── Export package ────────────────────────────────────────────────────────────
+
+
+class TestExport:
+    def test_package_shape_and_ids(self, package, workspace):
+        assert package["kind"] == "echosphere.tenant.export"
+        assert package["schema_version"] == 1
+        resources = package["resources"]
+        assert resources["tenant"]["id"] == workspace["tenant_id"]
+        assert [b["id"] for b in resources["bots"]] == [workspace["bot_id"]]
+        assert [w["id"] for w in resources["workflows"]] == [workspace["workflow_id"]]
+        bot = resources["bots"][0]
+        assert sorted(bot["languages"]) == sorted(workspace["languages"])
+        prompt = resources["prompts"][0]
+        assert prompt["id"] == workspace["prompt_id"]
+        assert {v["version"] for v in prompt["versions"]} == {1, 2}
+        assert {c["type"] for c in resources["channel_configs"]} == {"voice", "whatsapp"}
+        policy = resources["compliance_policies"][0]
+        assert policy["wordings"][0]["id"] == workspace["wording_id"]
+
+    def test_shared_platform_resources_are_separated(self, package, workspace):
+        shared = package["shared"]
+        assert [p["id"] for p in shared["guardrail_profiles"]] == [workspace["profile_id"]]
+        assert [g["id"] for g in shared["guardrails"]] == [workspace["guardrail_id"]]
+        assert [v["id"] for v in shared["voice_profiles"]] == [workspace["platform_voice_id"]]
+        # The tenant's own cloned voice travels in the tenant section.
+        assert [v["id"] for v in package["resources"]["voice_profiles"]] == [
+            workspace["cloned_voice_id"]]
+
+    def test_knowledge_plane_is_included(self, package, workspace):
+        docs = package["knowledge_plane"]["documents"]
+        assert [d["id"] for d in docs] == [workspace["doc_id"]]
+        assert docs[0]["chunks"][0]["id"] == workspace["chunk_id"]
+        assert len(docs[0]["chunks"][0]["embedding"]) == 1536
+
+    def test_secrets_are_references_only_and_no_operational_data(
+            self, package, workspace):
+        resources = package["resources"]
+        by_id = {a["id"]: a for a in resources["api_connections"]}
+        assert by_id[workspace["bot_api_id"]]["secret_ref"] == "secret://orders-api-key"
+        voice_cfg = next(c for c in resources["channel_configs"] if c["type"] == "voice")
+        assert voice_cfg["config"]["authTokenReference"] == "env:TWILIO_AUTH_TOKEN"
+        # No users, phone numbers, conversations or audit history travel along.
+        for absent in ("users", "phone_numbers", "conversations", "audit_logs"):
+            assert absent not in resources
+        # No environment-local state leaks into the package.
+        assert "last_test" not in voice_cfg
+        assert "password_hash" not in str(package)
+
+
+# ── Import: create → update → collide ────────────────────────────────────────
+
+
+class TestImportLifecycle:
+    def test_first_import_creates_with_original_ids(
+            self, client, workspace, package, super_admin):
+        # Simulate the live environment: the tenant graph does not exist yet
+        # (the shared platform rows — guardrails, profile, platform voice —
+        # remain, as they would on a real live install).
+        _purge_tenant_graph([workspace["tenant_id"]])
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=package))
+        assert report["tenantId"] == workspace["tenant_id"]
+        assert report["created"]["bot"] == 1
+        assert report["created"]["workflow"] == 1
+        assert report["reused"]["guardrail_profile"] == 1
+        assert report["reused"]["platform_voice_profile"] == 1
+        # The bot's owner user does not exist on live — cleared, not invented.
+        assert any("owner" in w for w in report["warnings"])
+
+        session = _db()
+        try:
+            tenant = session.get(Tenant, workspace["tenant_id"])
+            assert tenant is not None and not tenant.is_deleted
+            assert tenant.guardrail_profile_id == workspace["profile_id"]
+
+            bot = session.get(VoiceBot, workspace["bot_id"])
+            assert bot is not None and bot.name == workspace["bot_name"]
+            assert bot.voice_id == workspace["platform_voice_id"]
+            assert bot.owner_user_id is None
+            langs = set(session.scalars(select(BotLanguage.language_code).where(
+                BotLanguage.bot_id == bot.id)))
+            assert langs == set(workspace["languages"])
+
+            workflow = session.get(Workflow, workspace["workflow_id"])
+            assert workflow.bot_id == workspace["bot_id"]
+            assert workflow.nodes[1]["config"]["connectionId"] == workspace["bot_api_id"]
+
+            intent = session.get(Intent, workspace["intent_id"])
+            assert intent.workflow_id == workspace["workflow_id"]
+            assert intent.api_connection_id == workspace["bot_api_id"]
+            assert intent.kb_ids == [workspace["kb_id"]]
+
+            api = session.get(ApiConnection, workspace["bot_api_id"])
+            assert api.allowed_intents == [workspace["intent_id"]]
+            assert api.secret_ref == "secret://orders-api-key"
+            assert api.status == "untested"  # live state is never imported
+
+            versions = session.scalars(select(PromptVersion).where(
+                PromptVersion.prompt_id == workspace["prompt_id"])).all()
+            assert {v.version for v in versions} == {1, 2}
+
+            schema = session.get(RuntimeContextSchema, workspace["schema_id"])
+            assert schema.api_connection_id == workspace["bot_api_id"]
+
+            settings_row = session.get(VoiceBotSetting, workspace["settings_id"])
+            assert settings_row.voice_id == workspace["cloned_voice_id"]
+            assert settings_row.language_voice_map[workspace["languages"][0]] == (
+                workspace["cloned_voice_id"])
+
+            channel = session.get(ChannelConfig, workspace["voice_channel_id"])
+            assert channel.config["authTokenReference"] == "env:TWILIO_AUTH_TOKEN"
+
+            wording = session.get(ComplianceWording, workspace["wording_id"])
+            assert wording.policy_id == workspace["policy_id"]
+        finally:
+            session.close()
+
+    async def test_first_import_recreated_knowledge_plane(self, workspace, package):
+        from shared.db.postgres import get_pg_sessionmaker
+        from shared.knowledge.models import KnowledgeChunk, KnowledgeDocument
+
+        async with get_pg_sessionmaker()() as pg:
+            doc = await pg.get(KnowledgeDocument, workspace["doc_id"])
+            assert doc is not None and doc.kb_id == workspace["kb_id"]
+            chunk = await pg.get(KnowledgeChunk, workspace["chunk_id"])
+            assert chunk is not None
+            assert chunk.content == "Orders ship within 2 business days."
+            assert chunk.embedding is not None and len(chunk.embedding) == 1536
+
+    def test_second_import_updates_without_duplicates(
+            self, client, workspace, package, super_admin):
+        # Drift the live copy, then re-import: the package wins, no duplicates.
+        session = _db()
+        try:
+            bot = session.get(VoiceBot, workspace["bot_id"])
+            bot.name = "Renamed on live"
+            workflow = session.get(Workflow, workspace["workflow_id"])
+            workflow.nodes = [{"id": "n1", "kind": "start"}]
+            session.commit()
+        finally:
+            session.close()
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=package))
+        assert report["updated"]["bot"] == 1
+        assert "bot" not in report["created"]
+
+        session = _db()
+        try:
+            bots = session.scalars(select(VoiceBot).where(
+                VoiceBot.tenant_id == workspace["tenant_id"])).all()
+            assert [b.id for b in bots] == [workspace["bot_id"]]
+            assert bots[0].name == workspace["bot_name"]
+            workflows = session.scalars(select(Workflow).where(
+                Workflow.tenant_id == workspace["tenant_id"])).all()
+            assert [w.id for w in workflows] == [workspace["workflow_id"]]
+            assert len(workflows[0].nodes) == 3
+            versions = session.scalars(select(PromptVersion).where(
+                PromptVersion.prompt_id == workspace["prompt_id"])).all()
+            assert len(versions) == 2
+            channels = session.scalars(select(ChannelConfig).where(
+                ChannelConfig.tenant_id == workspace["tenant_id"])).all()
+            assert len(channels) == 2
+            intents = session.scalars(select(Intent).where(
+                Intent.tenant_id == workspace["tenant_id"])).all()
+            assert len(intents) == 1
+        finally:
+            session.close()
+
+    def test_foreign_id_collision_is_rejected_and_nothing_written(
+            self, client, workspace, package, super_admin):
+        # A different tenant claiming ids that live already owns must fail.
+        suffix = workspace["suffix"]
+        hijack_tid = f"tn_hijack_{suffix}"
+        hijacked = copy.deepcopy(package)
+        # Re-tenant the package but keep the bot/workflow/… ids, which on
+        # live belong to the original tenant.
+        text_swap = [
+            (workspace["tenant_id"], hijack_tid),
+            (f"transfer-{suffix}.example.test", f"hijack-{suffix}.example.test"),
+            (f"tr_{suffix}", f"hj_{suffix}"),
+        ]
+
+        def swap(value):
+            if isinstance(value, str):
+                for old, new in text_swap:
+                    if value == old:
+                        return new
+                return value
+            if isinstance(value, list):
+                return [swap(v) for v in value]
+            if isinstance(value, dict):
+                return {k: swap(v) for k, v in value.items()}
+            return value
+
+        hijacked = swap(hijacked)
+        hijacked["resources"]["tenant"]["name"] = f"Hijack {suffix}"
+
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=hijacked)
+        assert response.status_code == 409, response.text
+        assert "collision" in response.json()["message"].lower()
+
+        session = _db()
+        try:
+            # Transactional: the hijacking tenant was rolled back entirely.
+            assert session.get(Tenant, hijack_tid) is None
+            bot = session.get(VoiceBot, workspace["bot_id"])
+            assert bot.tenant_id == workspace["tenant_id"]
+        finally:
+            session.close()
+
+    def test_same_ids_under_different_existing_tenant_are_rejected(
+            self, client, workspace, package, super_admin):
+        # Even a package naming an EXISTING other tenant cannot steal rows.
+        stolen = copy.deepcopy(package)
+        bot_row = stolen["resources"]["bots"][0]
+        bot_row["id"] = workspace["foreign_bot_id"]
+        for section in ("voice_bot_settings", "prompts", "workflows", "intents",
+                        "test_scenarios", "runtime_context_schemas",
+                        "channel_configs", "api_connections", "knowledge_sources"):
+            for row in stolen["resources"].get(section) or []:
+                if row.get("bot_id") == workspace["bot_id"]:
+                    row["bot_id"] = workspace["foreign_bot_id"]
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=stolen)
+        assert response.status_code == 409, response.text
+
+        session = _db()
+        try:
+            foreign_bot = session.get(VoiceBot, workspace["foreign_bot_id"])
+            assert foreign_bot.tenant_id == workspace["foreign_tenant_id"]
+            assert foreign_bot.name == f"Transfer Foreign Bot {workspace['suffix']}"
+        finally:
+            session.close()
+
+
+# ── Guardrail provisioning on import ─────────────────────────────────────────
+
+
+def _purge_shared_guardrails(workspace) -> None:
+    """Simulate a live environment that has never seen this guardrail set."""
+    session = _db()
+    try:
+        session.execute(delete(GuardrailProfileRule).where(
+            GuardrailProfileRule.profile_id == workspace["profile_id"]))
+        session.execute(delete(GuardrailProfile).where(
+            GuardrailProfile.id == workspace["profile_id"]))
+        session.execute(delete(Guardrail).where(
+            Guardrail.id == workspace["guardrail_id"]))
+        session.commit()
+    finally:
+        session.close()
+
+
+class TestGuardrailProvisioning:
+    def test_missing_guardrail_is_created_with_same_id_rules_and_assignment(
+            self, client, workspace, package, super_admin):
+        _purge_shared_guardrails(workspace)
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=package))
+        assert report["created"]["guardrail"] == 1
+        assert report["created"]["guardrail_profile"] == 1
+        assert report["remappedIds"] == {}  # exported ids used verbatim
+
+        session = _db()
+        try:
+            suffix = workspace["suffix"]
+            # The rule row is recreated with its exact id and configuration.
+            guardrail = session.get(Guardrail, workspace["guardrail_id"])
+            assert guardrail is not None and not guardrail.is_deleted
+            assert guardrail.code == f"gtest_{suffix}"
+            assert guardrail.enforcement == "block" and guardrail.enabled
+
+            # The profile keeps its id, metadata and rule membership.
+            profile = session.get(GuardrailProfile, workspace["profile_id"])
+            assert profile is not None and not profile.is_deleted
+            assert profile.code == f"gp_{suffix}"
+            assert profile.status == "active" and profile.version == 3
+            rules = session.scalars(select(GuardrailProfileRule).where(
+                GuardrailProfileRule.profile_id == profile.id)).all()
+            assert [r.guardrail_id for r in rules] == [workspace["guardrail_id"]]
+
+            # And it is assigned back exactly as on local: tenant AND bot.
+            tenant = session.get(Tenant, workspace["tenant_id"])
+            assert tenant.guardrail_profile_id == workspace["profile_id"]
+            bot = session.get(VoiceBot, workspace["bot_id"])
+            assert bot.guardrail_profile_id == workspace["profile_id"]
+        finally:
+            session.close()
+
+    def test_repeated_import_reuses_the_created_guardrails_without_duplicates(
+            self, client, workspace, package, super_admin):
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=package))
+        assert report["reused"]["guardrail"] == 1
+        assert report["reused"]["guardrail_profile"] == 1
+        assert "guardrail" not in report["created"]
+        assert "guardrail_profile" not in report["created"]
+
+        session = _db()
+        try:
+            suffix = workspace["suffix"]
+            profiles = session.scalars(select(GuardrailProfile).where(
+                GuardrailProfile.code == f"gp_{suffix}")).all()
+            assert [p.id for p in profiles] == [workspace["profile_id"]]
+            guardrails = session.scalars(select(Guardrail).where(
+                Guardrail.code == f"gtest_{suffix}")).all()
+            assert [g.id for g in guardrails] == [workspace["guardrail_id"]]
+            rules = session.scalars(select(GuardrailProfileRule).where(
+                GuardrailProfileRule.profile_id == workspace["profile_id"])).all()
+            assert len(rules) == 1
+        finally:
+            session.close()
+
+    def test_conflicting_profile_id_is_rejected_without_partial_changes(
+            self, client, workspace, package, super_admin):
+        # Live's profile keeps the imported id but now represents a DIFFERENT
+        # profile (different code) — the import must not adopt or overwrite it.
+        suffix = workspace["suffix"]
+        session = _db()
+        try:
+            session.get(GuardrailProfile, workspace["profile_id"]).code = f"other_{suffix}"
+            session.commit()
+        finally:
+            session.close()
+
+        # Force the package to also CREATE a brand-new guardrail first, to
+        # prove the rollback discards everything written before the collision.
+        conflicted = copy.deepcopy(package)
+        fresh_guardrail_id = f"gr_fresh_{suffix}"
+        rule_row = conflicted["shared"]["guardrails"][0]
+        rule_row["id"] = fresh_guardrail_id
+        rule_row["code"] = f"gfresh_{suffix}"
+        rule_row["name"] = f"Fresh rule {suffix}"
+        for profile_row in conflicted["shared"]["guardrail_profiles"]:
+            for rule in profile_row["rules"]:
+                rule["guardrail_id"] = fresh_guardrail_id
+
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=conflicted)
+        assert response.status_code == 409, response.text
+        assert "guardrail profile" in response.json()["message"]
+
+        session = _db()
+        try:
+            # Rolled back: the pre-collision guardrail insert did not survive,
+            # and the live profile was not overwritten.
+            assert session.get(Guardrail, fresh_guardrail_id) is None
+            profile = session.get(GuardrailProfile, workspace["profile_id"])
+            assert profile.code == f"other_{suffix}"
+            profile.code = f"gp_{suffix}"  # restore for the remaining tests
+            session.commit()
+        finally:
+            session.close()
+
+    def test_conflicting_guardrail_id_is_rejected(
+            self, client, workspace, package, super_admin):
+        # Same id, but on live it is a logically different rule.
+        suffix = workspace["suffix"]
+        session = _db()
+        try:
+            live = session.get(Guardrail, workspace["guardrail_id"])
+            live.code = f"gother_{suffix}"
+            session.commit()
+        finally:
+            session.close()
+
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=package)
+        assert response.status_code == 409, response.text
+        assert workspace["guardrail_id"] in response.json()["message"]
+
+        session = _db()
+        try:
+            live = session.get(Guardrail, workspace["guardrail_id"])
+            assert live.code == f"gother_{suffix}"  # untouched
+            live.code = f"gtest_{suffix}"  # restore for the remaining tests
+            session.commit()
+        finally:
+            session.close()
+
+
+# ── Secret hygiene on import ──────────────────────────────────────────────────
+
+
+class TestSecretHygiene:
+    def test_raw_api_secret_is_rejected(self, client, package, super_admin):
+        tampered = copy.deepcopy(package)
+        tampered["resources"]["api_connections"][0]["secret_ref"] = "sk-live-RAW"
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=tampered)
+        assert response.status_code == 422, response.text
+        assert "secret" in response.json()["message"].lower()
+
+    def test_raw_channel_credential_is_rejected(self, client, package, super_admin):
+        tampered = copy.deepcopy(package)
+        channel = next(c for c in tampered["resources"]["channel_configs"]
+                       if c["type"] == "voice")
+        channel["config"]["authTokenReference"] = "raw-twilio-token"
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=tampered)
+        assert response.status_code == 422, response.text
+
+    def test_unsupported_schema_version_is_rejected(self, client, package, super_admin):
+        future = copy.deepcopy(package)
+        future["schema_version"] = 99
+        response = client.post(
+            f"{API}/tenants/import", headers=super_admin, json=future)
+        assert response.status_code == 422, response.text
+        assert "schema_version" in response.json()["message"]
+
+
+# ── Natural Conversation (human_speech) round-trip ────────────────────────────
+#
+# The Natural Conversation tab stores every naturalness setting inside the
+# JSON column voice_bot_settings.human_speech (tenant defaults in
+# tenant_settings.human_speech). The package must carry that object exactly:
+# nested selection maps included, nothing dropped, renamed, flattened or
+# retyped. The bot override below sets EVERY HUMAN_SPEECH_DEFAULTS key to a
+# non-default value so the whole object is verified, not only the four keys
+# the Natural Conversation tab added (latency_filler_kind,
+# filler_audio_selection, latency_filler_cue_selection, latency_cue_probability).
+
+_NATURAL_CONVERSATION_KEYS = (
+    "latency_filler_kind", "filler_audio_selection",
+    "latency_filler_cue_selection", "latency_cue_probability",
+)
+
+_BOT_HUMAN_SPEECH = {
+    "enabled": True,
+    "thinking_fillers": False,
+    "acknowledgements": True,
+    "backchannels": True,
+    "prosody_variation": False,
+    "gender_agreement": True,
+    "micro_pauses": False,
+    "self_correction": True,
+    "latency_fillers": True,
+    "sentence_breaths": False,
+    "thinking_filler_probability": 0.15,
+    "acknowledgement_probability": 0.6,
+    "tool_ack_probability": 0.8,
+    "backchannel_probability": 0.2,
+    "micro_pause_probability": 0.3,
+    "self_correction_probability": 0.02,
+    "sentence_breath_probability": 0.4,
+    "min_long_turn_for_backchannel_ms": 3000,
+    "min_gap_between_backchannels_ms": 9000,
+    "max_backchannels_per_call": 3,
+    "latency_filler_delay_ms": 1200,
+    "latency_filler_ladder": True,
+    "latency_filler_hmm_ms": 3000,
+    "latency_filler_spoken_ms": 6000,
+    "latency_filler_kind": "inhale_exhale",
+    "filler_audio_selection": {
+        "breath": {
+            "male": {
+                "primary": "synth:breath:male:3",
+                "alternates": ["synth:breath:male:1", "file:breath_male_ops.wav"],
+            },
+            "female": {"primary": "file:breath_female_studio.wav", "alternates": []},
+        },
+        "inhale_exhale": {
+            "neutral": {
+                "alternates": ["synth:inhale_exhale:neutral:2",
+                               "synth:inhale_exhale:neutral:1"],
+            },
+        },
+    },
+    "latency_filler_cue_selection": {
+        "hi": {"primary": "hmm", "alternates": ["achha", "ji", "theek_hai"]},
+        "en": {"primary": "hmm", "alternates": ["okay"]},
+    },
+    "latency_cue_probability": 0.55,
+    "breathing": False,
+    "filler_words": False,
+    "breath_gain_db": -6.0,
+    "adaptive_latency_cues": True,
+    "background_ambience": True,
+    "background_ambience_preset": "busy_office",
+    "background_ambience_volume": 72,
+}
+
+# Tenant-wide defaults (sparse), including the new keys, so the tenant layer
+# of the package is verified too.
+_TENANT_HUMAN_SPEECH = {
+    "backchannels": False,
+    "latency_filler_delay_ms": 1800,
+    "latency_filler_kind": "inhale",
+    "latency_filler_cue_selection": {"hi": {"primary": "ji", "alternates": ["hmm"]}},
+    "latency_cue_probability": 0.9,
+    "background_ambience_preset": "room_tone",
+}
+
+
+def _canonical(value) -> str:
+    """Type-strict comparison form: dict equality alone treats True == 1 and
+    1.0 == 1, which would hide a retyped value."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=True)
+
+
+def _retenant(package: dict, *, tenant_id: str, suffix: str) -> dict:
+    """The same package addressed to a brand-new tenant: fresh tenant, bot and
+    settings ids so it lands next to the source instead of updating it."""
+    pkg = copy.deepcopy(package)
+    res = pkg["resources"]
+    old_tid = res["tenant"]["id"]
+    ids = {old_tid: tenant_id, res["tenant_settings"]["id"]: new_id("tset")}
+    for bot in res["bots"]:
+        ids[bot["id"]] = new_id("bot")
+    for row in res["voice_bot_settings"]:
+        ids[row["id"]] = new_id("vbs")
+
+    def swap(value):
+        if isinstance(value, str):
+            return ids.get(value, value)
+        if isinstance(value, list):
+            return [swap(v) for v in value]
+        if isinstance(value, dict):
+            return {k: swap(v) for k, v in value.items()}
+        return value
+
+    pkg = swap(pkg)
+    tenant = pkg["resources"]["tenant"]
+    tenant["name"] = f"NC Target {suffix}"
+    tenant["code"] = f"nct_{suffix}"
+    tenant["domain"] = f"nc-target-{suffix}.example.test"
+    tenant["admin_email"] = f"nc.target.{suffix}@example.test"
+    return pkg
+
+
+@pytest.fixture(scope="module")
+def nc_source():
+    """A minimal source tenant whose only interesting configuration is the
+    Natural Conversation plane: tenant defaults + one bot with a full override."""
+    from shared.orchestration.naturalness import (
+        HUMAN_SPEECH_DEFAULTS, validate_human_speech,
+    )
+
+    # The fixture values must be exactly what the UI could have saved through
+    # PUT /bots/{id}/voice-settings, and must cover every known key — a new
+    # key added to HUMAN_SPEECH_DEFAULTS fails here until it is covered too.
+    assert validate_human_speech(_BOT_HUMAN_SPEECH) == []
+    assert validate_human_speech(_TENANT_HUMAN_SPEECH) == []
+    assert set(_BOT_HUMAN_SPEECH) == set(HUMAN_SPEECH_DEFAULTS)
+
+    suffix = uuid.uuid4().hex[:10]
+    session = _db()
+    cleanup_ids: list[str] = []
+    try:
+        tenant = Tenant(
+            id=new_id("tn"), name=f"NC Source {suffix}", code=f"ncs_{suffix}",
+            domain=f"nc-source-{suffix}.example.test", status="active",
+            admin_email=f"nc.source.{suffix}@example.test",
+        )
+        session.add(tenant)
+        session.flush()
+        cleanup_ids.append(tenant.id)
+        tenant_settings = TenantSetting(
+            id=new_id("tset"), tenant_id=tenant.id, timezone="Asia/Kolkata",
+            human_speech=copy.deepcopy(_TENANT_HUMAN_SPEECH),
+        )
+        bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"NC Bot {suffix}",
+            use_case="Natural conversation", status="draft",
+        )
+        session.add_all([tenant_settings, bot])
+        session.flush()
+        settings_row = VoiceBotSetting(
+            id=new_id("vbs"), bot_id=bot.id, tenant_id=tenant.id,
+            speed=1.05, pause_ms=320, stt_provider="sarvam", tts_provider="sarvam",
+            human_speech=copy.deepcopy(_BOT_HUMAN_SPEECH),
+        )
+        session.add(settings_row)
+        session.commit()
+
+        yield {
+            "suffix": suffix,
+            "tenant_id": tenant.id,
+            "tenant_settings_id": tenant_settings.id,
+            "bot_id": bot.id,
+            "settings_id": settings_row.id,
+            "cleanup_ids": cleanup_ids,
+        }
+    finally:
+        session.rollback()
+        session.close()
+        _purge_tenant_graph(cleanup_ids)
+
+
+@pytest.fixture(scope="module")
+def nc_package_text(client, nc_source, super_admin) -> str:
+    """The export exactly as the operator downloads it — the raw JSON text, so
+    the tests exercise real serialization, not the in-memory dict."""
+    response = client.get(
+        f"{API}/tenants/{nc_source['tenant_id']}/export",
+        headers=super_admin, params={"includeKnowledge": "false"},
+    )
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+def _stored_human_speech(session, *, tenant_id: str, bot_id: str) -> tuple[dict | None, dict | None]:
+    settings_row = session.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot_id))
+    tenant_row = session.scalar(
+        select(TenantSetting).where(TenantSetting.tenant_id == tenant_id))
+    assert settings_row is not None and tenant_row is not None
+    return settings_row.human_speech, tenant_row.human_speech
+
+
+class TestNaturalConversationTransfer:
+    def test_export_carries_the_whole_human_speech_object(self, nc_package_text, nc_source):
+        package = json.loads(nc_package_text)["data"]
+        rows = [r for r in package["resources"]["voice_bot_settings"]
+                if r["bot_id"] == nc_source["bot_id"]]
+        assert len(rows) == 1
+        assert _canonical(rows[0]["human_speech"]) == _canonical(_BOT_HUMAN_SPEECH)
+        assert _canonical(package["resources"]["tenant_settings"]["human_speech"]) == (
+            _canonical(_TENANT_HUMAN_SPEECH))
+        # The nested selections are present as objects — never flattened or
+        # stringified by the row serializer.
+        selection = rows[0]["human_speech"]["filler_audio_selection"]
+        assert selection["breath"]["male"]["alternates"] == [
+            "synth:breath:male:1", "file:breath_male_ops.wav"]
+        assert selection["inhale_exhale"]["neutral"] == {
+            "alternates": ["synth:inhale_exhale:neutral:2", "synth:inhale_exhale:neutral:1"]}
+        assert rows[0]["human_speech"]["latency_filler_cue_selection"]["hi"]["alternates"] == [
+            "achha", "ji", "theek_hai"]
+
+    def test_import_into_fresh_environment_restores_exactly(
+            self, client, nc_source, nc_package_text, super_admin):
+        # The live side: the tenant graph does not exist yet.
+        _purge_tenant_graph([nc_source["tenant_id"]])
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin,
+            json=json.loads(nc_package_text)["data"]))
+        assert report["tenantId"] == nc_source["tenant_id"]
+        assert report["created"]["voice_bot_settings"] == 1
+        assert report["created"]["tenant_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=nc_source["tenant_id"], bot_id=nc_source["bot_id"])
+            assert _canonical(bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+            settings_row = session.get(VoiceBotSetting, nc_source["settings_id"])
+            assert settings_row.bot_id == nc_source["bot_id"]  # id preserved
+        finally:
+            session.close()
+
+        # What the Natural Conversation tab loads after the import is the
+        # source override, and the effective resolution honours it.
+        settings = _data(client.get(
+            f"{API}/bots/{nc_source['bot_id']}/voice-settings", headers=super_admin))
+        assert _canonical(settings["humanSpeech"]) == _canonical(_BOT_HUMAN_SPEECH)
+        effective = settings["humanSpeechEffective"]
+        assert effective["latency_filler_kind"] == "inhale_exhale"
+        assert _canonical(effective["filler_audio_selection"]) == (
+            _canonical(_BOT_HUMAN_SPEECH["filler_audio_selection"]))
+        assert _canonical(effective["latency_filler_cue_selection"]) == (
+            _canonical(_BOT_HUMAN_SPEECH["latency_filler_cue_selection"]))
+        assert effective["latency_cue_probability"] == 0.55
+        assert all(settings["humanSpeechSources"][k] == "bot"
+                   for k in _NATURAL_CONVERSATION_KEYS)
+        # Tenant defaults are the inherited layer the tab shows.
+        inherited = settings["humanSpeechInherited"]
+        assert inherited["latency_filler_kind"] == "inhale"
+        assert inherited["latency_filler_cue_selection"] == (
+            _TENANT_HUMAN_SPEECH["latency_filler_cue_selection"])
+        assert settings["humanSpeechInheritedSources"]["latency_cue_probability"] == "tenant"
+
+    def test_import_into_a_different_tenant_restores_exactly(
+            self, client, nc_source, nc_package_text, super_admin):
+        suffix = nc_source["suffix"]
+        target_tid = new_id("tn")
+        nc_source["cleanup_ids"].append(target_tid)
+        pkg = _retenant(json.loads(nc_package_text)["data"],
+                        tenant_id=target_tid, suffix=suffix)
+        target_bot_id = pkg["resources"]["bots"][0]["id"]
+        assert target_bot_id != nc_source["bot_id"]
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=pkg))
+        assert report["tenantId"] == target_tid
+        assert report["created"]["tenant"] == 1
+        assert report["created"]["voice_bot_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=target_tid, bot_id=target_bot_id)
+            assert _canonical(bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+            # The source tenant (re-imported by the previous test) is untouched.
+            src_bot_hs, src_tenant_hs = _stored_human_speech(
+                session, tenant_id=nc_source["tenant_id"], bot_id=nc_source["bot_id"])
+            assert _canonical(src_bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(src_tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+        finally:
+            session.close()
+
+    def test_legacy_package_without_natural_conversation_keys_imports(
+            self, client, nc_source, nc_package_text, super_admin):
+        """An export written before the Natural Conversation tab existed: the
+        bot override carries only the older keys and the tenant settings row
+        predates the human_speech column entirely. It must import unchanged
+        (no keys invented, nothing rejected) and the runtime resolution must
+        fall through to the platform defaults for the newer keys."""
+        from shared.orchestration.naturalness import (
+            HUMAN_SPEECH_DEFAULTS, resolve_human_speech_with_sources,
+        )
+
+        suffix = nc_source["suffix"]
+        target_tid = new_id("tn")
+        nc_source["cleanup_ids"].append(target_tid)
+        pkg = _retenant(json.loads(nc_package_text)["data"],
+                        tenant_id=target_tid, suffix=f"legacy{suffix}")
+        legacy_bot_hs = {
+            k: v for k, v in _BOT_HUMAN_SPEECH.items()
+            if k not in _NATURAL_CONVERSATION_KEYS
+        }
+        pkg["resources"]["voice_bot_settings"][0]["human_speech"] = copy.deepcopy(legacy_bot_hs)
+        del pkg["resources"]["tenant_settings"]["human_speech"]
+        target_bot_id = pkg["resources"]["bots"][0]["id"]
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=pkg))
+        assert report["tenantId"] == target_tid
+        assert report["created"]["voice_bot_settings"] == 1
+        assert report["created"]["tenant_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=target_tid, bot_id=target_bot_id)
+            assert _canonical(bot_hs) == _canonical(legacy_bot_hs)
+            assert tenant_hs is None  # absent column value stays NULL → inherit
+        finally:
+            session.close()
+
+        effective, sources = resolve_human_speech_with_sources(tenant_hs, bot_hs)
+        for key in _NATURAL_CONVERSATION_KEYS:
+            assert effective[key] == HUMAN_SPEECH_DEFAULTS[key]
+            assert sources[key] == "platform"
+        assert effective["latency_filler_delay_ms"] == 1200
+        assert sources["latency_filler_delay_ms"] == "bot"
+        # The API path agrees with the shared resolver.
+        settings = _data(client.get(
+            f"{API}/bots/{target_bot_id}/voice-settings", headers=super_admin))
+        assert _canonical(settings["humanSpeech"]) == _canonical(legacy_bot_hs)
+        assert settings["humanSpeechEffective"]["latency_filler_kind"] == "breath"
+        assert settings["humanSpeechEffective"]["filler_audio_selection"] == {}
+
+
+# ── Orphan bot-scoped rows (soft-deleted bots) ────────────────────────────────
+# Regression for the production import that failed with "knowledge source
+# references bot which is not in the package": the exporter kept bot-scoped
+# knowledge sources (and API connections) whose bot had been soft-deleted,
+# while bots themselves are exported live-only.
+
+
+async def _orphan_workspace():
+    """A tenant with one live bot and one soft-deleted bot. Each bot owns a
+    knowledge source (with a PostgreSQL document) and an API connection; one
+    knowledge source and one connection are tenant-wide."""
+    suffix = uuid.uuid4().hex[:10]
+    session = _db()
+    try:
+        tenant = Tenant(
+            id=new_id("tn"), name=f"Orphan Source {suffix}", code=f"or_{suffix}",
+            domain=f"orphan-{suffix}.example.test", status="active",
+            admin_email=f"ops.orphan.{suffix}@example.test",
+        )
+        session.add(tenant)
+        session.flush()
+        live_bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"Live Bot {suffix}",
+            status="published", version="v1.0.0",
+        )
+        dead_bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"Deleted Bot {suffix}",
+            status="archived", version="v1.0.0", is_deleted=True,
+            deleted_at=datetime(2026, 9, 1, 6, 33, 6),
+        )
+        session.add_all([live_bot, dead_bot])
+        session.flush()
+        rows = {
+            "tenant_id": tenant.id, "live_bot": live_bot.id, "dead_bot": dead_bot.id,
+            "kb_live": new_id("ks"), "kb_dead": new_id("ks"), "kb_tenant": new_id("ks"),
+            "api_live": new_id("api"), "api_dead": new_id("api"), "api_tenant": new_id("api"),
+        }
+        for key, bot_id, scope in (("kb_live", live_bot.id, "bot"),
+                                   ("kb_dead", dead_bot.id, "bot"),
+                                   ("kb_tenant", None, "tenant")):
+            session.add(KnowledgeSource(
+                id=rows[key], tenant_id=tenant.id, bot_id=bot_id, scope=scope,
+                type="document", name=f"{key} {suffix}", status="indexed",
+                chunks=1, size_kb=1,
+            ))
+        for key, bot_id in (("api_live", live_bot.id), ("api_dead", dead_bot.id),
+                            ("api_tenant", None)):
+            session.add(ApiConnection(
+                id=rows[key], tenant_id=tenant.id, bot_id=bot_id,
+                name=f"{key} {suffix}", method="GET",
+                url=f"https://{key}.example.test/{{{{id}}}}",
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+    from shared.db.postgres import get_pg_sessionmaker
+    from shared.knowledge.models import KnowledgeChunk, KnowledgeDocument
+
+    rows["docs"] = {}
+    async with get_pg_sessionmaker()() as pg:
+        for key in ("kb_live", "kb_dead", "kb_tenant"):
+            doc_id, chunk_id = new_id("kdoc"), new_id("kch")
+            rows["docs"][key] = doc_id
+            pg.add(KnowledgeDocument(
+                id=doc_id, tenant_id=rows["tenant_id"], kb_id=rows[key],
+                file_name=f"{key}.txt", file_ext="txt", mime_type="text/plain",
+                size_bytes=16, content_hash="h" * 64, status="completed", chunk_count=1,
+            ))
+            await pg.flush()
+            pg.add(KnowledgeChunk(
+                id=chunk_id, tenant_id=rows["tenant_id"], kb_id=rows[key],
+                document_id=doc_id, chunk_index=0, content=f"{key} content",
+                content_hash="c" * 64, embedding=[0.5] * 1536,
+                embedding_model="mock", embedding_dimension=1536,
+            ))
+        await pg.commit()
+    return rows
+
+
+async def _purge_orphan_workspace(rows: dict) -> None:
+    await _purge_knowledge_plane([rows["kb_live"], rows["kb_dead"], rows["kb_tenant"]])
+    _purge_tenant_graph([rows["tenant_id"]])
+
+
+@pytest.fixture()
+async def orphan_rows():
+    rows = await _orphan_workspace()
+    try:
+        yield rows
+    finally:
+        await _purge_orphan_workspace(rows)
+
+
+class TestOrphanBotScopedRows:
+    def _export(self, rows):
+        from backend.core.tenant_transfer import export_tenant
+
+        session = _db()
+        try:
+            tenant = session.get(Tenant, rows["tenant_id"])
+            return export_tenant(session, tenant)
+        finally:
+            session.close()
+
+    async def test_export_leaves_out_rows_of_soft_deleted_bots(self, orphan_rows):
+        from backend.core.tenant_transfer import import_tenant, validate_package
+
+        rows = orphan_rows
+        package = self._export(rows)
+        res = package["resources"]
+        assert [b["id"] for b in res["bots"]] == [rows["live_bot"]]
+        assert {k["id"] for k in res["knowledge_sources"]} == {rows["kb_live"], rows["kb_tenant"]}
+        assert {a["id"] for a in res["api_connections"]} == {rows["api_live"], rows["api_tenant"]}
+        assert package["source"]["excluded"] == {
+            "api_connections": [{"id": rows["api_dead"], "bot_id": rows["dead_bot"]}],
+            "knowledge_sources": [{"id": rows["kb_dead"], "bot_id": rows["dead_bot"]}],
+        }
+        # The exported package is importable as-is (dry run, rolled back).
+        validate_package(copy.deepcopy(package))
+        session = _db()
+        try:
+            admin = session.execute(
+                select(User).where(User.email == "admin@aurexion.com")).scalar_one()
+            report, kb_plane = import_tenant(session, copy.deepcopy(package), admin)
+            assert report["updated"].get("knowledge_source") == 2
+            assert report["updated"].get("api_connection") == 2
+        finally:
+            session.rollback()
+            session.close()
+
+    async def test_knowledge_plane_follows_the_exported_sources(
+        self, orphan_rows, client, super_admin,
+    ):
+        rows = orphan_rows
+        package = _data(client.get(
+            f"{API}/tenants/{rows['tenant_id']}/export?includeKnowledge=true",
+            headers=super_admin,
+        ))
+        documents = package["knowledge_plane"]["documents"]
+        assert {d["kb_id"] for d in documents} == {rows["kb_live"], rows["kb_tenant"]}
+        assert {d["id"] for d in documents} == {rows["docs"]["kb_live"], rows["docs"]["kb_tenant"]}
+        assert all(len(d["chunks"]) == 1 for d in documents)
+        assert package["source"]["excluded"]["knowledge_sources"][0]["id"] == rows["kb_dead"]
+
+    async def test_package_with_orphans_is_rejected_naming_all_of_them(
+        self, orphan_rows, client, super_admin,
+    ):
+        from backend.core.tenant_transfer import InvalidPackage, validate_package
+
+        rows = orphan_rows
+        package = self._export(rows)
+        # A package from an older exporter: orphan rows still present.
+        package["resources"]["knowledge_sources"].append({
+            "id": rows["kb_dead"], "tenant_id": rows["tenant_id"], "bot_id": rows["dead_bot"],
+            "scope": "bot", "type": "document", "name": "orphan kb", "status": "indexed",
+        })
+        package["resources"]["api_connections"].append({
+            "id": rows["api_dead"], "tenant_id": rows["tenant_id"], "bot_id": rows["dead_bot"],
+            "name": "orphan api", "method": "GET", "url": "https://x.example.test",
+        })
+        with pytest.raises(InvalidPackage) as exc:
+            validate_package(copy.deepcopy(package))
+        message = str(exc.value)
+        assert rows["kb_dead"] in message and rows["api_dead"] in message
+        assert rows["dead_bot"] in message and "soft-deleted" in message
+
+        # Through the API: 422 with the same message and nothing changed.
+        before = {k["id"] for k in self._export(rows)["resources"]["knowledge_sources"]}
+        response = client.post(f"{API}/tenants/import", json=package, headers=super_admin)
+        assert response.status_code == 422, response.text
+        assert rows["kb_dead"] in response.json()["message"]
+        assert {k["id"] for k in self._export(rows)["resources"]["knowledge_sources"]} == before

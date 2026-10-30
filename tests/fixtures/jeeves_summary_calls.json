@@ -1,0 +1,1102 @@
+[
+ {
+  "id": "pickup_done_hinglish",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ address सही है, लेकिन maine device already de diya hai, kal pickup ho gaya tha"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "nahi bhai, pickup already ho gaya hai, courier wala phone le gaya"
+   },
+   {
+    "role": "bot",
+    "text": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+   },
+   {
+    "role": "user",
+    "text": "ठीक है"
+   },
+   {
+    "role": "bot",
+    "text": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+   }
+  ],
+  "slots": {
+   "visit_status": "incomplete",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes"
+  },
+  "expected": {
+   "already_picked_up": "Yes",
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "pickup_pending_booked",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "abhi tak koi pickup karne nahi aaya, kal sham 5 baje aa jao"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 5 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ ठीक है"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "kal",
+   "visit_time": "sham 5 baje",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "17:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 5 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 5 PM"
+  },
+  "expected": {
+   "already_picked_up": "No",
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "address_change_requested",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "नहीं, ये मेरा address नहीं है, mera address change kar do, naya address Andheri East Mumbai hai"
+   },
+   {
+    "role": "bot",
+    "text": "Rahul ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी।"
+   }
+  ],
+  "slots": {
+   "visit_status": "address_mismatch",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "sub_disposition": "Address Mismatch",
+   "address_verified": "no"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "address_changed": "Yes",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "address_already_updated",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "maine kal address update kar diya tha, naya address hi sahi hai"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।"
+   },
+   {
+    "role": "user",
+    "text": "परसों सुबह 11 बजे"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer परसों सुबह 11 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "परसों",
+   "visit_time": "सुबह 11 बजे",
+   "visit_date_iso": "2026-10-30",
+   "visit_time_24h": "11:00",
+   "visit_day_spoken_hi": "परसों",
+   "visit_time_spoken_hi": "सुबह 11 बजे",
+   "visit_day_spoken_en": "day after tomorrow",
+   "visit_time_spoken_en": "at 11 AM"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "refund_request",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "mujhe paise wapas chahiye, payment wapas kar do. pickup kal sham 4 baje"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 4 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "kal",
+   "visit_time": "sham 4 baje",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "16:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 4 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 4 PM"
+  },
+  "expected": {
+   "refund_status": "requested",
+   "refund_requested": "Yes",
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "refund_inquiry",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "mera refund kab milega?"
+   },
+   {
+    "role": "bot",
+    "text": "मुझे इस call पर refund के बारे में जानकारी नहीं है। हम इस call में सिर्फ equipment pickup और uninstallation की बात कर रहे हैं। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल सुबह 10 बजे"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल सुबह 10 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "कल",
+   "visit_time": "सुबह 10 बजे",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "10:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "सुबह 10 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 10 AM"
+  },
+  "expected": {
+   "refund_status": "status_inquiry",
+   "refund_requested": "Yes",
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "refund_received",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है, aur mujhe refund mil gaya hai, thanks"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल शाम 6 बजे"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 6 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "कल",
+   "visit_time": "शाम 6 बजे",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "18:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 6 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 6 PM"
+  },
+  "expected": {
+   "refund_status": "reported_refunded",
+   "refund_requested": "No",
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "english_mixed",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "yes speaking"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "yes"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "no, the address is wrong, I moved to Powai, Mumbai. Also I already handed over the router to the courier last week"
+   },
+   {
+    "role": "bot",
+    "text": "Rahul ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी।"
+   }
+  ],
+  "slots": {
+   "visit_status": "address_mismatch",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "sub_disposition": "Address Mismatch",
+   "address_verified": "no"
+  },
+  "expected": {
+   "already_picked_up": "Yes",
+   "refund_status": null,
+   "address_changed": "Yes",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "callback_plain",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "नहीं अभी busy हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "कोई बात नहीं। आप बताइए, हम आपको किस दिन और किस समय call back करें?"
+   },
+   {
+    "role": "user",
+    "text": "कल सुबह 10 बजे call karna"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, हम आपको आपके बताए समय पर call back करेंगे। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "callback_requested",
+   "identity_answer": "yes",
+   "callback_preference": "कल सुबह 10 बजे call karna",
+   "callback_date": "कल",
+   "callback_time": "सुबह 10 बजे",
+   "callback_date_iso": "2026-10-29",
+   "callback_time_24h": "10:00"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "refund_status": null,
+   "refund_requested": null,
+   "address_changed": null,
+   "updated_address": null
+  }
+ },
+ {
+  "id": "pickup_future_null",
+  "note": "A question whether the engineer will come tomorrow is read as pickup pending by the model; never Yes.",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "kal pickup karne aayenge na? theek hai, kal sham 4 baje"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 4 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "kal",
+   "visit_time": "sham 4 baje",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "16:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 4 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 4 PM"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
+  },
+  "allowed": {
+   "already_picked_up": [
+    null,
+    "No"
+   ]
+  }
+ },
+ {
+  "id": "refund_hypothetical",
+  "note": "A conditional refund question on an already-disconnected line is read as a status inquiry by the model; never requested.",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "agar main connection cancel karu to refund milega kya? bas pooch raha hoon"
+   },
+   {
+    "role": "bot",
+    "text": "मुझे इस call पर refund के बारे में जानकारी नहीं है। ये call सिर्फ़ equipment के uninstallation और pickup के लिए है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल सुबह 10 बजे"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल सुबह 10 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "कल",
+   "visit_time": "सुबह 10 बजे",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "10:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "सुबह 10 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 10 AM"
+  },
+  "expected": {
+   "refund_status": null,
+   "refund_requested": null,
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  },
+  "allowed": {
+   "refund_status": [
+    null,
+    "status_inquiry"
+   ],
+   "refund_requested": [
+    null,
+    "Yes"
+   ]
+  }
+ },
+ {
+  "id": "pickup_corrected_no",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "device de diya tha... nahi wait, woh doosra parcel tha, router abhi mere paas hai. kal sham 5 baje aa jao"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 5 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "kal",
+   "visit_time": "sham 5 baje",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "17:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 5 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 5 PM"
+  },
+  "expected": {
+   "already_picked_up": "No",
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "refund_pending_complaint",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "refund abhi tak nahi aaya, 15 din ho gaye, kab aayega?"
+   },
+   {
+    "role": "bot",
+    "text": "मुझे इस call पर refund के बारे में जानकारी नहीं है। यह call सिर्फ़ equipment के uninstallation और pickup के लिए है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल सुबह 10 बजे"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल सुबह 10 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "कल",
+   "visit_time": "सुबह 10 बजे",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "10:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "सुबह 10 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 10 AM"
+  },
+  "expected": {
+   "refund_status": "status_inquiry",
+   "refund_requested": "Yes",
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "address_correction_in_flow",
+  "note": "The flow itself books the visit to the registered address; the summary records the requested change.",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ सही है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "ek minute, address galat hai, mera naya address B-12 Sector 15 Noida hai, update kar do. pickup kal sham 5 baje"
+   },
+   {
+    "role": "bot",
+    "text": "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम 5 बजे आपके registered address Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "visit_status": "booked",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes",
+   "visit_day": "kal",
+   "visit_time": "sham 5 baje",
+   "visit_date_iso": "2026-10-29",
+   "visit_time_24h": "17:00",
+   "visit_day_spoken_hi": "कल",
+   "visit_time_spoken_hi": "शाम 5 बजे",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_time_spoken_en": "at 5 PM"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "pickup_done_hindi",
+  "note": "",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात {customer_name} जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोल रहा हूँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके Sector 62, Noida वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "मैंने डिवाइस पहले ही दे दिया है, कल पिकअप हो गया था"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। लेकिन हम आपके Airtel Broadband connection के बारे में बात कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है, और हमें अभी भी device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं अभी visit schedule कर दूँ?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "ठीक है"
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   }
+  ],
+  "slots": {
+   "visit_status": "incomplete",
+   "identity_answer": "yes",
+   "connection_status": "DISCONNECTED",
+   "locality": "Sector 62, Noida",
+   "address_verified": "yes"
+  },
+  "expected": {
+   "already_picked_up": "Yes",
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "cv_21df0c56facf",
+  "note": "Real local browser test call, 2026-10-29 05:52 UTC, workflow v22, gpt-6-luna. The customer rejected the registered address, gave the new one with conversational filler, booked the visit for tomorrow. Before the fix the structured summary showed every analyst field null and the readback repeated the filler as the address.",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात Rahul जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ जी।"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके address Sector 62, Noida वाले Airtel Broadband connection के संबंध में कॉल कर रहे हैं। Rahul जी, आपका broadband connection disconnect हो चुका है। इसलिए device के uninstallation और pickup के लिए engineer की visit schedule करनी है। क्या अभी बात करने का सही समय है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोलिए।"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद Rahul जी। जैसा कि मैंने आपको बताया, आपका broadband connection disconnect हो चुका है। अब बस आपके घर से device का uninstallation और pickup करवाना बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "नहीं नहीं, मैं लोकेशन चेंज कर दिया हूँ।"
+   },
+   {
+    "role": "bot",
+    "text": "कोई बात नहीं। आप please अपना सही address pincode के साथ बताइए, जहाँ से device का uninstallation और pickup होना है।"
+   },
+   {
+    "role": "user",
+    "text": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041."
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल कर दो।"
+   },
+   {
+    "role": "bot",
+    "text": "हमारे इंजीनियर कल आपके नए पते, मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041, पर Airtel Broadband डिवाइस हटाने और लेने आएँगे। आने का सही समय इंजीनियर आपको कॉल करके बताएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ ठीक रहेगा।"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "locality": "Sector 62, Noida",
+   "visit_day": "कल",
+   "new_address": "थाने सेक्टर 16, 404041",
+   "new_address_raw": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041.",
+   "visit_status": "booked",
+   "visit_date_iso": "2026-10-30",
+   "identity_answer": "yes",
+   "address_verified": "changed",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_day_spoken_hi": "कल"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "refund_status": null,
+   "refund_requested": null,
+   "address_changed": "Yes",
+   "updated_address": "थाने सेक्टर 16, 404041"
+  }
+ }
+]

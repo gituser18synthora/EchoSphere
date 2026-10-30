@@ -8,6 +8,8 @@ same ASGI app in-process:
 - webhook: signature/replay, payload validation, number→bot routing, and the
   per-campaign `botId` selection (tenant anchored by the dialed number —
   unknown/inactive/cross-tenant bots are sanitized 404s),
+- webhook: direct bot routing (`To` = `bot_…`, no DID assignment) through the
+  same eligibility gates, on both the vaani and freeswitch provider paths,
 - WebSocket: session validation and the connected/start/media/stop lifecycle
   with fully mocked STT/LLM/TTS providers,
 - the returned WS URL honoring TELEPHONY_PUBLIC_WS_BASE,
@@ -304,6 +306,111 @@ class TestWebhookRouting:
                                        content=body, headers=headers)
             assert response.status_code == 200
             assert session_in_redis(response.json()["url"])["bot_id"] == rig.bot_a2
+
+
+class TestBotIdDialedTarget:
+    """``To`` may name a bot directly (``bot_…``) instead of a DID — the
+    FreeSWITCH bridge's direct bot routing. No number assignment is needed;
+    the same eligibility gates and voice-session flow apply. Bot A2 has no
+    DID of its own, so every 200 here proves the number table was not used."""
+
+    def test_bot_id_in_to_routes_without_a_did(self, client, rig):
+        body, headers = signed(call_payload(rig.bot_a2))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 200, response.text
+        session = session_in_redis(response.json()["url"])
+        assert session is not None
+        assert session["bot_id"] == rig.bot_a2
+        assert session["tenant_id"] == rig.tenant_a
+        assert session["channel"] == "phone"
+
+    def test_freeswitch_provider_accepts_bot_id_in_to(self, client, rig):
+        body, headers = signed(call_payload(rig.bot_a2))
+        response = client.post("/telephony/webhook/freeswitch", content=body, headers=headers)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert "/ws/telephony/freeswitch/vs_" in payload["audio_stream_url"]
+        assert payload["audio_fork_url"].endswith("?transport=audio_fork")
+        assert session_in_redis(payload["audio_stream_url"])["bot_id"] == rig.bot_a2
+
+    def test_freeswitch_provider_did_still_routes(self, client, rig):
+        body, headers = signed(call_payload(rig.number))
+        response = client.post("/telephony/webhook/freeswitch", content=body, headers=headers)
+        assert response.status_code == 200, response.text
+        assert session_in_redis(response.json()["audio_stream_url"])["bot_id"] == rig.bot_a1
+
+    def test_payload_fields_preserved_on_bot_id_route(self, client, rig):
+        call_id = f"CALL-{uuid.uuid4().hex[:12]}"
+        body, headers = signed({
+            "To": rig.bot_a2, "From": "+919812345678", "callId": call_id,
+            "contextLine": "inbound-api-routing-phone", "city": "Pune",
+            "variables": {"customer_name": "Gateway Test"},
+        })
+        response = client.post("/telephony/webhook/freeswitch", content=body, headers=headers)
+        assert response.status_code == 200, response.text
+        session = session_in_redis(response.json()["audio_stream_url"])
+        assert session["caller"] == "+919812345678"
+        assert session["call_id"] == call_id
+        assert session["variables"] == {"customer_name": "Gateway Test"}
+
+    def test_bot_id_selects_sibling_within_the_anchored_tenant(self, client, rig):
+        body, headers = signed(call_payload(rig.bot_a1, botId=rig.bot_a2))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 200, response.text
+        assert session_in_redis(response.json()["url"])["bot_id"] == rig.bot_a2
+
+    def test_cross_tenant_bot_id_rejected(self, client, rig):
+        body, headers = signed(call_payload(rig.bot_a1, botId=rig.bot_b1))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 404  # sanitized: existence not revealed
+
+    def test_unpublished_bot_in_to_404(self, client, rig):
+        body, headers = signed(call_payload(rig.bot_a3))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 404
+
+    def test_archived_bot_in_to_404(self, client, rig):
+        def set_status(status):
+            session = get_sessionmaker()()
+            try:
+                session.get(VoiceBot, rig.bot_a3).status = status
+                session.commit()
+            finally:
+                session.close()
+
+        set_status("archived")
+        try:
+            body, headers = signed(call_payload(rig.bot_a3))
+            response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+            assert response.status_code == 404
+        finally:
+            set_status("draft")
+
+    def test_unknown_bot_in_to_404(self, client):
+        body, headers = signed(call_payload("bot_does_not_exist"))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 404
+
+    def test_malformed_bot_id_in_to_422(self, client):
+        body, headers = signed(call_payload("bot_../../etc/passwd"))
+        response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+        assert response.status_code == 422
+
+    def test_disabled_voice_channel_in_to_403(self, client, rig):
+        rig.disable_voice_channel(rig.bot_a2)
+        try:
+            body, headers = signed(call_payload(rig.bot_a2))
+            response = client.post("/telephony/webhook/vaani", content=body, headers=headers)
+            assert response.status_code == 403
+        finally:
+            session = get_sessionmaker()()
+            try:
+                row = session.get(ChannelConfig, rig.channel_id)
+                if row is not None:
+                    session.delete(row)
+                    session.commit()
+            finally:
+                session.close()
 
 
 class TestMediaWebSocket:

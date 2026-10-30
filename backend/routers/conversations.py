@@ -8,27 +8,42 @@ stays in MySQL as the source of truth.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.date_filters import parse_date_range
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     get_current_user,
+    is_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
 )
+from backend.core.transcripts import (
+    find_transcript_doc,
+    recording_descriptor,
+    resolve_recording_path,
+    ui_turns,
+)
 from shared.errors import NotFoundError
 from shared.ids import new_id
-from backend.core.pagination import PageParams, page_params
+from shared.models.billing_models import BASE_CURRENCY
+from backend.core.pagination import PageParams, apply_sort, page_params
 from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
-from shared.models import ConversationSession, User, VoiceBot
-from backend.serializers import serialize_conversation
+from shared.models import ConversationMemory, ConversationSession, UsageEvent, User, VoiceBot
+from backend.serializers import (
+    serialize_conversation,
+    serialize_conversation_memory,
+)
 
 router = APIRouter(tags=["Conversations"])
 
@@ -50,13 +65,29 @@ def list_conversations(
     sentiment: str | None = Query(None),
     contained: bool | None = Query(None),
     flagged: bool | None = Query(None),
+    date_from: str | None = Query(
+        None, alias="dateFrom", max_length=40,
+        description="Inclusive start of the call date range (YYYY-MM-DD or ISO-8601 instant)",
+    ),
+    date_to: str | None = Query(
+        None, alias="dateTo", max_length=40,
+        description="Inclusive end of the call date range (YYYY-MM-DD or ISO-8601 instant)",
+    ),
+    call_id: str | None = Query(
+        None, alias="callId", max_length=64,
+        description="Exact telephony call id (the dialer's callId / CallSid)",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
+    started_from, started_to = parse_date_range(date_from, date_to)
     stmt = select(ConversationSession).where(
         ConversationSession.tenant_id == tid, ConversationSession.is_deleted.is_(False)
     )
+    if call_id and call_id.strip():
+        # Exact, never LIKE: a call id is an identifier the integrator holds.
+        stmt = stmt.where(ConversationSession.call_id == call_id.strip())
     if bot_id:
         stmt = stmt.where(ConversationSession.bot_id == bot_id)
     if channel:
@@ -67,6 +98,13 @@ def list_conversations(
         stmt = stmt.where(ConversationSession.contained.is_(contained))
     if flagged is not None:
         stmt = stmt.where(ConversationSession.flagged.is_(flagged))
+    # Filtering on started_at (not created_at): the review page is about when
+    # the call happened. Rows with no start time cannot be placed on a day and
+    # are therefore outside any range.
+    if started_from is not None:
+        stmt = stmt.where(ConversationSession.started_at >= started_from)
+    if started_to is not None:
+        stmt = stmt.where(ConversationSession.started_at <= started_to)
     if params.search:
         like = f"%{params.search}%"
         stmt = stmt.where(
@@ -74,35 +112,222 @@ def list_conversations(
                 ConversationSession.caller_masked.like(like),
                 ConversationSession.escalation_reason.like(like),
                 ConversationSession.id.like(like),
+                ConversationSession.call_id.like(like),
             )
         )
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = db.scalars(
-        stmt.order_by(ConversationSession.started_at.desc())
-        .offset(params.offset)
-        .limit(params.page_size)
-    ).all()
+    # Sort keys are the serialized field names; unknown keys fall back to the
+    # historical order (startedAt desc). The id tie-break keeps pages stable
+    # when many calls share a start second.
+    stmt = apply_sort(
+        stmt, ConversationSession, params, _SORT_COLUMNS, ConversationSession.started_at,
+    ).order_by(ConversationSession.id.desc())
+    rows = db.scalars(stmt.offset(params.offset).limit(params.page_size)).all()
     names = _bot_names(db, [c.bot_id for c in rows])
+    include_costs = can_view_costs(user)
     return paginated(
-        [serialize_conversation(c, bot_name=names.get(c.bot_id, "—")) for c in rows],
+        [serialize_conversation(c, bot_name=names.get(c.bot_id, "—"),
+                                include_costs=include_costs) for c in rows],
         page=params.page, page_size=params.page_size, total=total,
     )
+
+
+_SORT_COLUMNS = {
+    "startedAt": ConversationSession.started_at,
+    "durationSec": ConversationSession.duration_sec,
+    "costUsd": ConversationSession.cost_usd,
+    "sentiment": ConversationSession.sentiment,
+    "csat": ConversationSession.csat,
+    "qaScore": ConversationSession.qa_score,
+    "createdAt": ConversationSession.created_at,
+}
+
+
+def _find_conversation(
+    db: Session, user: User, key: str, tenant_id: str | None,
+) -> ConversationSession:
+    """A conversation by its own id, else by the telephony call id.
+
+    The call-id fallback is tenant-scoped (a tenant role searches its own
+    tenant; a super admin must say which via ``tenantId``) and returns the
+    newest match, since a dialer may retry a call under the same id. Both
+    misses are the same 404 — existence is never revealed across tenants.
+    """
+    key = (key or "").strip()
+    c = db.get(ConversationSession, key) if key else None
+    if c is not None and not c.is_deleted:
+        assert_tenant_access(user, c.tenant_id)
+        return c
+    if not key:
+        raise NotFoundError("Conversation")
+    if is_super_admin(user) and not tenant_id:
+        raise NotFoundError("Conversation")
+    tid = resolve_tenant_id(user, tenant_id)
+    c = db.scalar(
+        select(ConversationSession)
+        .where(
+            ConversationSession.tenant_id == tid,
+            ConversationSession.call_id == key,
+            ConversationSession.is_deleted.is_(False),
+        )
+        .order_by(ConversationSession.started_at.desc(), ConversationSession.created_at.desc())
+        .limit(1)
+    )
+    if c is None:
+        raise NotFoundError("Conversation")
+    return c
 
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
+    currency: str | None = Query(None, description="Display currency for the cost breakdown"),
+    tenant_id: str | None = Query(
+        None, alias="tenantId",
+        description="Super admins only: the tenant to search when the path is a telephony call id",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # The path accepts either the conversation id (cv_…) or the telephony
+    # call id the dialer sent on the webhook (callId / CallSid).
+    c = _find_conversation(db, user, conversation_id, tenant_id)
+    doc = await find_transcript_doc(c)
+    transcript = ui_turns((doc or {}).get("turns"))
+    names = _bot_names(db, [c.bot_id])
+    # The session link is what makes the cost auditable. Historical rows
+    # predate the column, so fall back to the transcript document, which has
+    # carried both ids all along — and persist it so the next read is a join.
+    session_id = c.session_id or (doc or {}).get("session_id")
+    if session_id and not c.session_id:
+        c.session_id = session_id
+        db.commit()
+    include_costs = can_view_costs(user)
+    return ok(serialize_conversation(
+        c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
+        recording=recording_descriptor(c, doc),
+        # The breakdown is not even computed for viewers without costs.view.
+        cost_breakdown=(
+            _cost_breakdown(db, c, session_id, currency) if include_costs else None
+        ),
+        summary=_ai_summary(db, c),
+        character_usage=_character_usage(db, c, session_id),
+        include_costs=include_costs,
+    ))
+
+
+def _character_usage(
+    db: Session, c: ConversationSession, session_id: str | None
+) -> dict:
+    """Actual STT/TTS characters and per-minute rates for one call.
+
+    This is operational usage, not financial data, so it is returned for all
+    tenant users. Only numeric counters are queried; transcripts are not read.
+    """
+    totals = {"stt": 0, "tts": 0}
+    if session_id:
+        rows = db.execute(
+            select(
+                UsageEvent.capability,
+                func.coalesce(func.sum(UsageEvent.characters), 0),
+            ).where(
+                UsageEvent.session_id == session_id,
+                UsageEvent.tenant_id == c.tenant_id,
+                UsageEvent.capability.in_(("stt", "tts")),
+            ).group_by(UsageEvent.capability)
+        ).all()
+        totals.update({capability: int(characters) for capability, characters in rows})
+    minutes = c.duration_sec / 60 if c.duration_sec else 0
+    return {
+        "sttInputCharacters": totals["stt"],
+        "ttsOutputCharacters": totals["tts"],
+        "sttInputCharactersPerMin": round(totals["stt"] / minutes, 1) if minutes else None,
+        "ttsOutputCharactersPerMin": round(totals["tts"] / minutes, 1) if minutes else None,
+    }
+
+
+def _ai_summary(db: Session, c: ConversationSession) -> dict | None:
+    """Post-call intelligence for the detail view, if any was generated.
+
+    Tenant scope is already asserted on the conversation row; the memory row
+    is fetched strictly by that conversation's id, so it can never surface
+    another tenant's data.
+    """
+    memory = db.execute(
+        select(ConversationMemory).where(
+            ConversationMemory.conversation_id == c.id,
+            ConversationMemory.is_deleted.is_(False),
+        )
+    ).scalar_one_or_none()
+    if memory is None:
+        return None
+    return serialize_conversation_memory(memory, _summary_field_specs(db, c.bot_id))
+
+
+def _summary_field_specs(db: Session, bot_id: str) -> list[dict]:
+    """The bot's configured goal_policy.summaryFields (authoritative order and
+    labels for the structured summary); [] when the bot declares none."""
+    from shared.models import VoiceBotSetting
+
+    settings = db.execute(
+        select(VoiceBotSetting.goal_policy).where(VoiceBotSetting.bot_id == bot_id)
+    ).scalar_one_or_none()
+    if not isinstance(settings, dict):
+        return []
+    specs = settings.get("summaryFields")
+    if specs is None:
+        specs = settings.get("summary_fields")
+    return [s for s in (specs or []) if isinstance(s, dict)]
+
+
+def _cost_breakdown(
+    db: Session, c: ConversationSession, session_id: str | None, currency: str | None
+) -> dict:
+    """Auditable cost breakdown for one conversation, in the display currency.
+
+    The breakdown is rebuilt from the conversation's usage events and their
+    stored pricing snapshots, so it reproduces the historical rate that was
+    actually applied rather than today's rate table. ``storedTotalUsd`` is the
+    cached total the LIST shows: exposing both makes a drift between them
+    visible instead of letting the two pages quietly disagree.
+    """
+    from shared.billing.conversation_cost import conversation_cost, display_rate
+
+    costing = conversation_cost(db, session_id)
+    target = (currency or BASE_CURRENCY).upper()
+    rate = display_rate(db, target, as_of=c.started_at)
+    payload = costing.as_dict(currency=target, rate=rate)
+    stored = Decimal(str(c.cost_usd))
+    payload["storedTotalUsd"] = str(stored)
+    # Tolerance is one unit of stored precision: anything larger means the
+    # cache is stale (events recorded after finalize, or a pricing backfill).
+    payload["reconciled"] = abs(stored - costing.total_usd) <= Decimal("0.000001")
+    return payload
+
+
+@router.get("/conversations/{conversation_id}/recording")
+async def get_conversation_recording(
+    conversation_id: str,
+    download: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream the call audio. Same visibility rules as the conversation itself;
+    the file reference always comes from the transcript document — clients
+    never pass paths."""
     c = db.get(ConversationSession, conversation_id)
     if c is None or c.is_deleted:
         raise NotFoundError("Conversation")
     assert_tenant_access(user, c.tenant_id)
-    doc = await Mongo.transcripts().find_one({"session_id": c.id})
-    transcript = (doc or {}).get("turns", [])
-    names = _bot_names(db, [c.bot_id])
-    return ok(serialize_conversation(c, bot_name=names.get(c.bot_id, "—"), transcript=transcript))
+    doc = await find_transcript_doc(c)
+    info = (doc or {}).get("recording") or {}
+    full = resolve_recording_path(info.get("path"))
+    if full is None:
+        raise NotFoundError("Recording")
+    kwargs: dict = {"media_type": info.get("mimeType") or "audio/wav"}
+    if download:
+        kwargs["filename"] = f"echosphere-call-{c.id}{full.suffix or '.wav'}"
+    return FileResponse(full, **kwargs)
 
 
 class TurnPayload(BaseModel):
@@ -193,6 +418,7 @@ async def create_conversation(
         serialize_conversation(
             c, bot_name=names.get(c.bot_id, "—"),
             transcript=[t.model_dump(exclude_none=True) for t in body.transcript],
+            include_costs=can_view_costs(user),
         )
     )
 

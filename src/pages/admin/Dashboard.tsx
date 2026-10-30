@@ -67,9 +67,11 @@ export default function AdminDashboard() {
               </div>
               <div className="row-between mt-8">
                 <span className="t-num" style={{ fontSize: 15, fontWeight: 650 }}>{m.value}</span>
-                <Sparkline data={m.spark} width={64} height={20} color={m.status === "critical" ? "var(--viz-critical)" : m.status === "warning" ? "var(--viz-warning)" : "var(--series-2)"} />
+                {m.spark.length > 1 && (
+                  <Sparkline data={m.spark} width={64} height={20} color={m.status === "critical" ? "var(--viz-critical)" : m.status === "warning" ? "var(--viz-warning)" : "var(--series-2)"} />
+                )}
               </div>
-              <div className="t-micro mt-4">target {m.target}</div>
+              <div className="t-micro mt-4">{m.target}</div>
             </div>
           ))}
         </div>
@@ -101,7 +103,12 @@ export default function AdminDashboard() {
 
       <div className="grid grid-3 mt-16">
         <ChartCard title="Top tenants by calls" sub="This month">
-          {a ? <HBarList data={a.topTenantsByCalls} /> : <CardSkeleton rows={5} />}
+          {a ? (
+            <HBarList
+              data={a.topTenantsByCalls.map((t) => ({ ...t, detail: t.avgDuration }))}
+              columns={{ value: "Calls", detail: "Avg duration" }}
+            />
+          ) : <CardSkeleton rows={5} />}
         </ChartCard>
         <ChartCard title="Tenant plan mix" sub={`${tenantCount} tenants`}>
           {a ? <Donut data={a.planMix} centerValue={String(tenantCount)} centerLabel="tenants" /> : <CardSkeleton rows={5} />}
