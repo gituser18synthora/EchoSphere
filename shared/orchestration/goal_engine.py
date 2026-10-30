@@ -72,11 +72,15 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 1.6
 # Per decision model, when the bot sets no orchestration_timeout_seconds: the
 # budget follows the model's measured latency, not one shared figure.
-# gpt-6-luna on the fast tier, live demo 2026-10-26 (38 calls, 169 completed
-# decisions): p50 1,453 ms, p90 1,689 ms, max 2,213 ms. The 1.6 s default
-# timed out 31 of ~90 decisions on bots without an override (34 %); MDND's
-# 2.0 s override timed out 1 of 49.
-_MODEL_TIMEOUT_SECONDS = {"gpt-6-luna": 2.0}
+# gpt-6-luna on the fast tier, live demo 2026-10-23..29 (198 calls, 724
+# completed decisions, 114 timeouts): completed p50 1,439 / p90 1,759 /
+# p95 1,861 ms, max 2,213 ms — and 13.6 % of attempts hit the 2.0 s budget,
+# so the attempt p90 lies above it (Jeeves: 31 of 234 attempts). Offline,
+# with no budget, the same model's decisions beyond 2.0 s almost all finish
+# by 2.5 s (see the Phase 5 replay). 2.5 s: the early acknowledgement
+# (early_ack_ms) covers the wait; the fallback regex path costs the caller a
+# worse answer, not a faster one.
+_MODEL_TIMEOUT_SECONDS = {"gpt-6-luna": 2.5}
 # Latency budget: the decision call sits serially before every reply, so its
 # payload is kept small — a short rolling history window (each turn capped)
 # and a bounded output. The full conversation lives in Stage-B's history.

@@ -262,10 +262,10 @@ class TestDecisionEventsAndUsage:
 # ── decision budget per decision model ─────────────────────────────────────
 
 class TestDecisionBudget:
-    """gpt-6-luna on the fast tier decides in p50 1.45 s / p90 1.69 s (live
-    demo 2026-10-26): the 1.6 s default cut 34 % of its decisions on bots
-    without an override, so its default budget is 2.0 s. A bot's own
-    orchestration_timeout_seconds still wins."""
+    """gpt-6-luna on the fast tier decides in p50 1.44 s / p90 1.76 s of the
+    decisions that complete (live demo 2026-10-23..29), and 13.6 % of its
+    attempts ran past the former 2.0 s budget, so its default budget is
+    2.5 s. A bot's own orchestration_timeout_seconds still wins."""
 
     def _brain(self, monkeypatch, *, model="gpt-4o-mini", orchestration=None, settings=None):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
@@ -283,16 +283,16 @@ class TestDecisionBudget:
                                  finalize_grace=GRACE, complete_endpoint=GRACE)
 
     def test_default_budget_per_model(self):
-        assert default_timeout_seconds("gpt-6-luna") == 2.0
-        assert default_timeout_seconds("GPT-6-Luna-2026-10-01") == 2.0
+        assert default_timeout_seconds("gpt-6-luna") == 2.5
+        assert default_timeout_seconds("GPT-6-Luna-2026-10-01") == 2.5
         assert default_timeout_seconds("gpt-4o-mini") == 1.6
         assert default_timeout_seconds("gpt-6-lunar") == 1.6
         assert default_timeout_seconds(None) == 1.6
 
     def test_the_decision_models_budget_applies(self, monkeypatch):
-        assert self._brain(monkeypatch, orchestration="gpt-6-luna")._goal_engine.timeout_seconds == 2.0
+        assert self._brain(monkeypatch, orchestration="gpt-6-luna")._goal_engine.timeout_seconds == 2.5
         # No dedicated engine: the conversation model decides, on its budget.
-        assert self._brain(monkeypatch, model="gpt-6-luna")._goal_engine.timeout_seconds == 2.0
+        assert self._brain(monkeypatch, model="gpt-6-luna")._goal_engine.timeout_seconds == 2.5
         assert self._brain(monkeypatch, model="gpt-4o-mini")._goal_engine.timeout_seconds == 1.6
 
     def test_the_bots_own_budget_wins_and_stays_clamped(self, monkeypatch):
@@ -304,7 +304,7 @@ class TestDecisionBudget:
         assert brain._goal_engine.timeout_seconds == 5.0
         brain = self._brain(monkeypatch, orchestration="gpt-6-luna",
                             settings={"orchestration_timeout_seconds": None})
-        assert brain._goal_engine.timeout_seconds == 2.0
+        assert brain._goal_engine.timeout_seconds == 2.5
 
     async def test_decision_events_carry_the_budget(self):
         brain = make_agentic_brain(
