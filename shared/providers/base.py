@@ -28,12 +28,37 @@ async def run_in_sdk_pool(func, *args, **kwargs):
 
 
 class ProviderError(Exception):
-    """Categorized provider failure (sanitized; never carries secrets)."""
+    """Categorized provider failure (sanitized; never carries secrets).
 
-    def __init__(self, provider: str, category: str, message: str) -> None:
+    ``status`` is the HTTP status the provider answered with, when there was
+    one: it is what tells a spend limit (429) from an auth failure (401/403)
+    or an upstream incident (5xx) in the recorded events.
+    """
+
+    def __init__(
+        self, provider: str, category: str, message: str, *, status: int | None = None,
+    ) -> None:
         self.provider = provider
         self.category = category  # auth | timeout | rate_limit | invalid_input | upstream
+        self.message = message
+        self.status = status
         super().__init__(f"[{provider}:{category}] {message}")
+
+
+def error_fields(exc: BaseException | None, prefix: str = "error") -> dict:
+    """Event fields describing a provider failure: its type and, for a
+    :class:`ProviderError`, the category, HTTP status and (sanitized)
+    message. ``{}`` for no error."""
+    if exc is None:
+        return {}
+    fields: dict = {prefix: type(exc).__name__}
+    if isinstance(exc, ProviderError):
+        fields[f"{prefix}_category"] = exc.category
+        fields[f"{prefix}_status"] = exc.status
+        fields[f"{prefix}_message"] = exc.message[:200]
+    else:
+        fields[f"{prefix}_message"] = str(exc)[:200]
+    return fields
 
 
 class ProviderConfig(BaseModel):

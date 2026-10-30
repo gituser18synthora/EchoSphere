@@ -38,6 +38,12 @@ Event shapes used (all written by voice_runtime/brain.py):
   turn_resumed | deterministic_answer | …) are counted per reason;
   ``decision_prefetch_disabled`` (the per-call event of the interim build
   that switched the prefetch off under Smart Turn) is counted per call.
+  ``provider_outage`` (``provider``, ``category``, ``status`` = HTTP status,
+  ``message``, ``stage``, ``calls``, ``since``) opens an outage window —
+  three consecutive calls whose first provider call failed — and
+  ``provider_recovered`` (``failed_calls``, ``duration_s``) closes it; the
+  windows are listed. ``orchestration_fallback`` / ``decision_warmup`` carry
+  ``error_category`` / ``error_status`` / ``error_message`` on a failure.
 
 Usage:
     env/bin/python scratchpad/phase0_metrics.py --days 14
@@ -98,6 +104,27 @@ def _word_count(text: str) -> int:
 
 PATHS = ("deterministic", "LLM decision", "speculative kept", "speculative discarded",
          "decision fallback")
+
+
+def _outage_windows(events: list[dict]) -> list[dict]:
+    """provider_outage / provider_recovered events (across calls, ordered by
+    time) paired into windows; an outage without a recovery is still open."""
+    windows: list[dict] = []
+    current: dict | None = None
+    for ev in sorted(events, key=lambda e: str(e.get("at") or "")):
+        if ev.get("kind") == "provider_outage":
+            current = {
+                "since": str(ev.get("since") or ev.get("at") or ""), "until": None,
+                "calls": int(ev.get("calls") or 0), "provider": ev.get("provider"),
+                "category": ev.get("category"), "status": ev.get("status"),
+                "message": str(ev.get("message") or ""), "stage": ev.get("stage"),
+            }
+            windows.append(current)
+        elif ev.get("kind") == "provider_recovered" and current is not None:
+            current["until"] = str(ev.get("at") or "")
+            current["calls"] = int(ev.get("failed_calls") or current["calls"])
+            current = None
+    return windows
 
 
 def _turn_path(bucket: list[dict]) -> str | None:
@@ -176,6 +203,7 @@ async def collect(uri: str, database: str, days: int, channel: str,
     prefetch_skipped: dict[str, int] = {}           # reason -> events
     prefetch_discarded: dict[str, int] = {}         # reason -> events
     prefetch_disabled_calls = 0
+    outage_events: list[dict] = []                  # provider_outage / provider_recovered
     # Phase 4.
     path_response: dict[str, list[float]] = {name: [] for name in PATHS}
     skipped_by: dict[str, int] = {}                 # resolver/ask_kind -> turns
@@ -292,6 +320,8 @@ async def collect(uri: str, database: str, days: int, channel: str,
                 prefetch_discarded[reason] = prefetch_discarded.get(reason, 0) + 1
             elif kind == "decision_prefetch_disabled":
                 prefetch_disabled_calls += 1
+            elif kind in ("provider_outage", "provider_recovered"):
+                outage_events.append(ev)
             elif kind == "orchestration_decision":
                 attempted = True
                 decided = True
@@ -370,6 +400,7 @@ async def collect(uri: str, database: str, days: int, channel: str,
         "filler_not_ready": filler_not_ready,
         "prefetch_skipped": prefetch_skipped, "prefetch_discarded": prefetch_discarded,
         "prefetch_disabled_calls": prefetch_disabled_calls,
+        "outage_windows": _outage_windows(outage_events),
         "decision_ms": decision_ms, "decision_timeouts": decision_timeouts,
         "decision_out_tokens": decision_out_tokens,
         "decision_in": decision_in, "decision_cached": decision_cached,
@@ -423,6 +454,11 @@ def print_report(r: dict, channel: str) -> None:
     print(f"{'decision_warmup finished before 1st decision':<44}{_share(r['warmup_hits'], r['warmup_total'])}")
     print(f"{'latency_filler_not_ready events':<44}{r['filler_not_ready']}")
     print(f"{'calls: never got a decision':<44}{_share(r['calls_never_decided'], r['calls_with_engine'])}")
+    print(f"{'provider outage windows (3+ failed calls)':<44}{len(r['outage_windows'])}")
+    for w in r["outage_windows"]:
+        print(f"  {w['since'][:16]} -> {(w['until'] or '')[:16] or 'open':<16} calls {w['calls']:<4} "
+              f"{w['provider']} {w['category']} {('HTTP ' + str(w['status'])) if w['status'] else ''} "
+              f"at {w['stage']}: {w['message'][:70]}")
     print(f"{'calls: engine self-disabled (3 timeouts)':<44}{_share(r['calls_disabled'], r['calls_with_engine'])}")
     print(f"{'<=2-word caller turns routed to CLARIFY':<44}{_share(r['short_clarify_routes'], r['short_turns'])}")
     print(f"{'route_decision reason=too_short events':<44}{r['too_short_reasons']}")

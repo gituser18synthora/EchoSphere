@@ -179,7 +179,7 @@ from shared.orchestration.voice_identity import (
     voice_identity_instruction,
     voice_identity_state,
 )
-from shared.providers.base import LLMProvider, ProviderError
+from shared.providers.base import LLMProvider, ProviderError, error_fields
 from shared.providers.languages import to_platform_language
 from voice_runtime.caller_level import (
     LABEL_CALLER,
@@ -228,6 +228,7 @@ from voice_runtime.identifier_capture import (
 )
 from voice_runtime.announcements import strip_recording_announcement
 from voice_runtime.recording import SessionRecorder, TurnRecord
+from voice_runtime.provider_health import provider_health
 from voice_runtime.speculative_reply import SpeculativeReply
 from voice_runtime.stt_events import final_event_key, segment_audio_seconds
 from voice_runtime.silence_policy import (
@@ -6443,12 +6444,16 @@ class ConversationBrain(FrameProcessor):
             "budget_ms": round(engine.timeout_seconds * 1000),
         }
         if orchestrated is None:
+            reason = engine.last_fallback_reason or "unknown"
+            error = engine.last_error if reason == "provider_error" else None
             self._recorder.add_event(
-                "orchestration_fallback",
-                reason=engine.last_fallback_reason or "unknown",
-                **engine_fields,
+                "orchestration_fallback", reason=reason, **engine_fields,
+                **error_fields(error),
             )
+            if error is not None:
+                self._note_provider_outcome(False, stage="decision", error=error)
             return None
+        self._note_provider_outcome(True, stage="decision")
         self._recorder.add_event(
             "orchestration_decision", **orchestrated.as_event(), **engine_fields,
             input_tokens=usage[0] if usage else None,
@@ -8394,7 +8399,8 @@ class ConversationBrain(FrameProcessor):
             self._latency.mark_llm_completed()
         except _GuardrailBlockedReply as blocked:
             guardrail_block = blocked
-        except ProviderError:
+        except ProviderError as exc:
+            self._note_provider_outcome(False, stage="reply", error=exc)
             # The agentic path failed to produce this turn's reply: the
             # deterministic fallback text (scripted phrase) covers the turn
             # instead of dead air — canned strings are used ONLY here.
@@ -8720,6 +8726,7 @@ class ConversationBrain(FrameProcessor):
                             # stream received it, not when it was consumed.
                             at=speculation.first_token_at if speculation is not None else None,
                         )
+                        self._note_provider_outcome(True, stage="reply")
                     speakable = placeholder_filter.feed(token)
                     if speakable:
                         used = sum(len(part) for part in reply_parts)
@@ -8988,6 +8995,28 @@ class ConversationBrain(FrameProcessor):
             self._recorder.add_event(
                 "decision_warmup", **outcome, greeting_playing=self._bot_speaking,
             )
+            self._note_provider_outcome(
+                bool(outcome.get("ok")), stage="warmup",
+                error=self._goal_engine.warmup_error,
+            )
+
+    def _note_provider_outcome(
+        self, ok: bool, *, stage: str, error: BaseException | None = None,
+    ) -> None:
+        """This call's vote to the process-wide outage detector
+        (voice_runtime.provider_health): only the first outcome of a call
+        counts, so repeat calls here are free. The event it hands back —
+        ``provider_outage`` on the third consecutive failed call,
+        ``provider_recovered`` on the first success after one — is recorded
+        on THIS call's document.
+        """
+        session_id = self._recorder.session_id
+        event = (
+            provider_health.succeeded(session_id) if ok
+            else provider_health.failed(session_id, error, stage=stage)
+        )
+        if event is not None:
+            self._recorder.add_event(event.pop("kind"), **event)
 
     async def _speak_memory_greeting(self) -> bool:
         """Open a repeat-contact call as a continuation, not a restart.

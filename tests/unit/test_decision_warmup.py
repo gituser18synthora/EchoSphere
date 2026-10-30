@@ -54,7 +54,7 @@ class TestDecisionWarmup:
         await brain._open_session()
         await _settle()
         warmups = [data for kind, data in brain._recorder.events if kind == "decision_warmup"]
-        assert warmups == [{"ok": False, "error": "RuntimeError",
+        assert warmups == [{"ok": False, "error": "RuntimeError", "error_message": "provider down",
                             "latency_ms": warmups[0]["latency_ms"], "before_first_decision": True,
                             "greeting_playing": False}]
         assert brain._goal_engine.enabled and not brain._goal_engine._disabled_after_timeouts

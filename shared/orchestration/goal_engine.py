@@ -41,6 +41,8 @@ import logging
 import re
 import time
 
+from shared.providers.base import error_fields
+
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -632,6 +634,10 @@ class GoalEngine:
         self.warmup: dict | None = None
         self._warmup_started_at: float | None = None
         self._warmup_done_at: float | None = None
+        # The exception behind a failed warm-up / the last provider_error
+        # fallback: the brain records its category, HTTP status and message.
+        self.warmup_error: BaseException | None = None
+        self.last_error: BaseException | None = None
         self._first_decision_at: float | None = None
 
     @property
@@ -678,11 +684,15 @@ class GoalEngine:
             raise
         except Exception as exc:  # noqa: BLE001 — a warm-up must never hurt the call
             error = type(exc).__name__
+            self.warmup_error = exc
             logger.debug("goal engine warm-up failed: %s", exc)
         self._warmup_done_at = time.perf_counter()
+        details = error_fields(self.warmup_error)
+        details.pop("error", None)
         self.warmup = {
             "ok": error is None,
             "error": error,
+            **details,
             "latency_ms": round((self._warmup_done_at - self._warmup_started_at) * 1000, 1),
             "before_first_decision": self._first_decision_at is None,
         }
@@ -699,6 +709,7 @@ class GoalEngine:
     ) -> ConversationDecision | None:
         """One validated decision for the completed turn, or None to fall back."""
         self.last_fallback_reason = None
+        self.last_error = None
         stripped = (text or "").strip()
         if not stripped:
             self.last_fallback_reason = "empty_turn"
@@ -741,9 +752,10 @@ class GoalEngine:
                     self._consecutive_timeouts,
                 )
             return None
-        except Exception:  # noqa: BLE001 — the engine degrades, never raises
+        except Exception as exc:  # noqa: BLE001 — the engine degrades, never raises
             logger.exception("goal engine decision failed")
             self.last_fallback_reason = "provider_error"
+            self.last_error = exc
             return None
         decision = parse_decision(
             raw,

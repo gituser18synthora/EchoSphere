@@ -6,7 +6,7 @@ with working tool support), reshaped to the new typed interface.
 
 from collections.abc import AsyncIterator
 
-from openai import AsyncOpenAI
+from openai import APITimeoutError, AsyncOpenAI
 
 from shared.config import get_settings
 from shared.providers.base import (
@@ -97,6 +97,28 @@ def _response_meta(response, requested_model: str) -> dict:
     }
 
 
+def _provider_error(name: str, exc: Exception) -> ProviderError:
+    """The SDK failure as a ProviderError that keeps the HTTP status: 401/403
+    auth, 429 rate_limit (a rate limit OR an exceeded spend limit), 5xx
+    upstream, other statuses invalid_input (the request, not the service);
+    a connection failure is upstream and the SDK's own timeout is timeout."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (401, 403):
+            category = "auth"
+        elif status == 429:
+            category = "rate_limit"
+        elif status >= 500:
+            category = "upstream"
+        else:
+            category = "invalid_input"
+    elif isinstance(exc, APITimeoutError):
+        category, status = "timeout", None
+    else:
+        category, status = "upstream", None
+    return ProviderError(name, category, str(exc)[:200], status=status)
+
+
 class OpenAILLM(LLMProvider):
     name = "openai-llm"
     supports_json_output = True
@@ -185,7 +207,7 @@ class OpenAILLM(LLMProvider):
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001
-            raise ProviderError(self.name, "upstream", str(exc)[:200]) from exc
+            raise _provider_error(self.name, exc) from exc
         self.last_response_meta = _response_meta(response, self._model)
         choice = response.choices[0]
         tool_calls = [
@@ -264,4 +286,4 @@ class OpenAILLM(LLMProvider):
                 "model": model or self._model,
             }
         except Exception as exc:  # noqa: BLE001
-            raise ProviderError(self.name, "upstream", str(exc)[:200]) from exc
+            raise _provider_error(self.name, exc) from exc
