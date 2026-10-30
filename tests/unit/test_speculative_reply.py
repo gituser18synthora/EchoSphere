@@ -199,6 +199,27 @@ class TestTheBrain:
         await asyncio.sleep(DECISION_S + 0.1)
         assert _events(brain, "speculative_reply_kept")[0]["first_token_ready"] is True
 
+    async def test_the_tracker_measures_the_speculative_request(self):
+        """llm_ttft is the speculative request's own provider time, never the
+        ~1 ms between taking the buffer and its first replayed chunk."""
+        llm = _LLM([IN_SCOPE])
+        llm.gate = asyncio.Event()                  # first token held back…
+        brain = _brain(llm)
+        task = asyncio.ensure_future(turn(brain, "बहुत अच्छी लगी"))
+        for _ in range(50):                         # the speculative request is sent…
+            await asyncio.sleep(0.01)
+            if llm.calls:
+                break
+        await asyncio.sleep(0.06)                   # …then 60 ms of the 250 ms decision pass
+        llm.gate.set()
+        await task
+        await asyncio.sleep(DECISION_S + 0.1)
+        assert _events(brain, "speculative_reply_kept")
+        tracker = brain._latency
+        assert tracker.llm_request_at < tracker.classified_at      # sent before the decision returned
+        assert tracker.llm_first_token_at < tracker.classified_at  # answered before it, too
+        assert tracker.snapshot()["llm_ttft"] >= 50
+
     async def test_a_decision_that_changes_the_prompt_discards_it(self):
         llm = _LLM([{"signal": None, "scope": "in_scope", "next_action": "answer",
                      "slots": {"rating": {"status": "provided", "value": "5"}}}])

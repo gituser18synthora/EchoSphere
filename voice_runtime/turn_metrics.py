@@ -44,6 +44,14 @@ all of ``llm_first_token``; whatever is left is orchestration overhead. Equally,
 ``tts_queue`` + ``tts_ttfb`` + ``playout`` should account for
 ``tts_first_audio``, and a large ``playout`` means audio is being buffered
 rather than streamed.
+
+A kept speculative reply (``llm_settings.speculative_reply``) was requested at
+dispatch, in parallel with the decision. Its marks are the speculative
+request's own: ``llm_ttft`` is that request's provider time and
+``llm_first_token`` the instant its first token was really there (usually
+before ``classify`` ended), while ``tts_queue`` carries the wait for the
+decision that released the buffered text. Nothing is measured from the moment
+the turn took over the buffered stream — that read as a 1 ms first token.
 """
 
 import logging
@@ -198,14 +206,19 @@ class TurnLatencyTracker:
     def mark_tool_done(self) -> None:
         self.tool_done_at = time.monotonic()
 
-    def mark_llm_request(self) -> None:
+    def mark_llm_request(self, at: float | None = None) -> None:
         # A pre-first-token retry re-sends the request; the LAST attempt is the
         # one the first token actually belongs to, so this is not idempotent.
-        self.llm_request_at = time.monotonic()
+        # ``at`` (monotonic) is when the request was really sent, where that
+        # was earlier than the turn asked for the stream: a kept speculative
+        # reply was requested at dispatch, and llm_ttft measures THAT request.
+        self.llm_request_at = time.monotonic() if at is None else at
 
-    def mark_llm_first_token(self) -> None:
+    def mark_llm_first_token(self, at: float | None = None) -> None:
+        # ``at``: when the token really arrived, for a stream whose first
+        # chunk was buffered before the turn consumed it.
         if self.llm_first_token_at is None:
-            self.llm_first_token_at = time.monotonic()
+            self.llm_first_token_at = time.monotonic() if at is None else at
 
     def mark_llm_completed(self) -> None:
         """The reply stream finished (last token received)."""

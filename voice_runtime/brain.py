@@ -8647,19 +8647,20 @@ class ConversationBrain(FrameProcessor):
             # TTS, and history records exactly what was spoken.
             placeholder_filter = StreamingPlaceholderFilter(self._placeholder_values())
             try:
-                self._latency.mark_llm_request()
-                request_at = time.monotonic()
                 messages = self._generation_messages(turn_instruction)
                 speculation = (
                     self._take_speculation(messages, system) if attempts == 1 else None
                 )
                 if speculation is not None:
                     # The same request, started at dispatch: its buffered
-                    # tokens play now, the first-token deadline counts from
-                    # when it was really sent.
+                    # tokens play now; the first-token deadline and the
+                    # llm_ttft span count from when it was really sent.
                     request_at = speculation.started_at
+                    self._latency.mark_llm_request(at=request_at)
                     stream = speculation.replay().__aiter__()
                 else:
+                    self._latency.mark_llm_request()
+                    request_at = time.monotonic()
                     stream = self._llm.stream(
                         messages,
                         system=system,
@@ -8714,7 +8715,11 @@ class ConversationBrain(FrameProcessor):
                     hinted = False
                     if first_token_ms is None:
                         first_token_ms = (time.perf_counter() - started) * 1000
-                        self._latency.mark_llm_first_token()
+                        self._latency.mark_llm_first_token(
+                            # A replayed token arrived when the speculative
+                            # stream received it, not when it was consumed.
+                            at=speculation.first_token_at if speculation is not None else None,
+                        )
                     speakable = placeholder_filter.feed(token)
                     if speakable:
                         used = sum(len(part) for part in reply_parts)

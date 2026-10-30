@@ -763,6 +763,22 @@ class TestLatencyInstrumentation:
         tracker.mark_llm_request()
         assert tracker.llm_request_at != first
 
+    def test_a_kept_speculative_reply_keeps_its_own_request_instants(self):
+        """llm_ttft belongs to the request that produced the first token: a
+        speculation sent at dispatch, not the moment its buffer was taken."""
+        tracker = TurnLatencyTracker()
+        tracker.mark_dispatched()
+        sent = tracker.dispatched_at + 0.01        # the speculative request
+        arrived = sent + 0.4                        # its first token, 400 ms later
+        tracker.classified_at = sent + 1.5          # the decision came back after
+        tracker.mark_llm_request(at=sent)           # the turn takes the buffer now
+        tracker.mark_llm_first_token(at=arrived)
+        spans = tracker.snapshot()
+        assert round(spans["llm_ttft"]) == 400
+        assert round(spans["llm_first_token"]) == 410
+        tracker.mark_llm_first_token()              # the replayed chunk, later
+        assert tracker.llm_first_token_at == arrived
+
     def test_tts_marks_keep_the_first_dispatch_of_the_turn(self):
         """Later sentences stream inside the same turn — the first one counts."""
         tracker = TurnLatencyTracker()

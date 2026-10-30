@@ -32,6 +32,12 @@ Event shapes used (all written by voice_runtime/brain.py):
   grounded rewrite), ``early_ack_played`` (``early`` = the bot's early_ack_ms
   slot) and ``early_ack_not_ready``. The response is split by the path the
   turn took; the MDND stage split covers bot_59a84478f155 (``--mdnd-bot``).
+- Phase 5: ``decision_prefetch_skipped`` (``reason``: speech_active |
+  final_pending — the Smart Turn gate, one event per prefetch the gate
+  refused) and ``decision_prefetch_discarded`` (``reason``: speech_resumed |
+  turn_resumed | deterministic_answer | …) are counted per reason;
+  ``decision_prefetch_disabled`` (the per-call event of the interim build
+  that switched the prefetch off under Smart Turn) is counted per call.
 
 Usage:
     env/bin/python scratchpad/phase0_metrics.py --days 14
@@ -166,6 +172,10 @@ async def collect(uri: str, database: str, days: int, channel: str,
     stt_models: dict[str, int] = {}
     cold_connects: dict[str, list[float]] = {}      # reason -> waited_ms
     filler_only_dropped = 0
+    # Phase 5: the prefetch gate.
+    prefetch_skipped: dict[str, int] = {}           # reason -> events
+    prefetch_discarded: dict[str, int] = {}         # reason -> events
+    prefetch_disabled_calls = 0
     # Phase 4.
     path_response: dict[str, list[float]] = {name: [] for name in PATHS}
     skipped_by: dict[str, int] = {}                 # resolver/ask_kind -> turns
@@ -274,6 +284,14 @@ async def collect(uri: str, database: str, days: int, channel: str,
                 counts = ev.get("counts") or {}
                 if counts.get("decision_prefetched"):
                     prefetch_hits += 1
+            elif kind == "decision_prefetch_skipped":
+                reason = str(ev.get("reason") or "unknown")
+                prefetch_skipped[reason] = prefetch_skipped.get(reason, 0) + 1
+            elif kind == "decision_prefetch_discarded":
+                reason = str(ev.get("reason") or "unknown")
+                prefetch_discarded[reason] = prefetch_discarded.get(reason, 0) + 1
+            elif kind == "decision_prefetch_disabled":
+                prefetch_disabled_calls += 1
             elif kind == "orchestration_decision":
                 attempted = True
                 decided = True
@@ -350,6 +368,8 @@ async def collect(uri: str, database: str, days: int, channel: str,
         "endpoint_marks": endpoint_marks, "short_circuits": short_circuits,
         "warmup_hits": warmup_hits, "warmup_total": warmup_total,
         "filler_not_ready": filler_not_ready,
+        "prefetch_skipped": prefetch_skipped, "prefetch_discarded": prefetch_discarded,
+        "prefetch_disabled_calls": prefetch_disabled_calls,
         "decision_ms": decision_ms, "decision_timeouts": decision_timeouts,
         "decision_out_tokens": decision_out_tokens,
         "decision_in": decision_in, "decision_cached": decision_cached,
@@ -392,6 +412,12 @@ def print_report(r: dict, channel: str) -> None:
         print(f"{'smart_turn_short_circuit events':<44}{r.get('short_circuits', 0)}")
     print()
     print(f"{'decision ready at dispatch (prefetch hit)':<44}{_share(r['prefetch_hits'], r['understanding_turns'])}")
+    print(f"{'decision_prefetch_skipped (reason)':<44}{sum(r['prefetch_skipped'].values())}  "
+          + (", ".join(f"{k}={v}" for k, v in sorted(r["prefetch_skipped"].items(), key=lambda kv: -kv[1])) or "-")
+          + (f"   calls with decision_prefetch_disabled={r['prefetch_disabled_calls']}"
+             if r["prefetch_disabled_calls"] else ""))
+    print(f"{'decision_prefetch_discarded (reason)':<44}{sum(r['prefetch_discarded'].values())}  "
+          + (", ".join(f"{k}={v}" for k, v in sorted(r["prefetch_discarded"].items(), key=lambda kv: -kv[1])) or "-"))
     print(f"{'calls: 1st-turn decision timed out':<44}{_share(r['calls_first_timeout'], r['calls_with_engine'])}")
     print(f"{'decision_warmup p50 (ms)':<44}{_fmt(_pct(sorted(r['warmup_latencies']), 0.5))}   n={r['warmup_total']}")
     print(f"{'decision_warmup finished before 1st decision':<44}{_share(r['warmup_hits'], r['warmup_total'])}")
