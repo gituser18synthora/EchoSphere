@@ -119,6 +119,10 @@ defaults apply).
 
 ## 2. Merge `voice-improvements` → `main`
 
+**Done 2026-10-30:** merge commit `e428f2fa6c` (parents `5565e8b7` = origin/main,
+`8d64dd70` = voice-improvements), no conflicts, merged tree identical to the
+branch's. The rest of this section records why it was not a fast-forward.
+
 Checked 2026-10-30 after the rewrite: the branch's merge-base with `main` is
 still `70c41bf5d`, but `origin/main` (`5565e8b76`) carries two commits the
 branch never got (`873f1c6c` "Delete VoiceBot directory", 2026-07-13, and
@@ -144,7 +148,7 @@ Stop here if any step fails; the rollback for that step is in section 7.
 
 1. **Back up what the rollback needs** (root, prod):
    `cp -a env env.bak-$(date +%Y%m%d)`;
-   `mysqldump -h 127.0.0.1 -u echosphere_prod -p --single-transaction voice_bot > /root/echosphere-prep/voice_bot-$(date +%Y%m%d).sql`;
+   `mysqldump -h 127.0.0.1 -u webuser -p --single-transaction voice_bot > /root/echosphere-prep/voice_bot-$(date +%Y%m%d).sql`;
    note `git rev-parse HEAD`, `alembic current` (both inis) and the model
    inventory output from step 0.
 2. **Pull the code** (as root, umask 022 so new files stay readable):
@@ -188,12 +192,10 @@ Stop here if any step fails; the rollback for that step is in section 7.
    UPDATE provider_models SET status = 'inactive', updated_at = NOW()
     WHERE provider_code = 'openai' AND capability = 'llm' AND code = 'gpt-4.1-nano' AND status = 'active';
    ```
-   For the saaras:v4 price: `SELECT id, model_code, price, effective_from,
-   status FROM provider_pricing WHERE model_code = 'saaras:v4';` — if prod
-   carries the ₹30/h list row from the seed, apply statement (1) with that
-   row's id in place of `ppr_d8261a596a86`; the ₹9/h row text is in the file.
-   Statement (b) applies only if prod's saaras:v3 row was edited the same way
-   (`effective_from > NOW()`); demo's was. The per-bot model moves are
+   Checked on prod 2026-10-30 (read-only step 0): `provider_pricing` has
+   `unit_price` / `selling_price` columns, not `price`, and saaras:v4 is
+   already active at ₹9/hour, so statements (1) and (b) do NOT apply — run
+   only (2) and (4). The per-bot model moves are
    section 5, not this step.
 6. **Clear cached bot configs**: `redis-cli -p 6380 -a "$REDIS_PASSWORD"
    --scan --pattern 'botcfg:*' | xargs -r redis-cli -p 6380 -a "$REDIS_PASSWORD" del`
@@ -247,6 +249,15 @@ To turn the Phase 4 switches on for chosen prod bots, copy
 reads as off) and keep its rollback file alongside.
 
 ## 5. Bots on retiring models
+
+Prod (read-only step 0, 2026-10-30): four published bots, all on gpt-4o-mini /
+saaras:v3 / bulbul:v3 with no decision-model override — `bot_44a50e8c4146`
+(Customer Support = Jeeves), `bot_4b8d6fe95cb1` (Zepto OB), `bot_59770d4c05a1`
+(Zepto MDND copy), `bot_59a84478f155` (Zepto MDND); no loudness rows; the
+gpt-6-luna catalog row arrives with migration d3f5b7c9e1a2. The exact SQL
+(gpt-6-luna, `reply_service_tier` fast, `reply_reasoning_effort` lowest, and
+its rollback) is step 10a of `scratchpad/prod_runbook_commands.md`; the DB
+user is `webuser`.
 
 `scratchpad/prod_model_migration.py` reads the catalog and prints, per bot
 still on gpt-5-mini / gpt-4o-mini / gpt-4.1-mini (published and in_review;
