@@ -725,9 +725,16 @@ class ConversationBrain(FrameProcessor):
         speaker_tap=None,
         held_segment_guard: bool = False,
         user_speech_timeout: float = 1.2,
+        smart_turn_active: bool = False,
     ) -> None:
         super().__init__()
         self._config = config
+        # Smart Turn ends the call's turns (voice_runtime.smart_turn): the
+        # endpoint is ~150 ms, so the decision prefetch has nothing to overlap
+        # and mostly ran against text that was still growing (see
+        # _start_decision_prefetch).
+        self._smart_turn_active = bool(smart_turn_active)
+        self._prefetch_disabled_noted = False
         # Continuation vs new turn while a reply is still unheard (see
         # _CONTINUATION_GAP_MIN_S): derived from the tenant's pause window.
         self._continuation_gap_s = min(
@@ -3339,6 +3346,21 @@ class ConversationBrain(FrameProcessor):
         decision overlaps the provider's own confirmation window.
         """
         if self._closing:
+            return
+        if self._smart_turn_active:
+            # With Smart Turn the endpoint is ~150 ms (demo 2026-10-23..29,
+            # 196 calls): the prefetch finished before dispatch on 62 of 962
+            # turns (6 %), and of the decisions it started 109 of 724
+            # completed for text the turn never used (a straggler changed the
+            # buffer, a late final merged the turn) and ~230 more were
+            # cancelled in flight — ~40 unused decision calls a day, each
+            # competing with the real decision under the same cache key. The
+            # turn's decision therefore starts at dispatch, once.
+            if not self._prefetch_disabled_noted:
+                self._prefetch_disabled_noted = True
+                self._recorder.add_event(
+                    "decision_prefetch_disabled", reason="smart_turn",
+                )
             return
         engine_on = self._goal_engine.enabled
         if not engine_on and not self._intent_pipeline.llm_enabled:

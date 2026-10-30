@@ -1131,9 +1131,19 @@ def build_voice_pipeline(
                 "speaker_consistency_enabled", mode=speaker_mode,
                 backend=None if backend is None else backend.name,
             )
+    # Whether Smart Turn ends this call's turns (the same gate
+    # build_user_turn_stop_strategies applies below, decided here for the
+    # brain: no decision prefetch under Smart Turn).
+    from voice_runtime.smart_turn import smart_turn_decision, smart_turn_mode_from_setting
+
+    smart_turn_active = not provider_owns_turns and smart_turn_decision(
+        smart_turn_mode_from_setting(turn.get("smart_turn", 1)), config.language,
+        enabled=get_settings().smart_turn_enabled,
+    )[0]
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
+        smart_turn_active=smart_turn_active,
         recorder=recorder,
         speaker_consistency=speaker_consistency,
         speaker_tap=speaker_tap,
