@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type {
   ApiConnection, ApiTestResult, IdentityConfirmationMode, Intent, RuntimeContextConfig,
   RuntimeContextField,
-  RuntimeContextFieldType, RuntimeContextRecord, RuntimeContextValidateResult,
+  RuntimeContextFieldType, RuntimeContextRecord, RuntimeContextSourceMode, RuntimeContextValidateResult,
   VoiceBot, Workflow,
 } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
@@ -832,7 +832,7 @@ function RuntimeContextSection({ bot, connections, canManage, managePermTitle }:
           {q.data && (q.data.configured ? (
             <>
               <span className="chip chip-good">configured</span>
-              <span className="chip chip-neutral">{q.data.sourceMode === "api" ? "API response" : "test data"}</span>
+              <span className="chip chip-neutral">{q.data.sourceMode === "api" ? "API response" : q.data.sourceMode === "dialer" ? "dialer variables" : "test data"}</span>
               <span className="chip chip-neutral t-num">{q.data.fields.length} field{q.data.fields.length === 1 ? "" : "s"}</span>
             </>
           ) : (
@@ -865,7 +865,7 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
   canManage: boolean; managePermTitle?: string; onSaved: () => void;
 }) {
   const { toast } = useApp();
-  const [sourceMode, setSourceMode] = useState<"api" | "manual">(config.sourceMode);
+  const [sourceMode, setSourceMode] = useState<RuntimeContextSourceMode>(config.sourceMode);
   const [apiConnectionId, setApiConnectionId] = useState(config.apiConnectionId ?? "");
   const [responsePath, setResponsePath] = useState(config.responsePath ?? "");
   const [domainPolicy, setDomainPolicy] = useState<"generic" | "collections">(config.domainPolicy);
@@ -1026,11 +1026,14 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
           label="Source mode"
           hint={sourceMode === "api"
             ? "Live calls fetch user details from the selected API connection."
-            : "Calls use the test-user details below (or a stored record matched by phone)."}
+            : sourceMode === "dialer"
+              ? "Live calls run on the variables the dialer sends in the signed telephony webhook, matched to the fields below (customerName fills customer_name). A field the dialer leaves out or blank stays unknown; the test-user details below are used only for sessions without dialer variables (Testing Studio, test calls)."
+              : "Calls use the test-user details below (or a stored record matched by phone)."}
         >
-          <select className="select" value={sourceMode} onChange={(e) => setSourceMode(e.target.value as "api" | "manual")}>
+          <select className="select" value={sourceMode} onChange={(e) => setSourceMode(e.target.value as RuntimeContextSourceMode)}>
             <option value="api">API response</option>
             <option value="manual">Manual test data</option>
+            <option value="dialer">Dialer variables (telephony webhook)</option>
           </select>
         </Field>
         <Field label="Domain policy" hint="Collections adds the deterministic call policy (verification, phased flow, dispositions).">
@@ -1102,10 +1105,12 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
               <Toggle checked={!!f.sensitive} onChange={(v) => patchField(i, { sensitive: v })} label={`Field ${i + 1} sensitive`} />
               <span className="t-micro">sensitive</span>
             </span>
-            <span className="row gap-4" style={{ flexShrink: 0 }} title="The dialer may send this value per call in the webhook's variables; a non-blank value then replaces the API / test value for this field.">
-              <Toggle checked={!!f.sessionOverride} onChange={(v) => patchField(i, { sessionOverride: v })} label={`Field ${i + 1} dialer override`} />
-              <span className="t-micro">dialer override</span>
-            </span>
+            {sourceMode !== "dialer" && (
+              <span className="row gap-4" style={{ flexShrink: 0 }} title="The dialer may send this value per call in the webhook's variables; a non-blank value then replaces the API / test value for this field.">
+                <Toggle checked={!!f.sessionOverride} onChange={(v) => patchField(i, { sessionOverride: v })} label={`Field ${i + 1} dialer override`} />
+                <span className="t-micro">dialer override</span>
+              </span>
+            )}
             <button className="btn-icon" aria-label={`Remove field ${i + 1}`} onClick={() => setFields((rows) => rows.filter((_, j) => j !== i))}>
               <Icon name="x" size={13} />
             </button>
@@ -1134,10 +1139,12 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
 
       {/* Test payload */}
       <SectionTitle>{sourceMode === "api" ? "Sample user details" : "Test user details"}</SectionTitle>
-      <Callout tone="info" title={sourceMode === "api" ? "API sample data" : "Temporary test data"}>
+      <Callout tone="info" title={sourceMode === "api" ? "API sample data" : sourceMode === "dialer" ? "Test data for sessions without dialer variables" : "Temporary test data"}>
         {sourceMode === "api"
           ? "These values are only a sample for validation. Live calls continue to fetch user details from the selected API."
-          : "Save these details and the bot will use them in Testing Studio and test calls until you switch the source to a real API."}
+          : sourceMode === "dialer"
+            ? "Testing Studio runs and test calls placed without dialer variables use these details. A call that carries dialer variables never uses them, not even for a field the dialer left out."
+            : "Save these details and the bot will use them in Testing Studio and test calls until you switch the source to a real API."}
       </Callout>
 
       {parsedTestPayload === null && (

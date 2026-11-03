@@ -383,7 +383,7 @@ export const deleteCustomerContext = (id: string): Promise<{ deleted: boolean }>
 export const getRuntimeContext = (botId: string): Promise<RuntimeContextConfig> =>
   http.get(`/bots/${botId}/runtime-context`);
 export const saveRuntimeContext = (botId: string, body: {
-  name?: string; sourceMode: "api" | "manual"; apiConnectionId?: string | null;
+  name?: string; sourceMode: "api" | "manual" | "dialer"; apiConnectionId?: string | null;
   responsePath?: string | null; fields: RuntimeContextField[]; allowAdditional: boolean;
   testPayload?: Record<string, unknown> | null; missingValuePolicy?: string | null;
   domainPolicy: "generic" | "collections";

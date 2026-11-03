@@ -1024,6 +1024,14 @@ export interface PromptTestResult {
 export type RuntimeContextFieldType =
   "string" | "number" | "integer" | "boolean" | "date" | "object" | "array";
 
+/**
+ * Where live calls get their user details: the User Details API, the saved
+ * test data, or the telephony webhook's per-call `variables` (then the test
+ * data only fills sessions that carry no variables, and a field the dialer
+ * leaves out stays unknown).
+ */
+export type RuntimeContextSourceMode = "api" | "manual" | "dialer";
+
 export interface RuntimeContextField {
   key: string;
   label?: string;
@@ -1036,6 +1044,7 @@ export interface RuntimeContextField {
    * The dialer may supply this field per call (telephony webhook `variables`).
    * A non-blank value then wins over the API / test payload for this field;
    * when every declared field is covered this way the User Details API is skipped.
+   * Not needed in the `dialer` source mode, where every field is dialer-supplied.
    */
   sessionOverride?: boolean;
   description?: string;
@@ -1046,7 +1055,7 @@ export interface RuntimeContextConfig {
   id: string | null;
   botId: string;
   name: string;
-  sourceMode: "api" | "manual";
+  sourceMode: RuntimeContextSourceMode;
   apiConnectionId: string | null;
   responsePath: string | null;
   fields: RuntimeContextField[];

@@ -30,6 +30,12 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   write); `--apply` executes. Order: `00_tenant_governance` (super admin: guardrail profile, timezone) →
   `01_bot_settings_connections` → `02_prompts` → `03_workflow` → `04_intents_context` →
   `05_go_live`.
+- `setup/06_runtime_context_dialer_variables.py` — stands alone (targets the Studio-built
+  demo bot `bot_450a4f7b4832`, not the 00…05 build): switches the bot's runtime context to
+  the `dialer` source mode so the FreeSWITCH webhook's `variables` (customer_name,
+  product_name, rejection_reason, rejection_reason_label) are the call's context and the
+  saved test data only fills sessions without variables. Dry-run by default; `--apply`.
+  Requires API + voice-worker code that knows the mode (shared/runtime_context.py).
 - `tests/scenarios.py` — 37 customer-side scripts (8 transcripts, 21 reason branches, 8 edge cases).
 - `tests/replay_offline.py` — real engine, no DB, hooks mocked: runs before anything is applied.
 - `tests/run_chat_scenarios.py` — same scripts over `POST /bots/{id}/testing/simulate` after apply.

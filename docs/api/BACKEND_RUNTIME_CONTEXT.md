@@ -32,6 +32,19 @@ that field when the dialer omitted it or sent a blank. When every declared
 field is a `sessionOverride` the dialer supplied, the User Details API is not
 called for that call (`runtime_context_loaded` reports `api_skipped: true`).
 
+A schema whose `sourceMode` is `dialer` makes the webhook's `variables` the
+live source for every declared field (same spelling-insensitive, strictly typed
+match; no per-field flag needed; object/array fields are never filled from a
+variable). A session that carries variables runs on them alone: the test
+payload and a phone-matched record are not consulted, so a field the dialer
+left out or sent blank is unknown on that call rather than another customer's
+fixture value (`runtime_context_loaded` reports `payload_skipped: true` and
+only `session`/`system` sources). A session without variables (Testing Studio,
+a test call placed without them) resolves exactly like `manual`: phone-matched
+or explicitly selected record, else the test payload. A record the session
+selects explicitly (`customer_context_id`) is honoured in either case. No User
+Details API exists in this mode.
+
 ### Field-definition contract
 
 Each item in `fields` is an object. These are the keys actually consumed by
@@ -120,7 +133,7 @@ Purpose: create or replace the schema configuration. Auth: tenant admin
 | Field | Type | Required | Default / validation |
 | --- | --- | --- | --- |
 | `name` | string | no | `User details`; max 200. |
-| `sourceMode` | string | no | `manual`; `manual` or `api`. |
+| `sourceMode` | string | no | `manual`; `manual`, `api` or `dialer` (dialer variables are the live source; test payload only for sessions without variables). |
 | `apiConnectionId` | string/null | no | Required when source is `api`; connection must belong to tenant and either bot/global scope. |
 | `responsePath` | string/null | no | Max 200; dot path into API response, or entire response when empty/null. |
 | `fields` | object[] | no | `[]`; field-definition contract above. |

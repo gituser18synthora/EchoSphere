@@ -204,6 +204,12 @@ schema field flagged `sessionOverride` (spelling-insensitive: `customerName`
 fills `customer_name`) replaces that field's User Details API / test value for
 the call; fields the dialer omits or sends blank still come from the API, and
 the API is skipped entirely when the dialer covered every declared field.
+A schema in the `dialer` source mode goes further: every declared field is
+filled from the variables, and a call that carries variables runs on them
+alone — the schema's test data and phone-matched records are not consulted,
+so a field the dialer left out or blank is unknown rather than a fixture
+value (`runtime_context_loaded` reports `payload_skipped: true`). Calls
+without variables still use the test data, as before.
 
 ## FreeSWITCH
 

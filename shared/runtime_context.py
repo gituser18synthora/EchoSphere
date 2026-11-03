@@ -31,6 +31,16 @@ api/test/record payload; otherwise the payload fills the field as before.
 When the dialer covered every declared field this way, the User Details API
 is not called at all (its latency lands 1:1 on the greeting). Nothing changes
 for schemas that never set the flag.
+
+One opt-in exception, per schema: source mode ``dialer`` makes the signed
+webhook's ``variables`` the live source for every declared field (matched the
+same spelling-insensitive, strictly typed way, no per-field flag needed). A
+session that carries variables runs on them ALONE — the test JSON and a
+phone-matched record are not consulted, so a field the dialer left out or
+blank is unknown rather than another customer's fixture value. Sessions that
+carry no variables (Testing Studio, test calls placed without them) use the
+record / test JSON exactly as ``manual`` mode does. There is no User Details
+API in this mode, so none is called.
 """
 
 import asyncio
@@ -88,6 +98,13 @@ _SENSITIVE_KEY_HINT = re.compile(
 # signed webhook's ``variables``. See the module docstring for the precedence.
 SESSION_OVERRIDE_FLAG = "sessionOverride"
 
+# Schema source mode in which the dialer's variables ARE the live source for
+# every declared field (see :func:`load_runtime_context`).
+DIALER_SOURCE_MODE = "dialer"
+# A variable that selects a stored record for the call rather than describing
+# the caller; it never counts as dialer-supplied context.
+RECORD_SELECTOR_VARIABLE = "customer_context_id"
+
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _CANONICAL_KEY = re.compile(r"[^a-z0-9]+")
 _INTEGER_TEXT = re.compile(r"^[+-]?\d+$")
@@ -138,6 +155,7 @@ def _coerce_session_value(value, ftype: str):
 
 def session_override_values(
     field_definitions: list | None, session_variables: dict | None,
+    *, all_fields: bool = False,
 ) -> tuple[dict[str, object], set[str]]:
     """Dialer-supplied values for the schema's ``sessionOverride`` fields.
 
@@ -147,14 +165,25 @@ def session_override_values(
     :func:`canonical_variable_key`), so they are not kept a second time under
     the dialer's own spelling. Blank, absent and wrongly typed values are not
     overrides — the configured payload source fills those fields as before.
+
+    With ``all_fields`` every declared scalar field counts as flagged (the
+    ``dialer`` source mode: the dialer is the live source for the whole
+    schema, so no per-field flag is needed). Object/array fields cannot
+    arrive as a scalar variable and are left to the payload.
     """
     flagged: dict[str, tuple[str, str]] = {}
     for item in field_definitions or []:
-        if not isinstance(item, dict) or item.get(SESSION_OVERRIDE_FLAG) is not True:
+        if not isinstance(item, dict):
+            continue
+        ftype = str(item.get("type") or "string")
+        if all_fields:
+            if ftype in ("object", "array"):
+                continue
+        elif item.get(SESSION_OVERRIDE_FLAG) is not True:
             continue
         key = str(item.get("key") or "").strip()
         if key:
-            flagged[canonical_variable_key(key)] = (key, str(item.get("type") or "string"))
+            flagged[canonical_variable_key(key)] = (key, ftype)
     overrides: dict[str, object] = {}
     consumed: set[str] = set()
     if not flagged:
@@ -177,6 +206,20 @@ def session_override_values(
         if str(raw_key) == declared_key or declared_key not in overrides:
             overrides[declared_key] = value
     return overrides, consumed
+
+
+def dialer_variables_present(session_variables: dict | None) -> bool:
+    """Whether the dialer sent per-call variables describing this call.
+
+    Blank values count: a dialer that sends the variables block has taken
+    over as the source for the call, and a field it left empty is UNKNOWN —
+    the test JSON must not fill it with another customer's facts. The record
+    selector (``customer_context_id``) is not a description of the caller.
+    """
+    return any(
+        str(key) != RECORD_SELECTOR_VARIABLE and value is not None
+        for key, value in (session_variables or {}).items()
+    )
 
 
 def validate_field_definitions(fields: list | None) -> list[dict]:
@@ -452,13 +495,16 @@ class RuntimeContext:
     # standard | strict, or None for the domain policy's default (see
     # shared.orchestration.identity_confirmation).
     identity_confirmation_mode: str | None = None
-    source_mode: str | None = None       # api | manual | record | legacy
+    source_mode: str | None = None       # api | manual | dialer | record | legacy
     record_id: str | None = None         # stored record / legacy context row id
     schema_id: str | None = None
     load_error: str | None = None        # e.g. the User Details API failed
     # True when the dialer's variables covered every declared field, so the
     # User Details API round trip was skipped for this call.
     api_skipped: bool = False
+    # True on a ``dialer``-mode call that carried variables: the test JSON /
+    # phone-matched record were not consulted, the dialer's values stand alone.
+    payload_skipped: bool = False
     # Sticky call-level gate. It remains true after a workflow value replaces
     # a same-named fixture flag, so stale test facts never become visible.
     session_verification_required: bool = False
@@ -694,6 +740,7 @@ def build_runtime_context(
     schema_id: str | None = None,
     load_error: str | None = None,
     api_skipped: bool = False,
+    payload_skipped: bool = False,
 ) -> RuntimeContext:
     """Merge every source into one provenance-tagged context (masked).
 
@@ -711,7 +758,7 @@ def build_runtime_context(
         identity_confirmation_mode=identity_confirmation_mode,
         source_mode=source_mode,
         record_id=record_id, schema_id=schema_id, load_error=load_error,
-        api_skipped=api_skipped,
+        api_skipped=api_skipped, payload_skipped=payload_skipped,
     )
     sensitive_keys = {
         str(f.get("key")): int(f.get("maskKeep") or 4)
@@ -732,8 +779,12 @@ def build_runtime_context(
             _put(str(key), value, "system")
     # Variables addressed at a ``sessionOverride`` field are applied LAST,
     # under the declared key, so they win over the payload for that field;
-    # every other variable keeps today's place below the payload.
-    overrides, consumed = session_override_values(field_definitions, session_variables)
+    # every other variable keeps today's place below the payload. In the
+    # ``dialer`` source mode every declared field is such a field.
+    overrides, consumed = session_override_values(
+        field_definitions, session_variables,
+        all_fields=(source_mode == DIALER_SOURCE_MODE),
+    )
     for key, value in (session_variables or {}).items():
         if value is not None and str(key) not in consumed:
             _put(str(key), value, "session")
@@ -947,24 +998,44 @@ async def load_runtime_context(
     load_error: str | None = None
     found_record_id: str | None = None
     api_skipped = False
+    payload_skipped = False
+    # ``dialer`` source mode: a session that carries the dialer's variables
+    # runs on them alone — no phone-matched record, no test JSON — so a
+    # field the dialer did not send stays unknown instead of becoming another
+    # customer's fixture value. A record the session names explicitly is
+    # still honoured (that selection is deliberate), and a session without
+    # variables (Testing Studio, a test call placed without them) resolves
+    # exactly like ``manual`` mode.
+    dialer_call = (
+        schema["source_mode"] == DIALER_SOURCE_MODE
+        and dialer_variables_present(session_variables)
+    )
 
     # A stored record for this caller wins over the generic source: it is the
     # per-customer row the tenant deliberately staged for this number.
-    try:
-        record = await asyncio.wait_for(
-            asyncio.to_thread(
-                _load_record_sync, tenant_id, bot_id,
-                record_id=record_id, phone=phone,
-            ),
-            timeout=timeout_seconds,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("runtime context record load failed (bot=%s)", bot_id)
-        record = None
+    record = None
+    if not dialer_call or record_id:
+        try:
+            record = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _load_record_sync, tenant_id, bot_id,
+                    record_id=record_id, phone=None if dialer_call else phone,
+                ),
+                timeout=timeout_seconds,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("runtime context record load failed (bot=%s)", bot_id)
+            record = None
 
     if record is not None:
         payload, payload_source = record["data"], "record"
         found_record_id = record["id"]
+    elif dialer_call:
+        payload_skipped, payload_source = True, "session"
+        logger.info(
+            "runtime context: dialer variables supply this call's context, "
+            "test data not used (bot=%s)", bot_id,
+        )
     elif schema["source_mode"] == "api" and schema.get("api"):
         if _dialer_covers_schema(schema["fields"], session_variables):
             # Every declared field is a sessionOverride the dialer supplied:
@@ -981,7 +1052,10 @@ async def load_runtime_context(
                 session_variables=session_variables,
                 timeout_seconds=timeout_seconds,
             )
-    elif schema["source_mode"] == "manual" and isinstance(schema.get("test_payload"), dict):
+    elif (
+        schema["source_mode"] in ("manual", DIALER_SOURCE_MODE)
+        and isinstance(schema.get("test_payload"), dict)
+    ):
         payload, payload_source = schema["test_payload"], "test"
 
     return build_runtime_context(
@@ -1001,6 +1075,7 @@ async def load_runtime_context(
         schema_id=schema["id"],
         load_error=load_error,
         api_skipped=api_skipped,
+        payload_skipped=payload_skipped,
     )
 
 

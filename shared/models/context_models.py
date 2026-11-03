@@ -44,7 +44,10 @@ from shared.models.base import (
 )
 
 # Where live calls get their context payload from.
-CONTEXT_SOURCE_MODES = ("api", "manual")
+# api → the User Details API feeds live calls; manual → the stored test JSON
+# does; dialer → the signed telephony webhook's ``variables`` do, with the
+# test JSON standing in only for sessions that carry no variables.
+CONTEXT_SOURCE_MODES = ("api", "manual", "dialer")
 
 # Domain behavior packs a tenant can opt a bot into. "generic" is pure
 # prompt/workflow-driven behavior; "collections" additionally activates the
@@ -73,7 +76,9 @@ class RuntimeContextSchema(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin,
     )
     name: Mapped[str] = mapped_column(String(200), default="User details", nullable=False)
     # api → the User Details API below feeds live calls; manual → the stored
-    # test payload does (pre-integration and Testing Studio runs).
+    # test payload does (pre-integration and Testing Studio runs); dialer →
+    # the telephony webhook's per-call variables do, and the test payload
+    # only fills sessions that carry none (see CONTEXT_SOURCE_MODES).
     source_mode: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)
     api_connection_id: Mapped[str | None] = mapped_column(
         String(ID_LEN), ForeignKey("api_connections.id"), nullable=True

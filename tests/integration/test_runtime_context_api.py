@@ -601,3 +601,68 @@ class TestSessionOverride:
         )
         assert ctx.get("lead_name") == "Arjun"
         assert ctx.values["lead_name"].source == "test"
+
+
+class TestDialerSourceMode:
+    """Source mode ``dialer`` saved through the API and resolved against the real DB."""
+
+    def test_saved_and_round_tripped(self, client, tenant_admin, estate_bot):
+        data = _data(client.put(
+            f"{API}/bots/{estate_bot['id']}/runtime-context", headers=tenant_admin,
+            json={
+                "name": "Lead details",
+                "sourceMode": "dialer",
+                "apiConnectionId": "conn_ignored",
+                "fields": [
+                    {"key": "lead_name", "type": "string"},
+                    {"key": "budget_max", "type": "number"},
+                    {"key": "properties", "type": "array"},
+                ],
+                "testPayload": {"lead_name": "Arjun", "budget_max": 7500000,
+                                "properties": [{"id": "P-12"}]},
+                "domainPolicy": "generic",
+            },
+        ))
+        assert data["sourceMode"] == "dialer"
+        assert data["apiConnectionId"] is None
+        fetched = _data(client.get(f"{API}/bots/{estate_bot['id']}/runtime-context",
+                                   headers=tenant_admin))
+        assert fetched["sourceMode"] == "dialer"
+        assert fetched["testPayload"]["lead_name"] == "Arjun"
+
+    def test_unknown_mode_rejected(self, client, tenant_admin, estate_bot):
+        response = client.put(
+            f"{API}/bots/{estate_bot['id']}/runtime-context", headers=tenant_admin,
+            json={"sourceMode": "webhook", "fields": []},
+        )
+        assert response.status_code == 422
+        assert "sourceMode" in response.text
+
+    async def test_loader_runs_on_the_variables_alone(self, estate_bot):
+        from shared.runtime_context import load_runtime_context
+
+        ctx = await load_runtime_context(
+            _tenant_of(estate_bot["id"]), estate_bot["id"], phone="+911234567890",
+            session_variables={"leadName": "Priya", "budget_max": "", "campaign": "oct"},
+        )
+        assert ctx is not None
+        assert ctx.source_mode == "dialer" and ctx.payload_skipped is True
+        assert ctx.get("lead_name") == "Priya"                 # camelCase matched, no flag needed
+        assert ctx.values["lead_name"].source == "session"
+        assert "leadName" not in ctx.values
+        assert ctx.get("budget_max") is None                   # blank → unknown, not 7500000
+        assert ctx.get("properties") is None                   # fixture not consulted
+        assert ctx.values["campaign"].source == "session"
+        assert {e.source for e in ctx.values.values()} <= {"session", "system"}
+        assert ctx.api_skipped is False
+
+    async def test_loader_without_variables_uses_the_test_payload(self, estate_bot):
+        from shared.runtime_context import load_runtime_context
+
+        ctx = await load_runtime_context(
+            _tenant_of(estate_bot["id"]), estate_bot["id"], phone="+911234567890",
+        )
+        assert ctx.payload_skipped is False
+        assert ctx.get("lead_name") == "Arjun"
+        assert ctx.values["lead_name"].source == "test"
+        assert ctx.get("budget_max") == 7500000

@@ -443,6 +443,9 @@ async def _run_call(
                 entry.source for entry in runtime_context.values.values()
             )),
             api_skipped=runtime_context.api_skipped,
+            # dialer source mode: the test JSON / phone record were not
+            # consulted because the dialer supplied this call's context.
+            payload_skipped=runtime_context.payload_skipped,
             load_error=runtime_context.load_error,
         )
 
