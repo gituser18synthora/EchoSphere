@@ -516,11 +516,14 @@ class TestStartAndLifecycle:
         _wait_for_jobs()
         session = get_sessionmaker()()
         try:
-            row = session.scalars(
+            # Several tests start calls within the same second, so pick the
+            # row by job id rather than by created_at.
+            rows = session.scalars(
                 select(AuditLog).where(
                     AuditLog.entity_id == bot["id"], AuditLog.action == "Started real test call",
-                ).order_by(AuditLog.created_at.desc())
-            ).first()
+                )
+            ).all()
+            row = next((r for r in rows if (r.new_value or {}).get("jobId") == started["jobId"]), None)
         finally:
             session.close()
         assert row is not None

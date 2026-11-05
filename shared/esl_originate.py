@@ -248,8 +248,10 @@ def _clean_value(name: str, value: object, *, limit: int) -> str:
 
 
 def quote_esl_value(value: str) -> str:
-    """Single-quote a value unless it is a plain token (digits, ids, URIs)."""
-    if value and _PLAIN_VALUE.match(value):
+    """Single-quote a value unless it is a plain token (digits, ids, URIs).
+    An empty value stays bare (``operatorId=``), exactly as the demo dialer
+    sends it."""
+    if not value or _PLAIN_VALUE.match(value):
         return value
     return "'" + value + "'"
 

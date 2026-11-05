@@ -149,7 +149,7 @@ class TestQuoting:
         assert quote_esl_value("sip:kamailio.example:5060") == "sip:kamailio.example:5060"
         assert quote_esl_value("Split AC") == "'Split AC'"
         assert quote_esl_value("<sip:k;lr>") == "'<sip:k;lr>'"
-        assert quote_esl_value("") == "''"
+        assert quote_esl_value("") == ""  # bare, like the dialer's operatorId=
 
     def test_single_quote_cannot_terminate_a_value(self):
         cleaned = validate_variables({"vb_customer_name": "O'Brien, Sr."})
