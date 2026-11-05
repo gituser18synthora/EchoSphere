@@ -16,12 +16,14 @@ import voice_runtime.freeswitch as fs
 from shared.esl_originate import (
     BOT_ID_PARAM,
     MANDATORY_ESL_PARAMS,
+    REQUIRED_NON_EMPTY,
     OriginateValidationError,
     build_originate_plan,
     customer_variable_name,
     format_variable_block,
     map_customer_variables,
     mask_phone_number,
+    national_number,
     normalize_phone_number,
     parse_originate_result,
     quote_esl_value,
@@ -47,8 +49,13 @@ HAIER_TEST_PAYLOAD = {
 def _base(**overrides):
     base = {name: "x" for name in MANDATORY_ESL_PARAMS}
     base.update({
-        "sip_route_uri": "sip:kamailio.example:5060",
-        "sip_h_route-header": "<sip:kamailio.example:5060;lr>",
+        "sip_route_uri": "sip:192.168.60.124:5060",
+        "sip_h_route-header": "9210",
+        "domain_name": "kam-freeswitch.edas.tech",
+        "kamailioHost": "192.168.60.124",
+        "operatorPrefix": "+91",
+        "cli": "+918047133633",
+        "origination_caller_id_number": "+918047133633",
         "dialTimeout": "45",
         "ignore_early_media": "true",
     })
@@ -60,8 +67,8 @@ def _plan(number="+91 98765 43210", **kwargs):
     defaults = dict(
         phone_number=number, bot_id=BOT, tenant_id=TENANT,
         base_params=_base(), param_overrides={}, customer_data=HAIER_TEST_PAYLOAD,
-        dial_template="sofia/external/{number}@{domain_name}",
-        application="&lua(voicebot.lua)",
+        dial_template="sofia/external/0{number}@{domain_name}",
+        application="{cli} XML voicebot_calling",
     )
     defaults.update(kwargs)
     return build_originate_plan(**defaults)
@@ -80,6 +87,14 @@ class TestPhoneNumber:
 
     def test_mask_keeps_last_four(self):
         assert mask_phone_number("+919876543210") == "XXXXXXXX3210"
+
+    def test_national_number_strips_india_prefixes_only(self):
+        # The demo dialer dials 0<10 digits> and sends 10-digit customerNumber/cli.
+        assert national_number("+917738691223") == "7738691223"
+        assert national_number("917738691223") == "7738691223"
+        assert national_number("07738691223") == "7738691223"
+        assert national_number("7738691223") == "7738691223"
+        assert national_number("+14155550123") == "14155550123"
 
 
 class TestCustomerMapping:
@@ -164,10 +179,10 @@ class TestQuoting:
 class TestDialStringAndApplication:
     def test_placeholders_fill_from_number_and_variables(self):
         out = render_dial_string(
-            "sofia/external/{operatorPrefix}{number}@{kamailioHost}",
-            {"operatorPrefix": "0", "kamailioHost": "k.example"}, "9876543210",
+            "sofia/external/0{number}@{domain_name}",
+            {"domain_name": "kam-freeswitch.edas.tech"}, "9876543210",
         )
-        assert out == "sofia/external/09876543210@k.example"
+        assert out == "sofia/external/09876543210@kam-freeswitch.edas.tech"
 
     def test_unknown_placeholder_and_unsafe_result_are_rejected(self):
         with pytest.raises(OriginateValidationError):
@@ -180,9 +195,15 @@ class TestDialStringAndApplication:
     def test_application_shape(self):
         assert validate_application(" &lua(voicebot.lua) ") == "&lua(voicebot.lua)"
         assert validate_application("&park()") == "&park()"
-        for bad in ("lua(voicebot.lua)", "&lua(x) &park()", "&lua(a\nb)", "&lua({x})"):
+        # The demo dialer's form: the cli as exten into the voicebot_calling context.
+        assert validate_application("{cli} XML voicebot_calling", {"cli": "8047133633"}) == (
+            "8047133633 XML voicebot_calling"
+        )
+        assert validate_application("8071420593 XML voicebot_calling") == "8071420593 XML voicebot_calling"
+        for bad in ("lua(voicebot.lua)", "&lua(x) &park()", "&lua(a\nb)", "&lua({x})",
+                    "8047133633 XML", "8047133633 XML voicebot_calling extra", "{cli} XML voicebot_calling"):
             with pytest.raises(OriginateValidationError):
-                validate_application(bad)
+                validate_application(bad, {})
 
 
 class TestOriginatePlan:
@@ -192,7 +213,7 @@ class TestOriginatePlan:
             "dialTimeout": "30",
         }, customer_data={**HAIER_TEST_PAYLOAD, "voicebotID": "bot_evil"})
         v = plan.variables
-        assert v["customerNumber"] == "+919876543210"
+        assert v["customerNumber"] == "9876543210"
         assert v["tenantId"] == TENANT
         assert v[BOT_ID_PARAM] == BOT
         assert v["dialTimeout"] == "30"           # a normal override is honoured
@@ -204,33 +225,48 @@ class TestOriginatePlan:
         assert len(plan.origination_uuid) == 36
         assert v["origination_uuid"] == plan.origination_uuid
 
-    def test_command_shape(self):
-        plan = _plan(origination_uuid=JOB, base_params=_base(domain_name="dialer.example"))
+    def test_command_matches_the_demo_dialer(self):
+        # qabackend providerAdaptor.dialPhoneForVoicebot:
+        #   {…}sofia/external/0<10 digits>@kam-freeswitch.edas.tech <cli> XML voicebot_calling
+        plan = _plan(number="+91 77386 91223", origination_uuid=JOB)
         cmd = plan.command
+        v = plan.variables
         assert cmd.startswith("originate {")
-        assert cmd.endswith("}sofia/external/+919876543210@dialer.example &lua(voicebot.lua)")
+        assert cmd.endswith("}sofia/external/07738691223@kam-freeswitch.edas.tech 8047133633 XML voicebot_calling")
+        assert v["customerNumber"] == "7738691223"
+        assert v["cli"] == "8047133633"
+        assert v["origination_caller_id_number"] == "+918047133633"
+        assert v["operatorPrefix"] == "+91"
+        assert "sip_route_uri=sip:192.168.60.124:5060" in cmd
+        assert "sip_h_route-header=9210" in cmd
         assert "vb_product_name='Split AC'" in cmd
-        assert "sip_h_route-header='<sip:kamailio.example:5060;lr>'" in cmd
         assert f"origination_uuid={JOB}" in cmd
         assert f"voicebotID={BOT}" in cmd
         assert "\n" not in cmd
-        assert plan.phone_masked == "XXXXXXXX3210"
+        assert plan.phone_masked == "XXXXXX1223"
 
-    def test_every_mandatory_parameter_is_present_and_blanks_are_reported(self):
+    def test_ten_digit_input_and_bare_cli_are_normalised_the_same_way(self):
+        plan = _plan(number="7738691223", base_params=_base(cli="8047133633", origination_caller_id_number=""))
+        assert plan.dial_string == "sofia/external/07738691223@kam-freeswitch.edas.tech"
+        assert plan.variables["origination_caller_id_number"] == "+918047133633"
+        assert plan.application == "8047133633 XML voicebot_calling"
+
+    def test_every_mandatory_parameter_is_present_and_required_blanks_are_reported(self):
         base = _base()
         base["sip_route_uri"] = ""
-        base.pop("operatorId")
+        base.pop("operatorId")  # the dialer itself sends operatorId= empty without a pool
+        base["leadId"] = ""
         plan = _plan(base_params=base)
         for name in MANDATORY_ESL_PARAMS:
             assert name in plan.variables
-        assert plan.missing_mandatory == ["sip_route_uri", "operatorId"]
+        assert plan.missing_mandatory == ["sip_route_uri"]
+        assert set(REQUIRED_NON_EMPTY) <= set(MANDATORY_ESL_PARAMS)
 
-    def test_customer_override_fills_a_blank_mandatory(self):
+    def test_override_fills_a_required_blank(self):
         base = _base()
-        base["operatorId"] = ""
-        plan = _plan(base_params=base, param_overrides={"operatorId": "op7"})
+        base["sip_h_route-header"] = ""
+        plan = _plan(base_params=base, param_overrides={"sip_h_route-header": "9210"})
         assert plan.missing_mandatory == []
-        assert plan.variables["operatorId"] == "op7"
 
     def test_bad_origination_uuid_is_rejected(self):
         with pytest.raises(OriginateValidationError):

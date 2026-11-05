@@ -257,18 +257,37 @@ Studio polls it. Routes: `GET …/testing/real-call/defaults`, `POST
 …/testing/real-call/{job}/hangup`. API reference:
 [BACKEND_BOT_STUDIO.md](api/BACKEND_BOT_STUDIO.md#real-test-calls).
 
+**Command shape = the demo dialer's.** `backend/routers/real_calls.py`
+renders exactly what the QA dialer (`qabackend` `providerAdaptor.dialPhoneForVoicebot`)
+sends to FreeSWITCH 192.168.60.121: `originate {…}sofia/external/0<10 digits>@kam-freeswitch.edas.tech <cli> XML voicebot_calling`.
+The answered leg enters the `voicebot_calling` dialplan context, which gates on
+`cli` (10 digits, optional `+91`), `voicebotId` (FreeSWITCH matches names
+case-insensitively; the dialer spells it `voicebotID`), `customerNumber` and
+`recording`, then runs the deployed `voicebot.lua` (`free_sweetch/` holds the
+deployed copies): it forwards the bot id as the webhook `To`, every `vb_*`
+variable as `variables`, and the channel uuid as `callId`. Indian numbers are
+reduced to their 10 national digits (`+91…`, `91…`, `0…` stripped): the dial
+string prefixes `0`, `customerNumber` and `cli` are the 10 digits and
+`origination_caller_id_number` is `operatorPrefix` (`+91`) + `cli`.
+
 **Channel variables.** The dialer's mandatory set (`sip_route_uri`,
 `ignore_early_media`, `domain_name`, `sip_h_route-header`,
 `origination_caller_id_number`, `customerNumber`, `recording`, `leadId`,
 `campaignId`, `basketId`, `operatorId`, `operatorPrefix`, `cli`,
 `kamailioHost`, `freeswitchHost`, `callType`, `callMode`, `tenantId`,
 `dialTimeout`, `recordDualStereo`, `amdEnabled`, `leadtype`, `serverType`)
-is always present; an empty mandatory value blocks the call. Pre-fill
-precedence (also what the view sends when `params` is omitted): built-in test semantics (`callMode=test`, `dialTimeout=45`,
-`amdEnabled=false`, …) < `FREESWITCH_ORIGINATE_DEFAULTS` (JSON: the
-deployment's SIP route, domain, Kamailio/FreeSWITCH hosts, operator) < the
-bot (its voice-channel DID as `origination_caller_id_number`/`cli`, its
-tenant as `tenantId`). Every value is editable per call; nothing is written
+is always present; like the dialer, some may be empty (`operatorId` without a
+channel pool), but the values the SIP route and the dialplan consume
+(`sip_route_uri`, `domain_name`, `sip_h_route-header`,
+`origination_caller_id_number`, `customerNumber`, `cli`, `kamailioHost`,
+`tenantId`, `dialTimeout`) must be non-empty or the call is blocked. Pre-fill
+precedence (also what the view sends when `params` is omitted): built-in
+values mirroring the dialer (`callType=voiceBot`, `operatorPrefix=+91`,
+`domain_name=kam-freeswitch.edas.tech`, `dialTimeout=45`, `recording=false`
+for tests, `callMode`/`leadtype`/`campaignId` naming the Studio) <
+`FREESWITCH_ORIGINATE_DEFAULTS` (JSON: the deployment's `sip_route_uri`,
+`sip_h_route-header`, `kamailioHost`, `freeswitchHost`, `serverType`) < the
+bot (its voice-channel DID as `cli`, its tenant as `tenantId`). Every value is editable per call; nothing is written
 back to the bot. `customerNumber`, `tenantId`, `voicebotID` (the bot the
 answered leg must reach) and `origination_uuid` (becomes the channel uuid →
 the webhook `callId` → `conversation_sessions.call_id`) are set by the
@@ -282,20 +301,22 @@ object replaces it; `{}` sends none). Each scalar key becomes a
 they are; a key naming a system parameter is not prefixed (edit it in the
 ESL table instead); nested values are skipped. Values are kept verbatim
 (bounded to the 200 characters the webhook keeps). The dialplan forwards
-them: `voicebot.lua` reads `voicebotID` and the `vb_*` variables from
-`uuid_dump` and passes `--bot-id` / `--variables-json` to
+them: the deployed `voicebot.lua` reads `voicebot_to_number` (the bot id
+the dialplan copied from `voicebotId`) and every `vb_*` variable and passes
+`--to-number <bot id> --to-raw` / `--field <key> <value>` to
 `voicebot_webhook.py`, which posts `To=<bot id>` (direct bot routing) and
 `variables={…}` — so the bot's `dialer` source mode sees exactly the values
-from the dialog. A dialer-side dialplan must do the same mapping.
+from the Studio.
 
 **Quoting / safety.** Variable names are shape-checked; every value is
 single-quoted unless it is a plain token, control characters are rejected
 and a single quote becomes `’` (FreeSWITCH has no escape inside quotes). The
 number is normalized to digits with an optional leading `+` (8–15 digits).
 The dial string (`FREESWITCH_ORIGINATE_DIAL_TEMPLATE`, default
-`sofia/external/{number}@{domain_name}`; `{name}` = any effective variable)
-and the application (`FREESWITCH_ORIGINATE_APPLICATION`, default
-`&lua(voicebot.lua)`) are validated as single tokens. The call is refused
+`sofia/external/0{number}@{domain_name}`; `{name}` = any effective variable)
+and the dialplan target (`FREESWITCH_ORIGINATE_APPLICATION`, default
+`{cli} XML voicebot_calling`; an inline `&app(args)` is also accepted) are
+validated as single tokens. The call is refused
 up front when the webhook would refuse it later (bot not published,
 archived, voice channel deactivated) or when ESL is not configured. Every
 start/hangup is audited (masked number, variable names only).

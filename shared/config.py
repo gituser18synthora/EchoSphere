@@ -288,8 +288,8 @@ class Settings(BaseSettings):
     # bridge script by default). The defaults JSON object pre-fills the
     # dialer's mandatory channel variables (sip_route_uri, domain_name,
     # kamailioHost, …); every value stays editable per test call.
-    freeswitch_originate_dial_template: str = "sofia/external/{number}@{domain_name}"
-    freeswitch_originate_application: str = "&lua(voicebot.lua)"
+    freeswitch_originate_dial_template: str = "sofia/external/0{number}@{domain_name}"
+    freeswitch_originate_application: str = "{cli} XML voicebot_calling"
     freeswitch_originate_defaults: str = ""
     # Longest the backend watches a background originate for its result
     # (ring time is bounded by the dialer's dialTimeout, this by the wait).

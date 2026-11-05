@@ -77,22 +77,27 @@ _JOB_KEY = "real_call:{job_id}"
 _MAX_WAIT_CAP_SECONDS = 180.0
 _background_jobs: set[asyncio.Task] = set()
 
-# Built-in values for mandatory parameters that are not deployment
-# addresses: safe test-call semantics the tester can still edit.
+# Built-in values that mirror the demo dialer's voicebot originate
+# (qabackend providerAdaptor.dialPhoneForVoicebot) where the value is not a
+# deployment address; those come from FREESWITCH_ORIGINATE_DEFAULTS. Values
+# the dialplan never reads (callMode, leadtype, campaignId, basketId) name
+# the Studio so the call is recognisable as a test. Recording is off for
+# tests: the dialplan script writes the WAV on the FreeSWITCH host.
 _BUILTIN_DEFAULTS: dict[str, str] = {
     "ignore_early_media": "true",
-    "recording": "true",
-    "recordDualStereo": "true",
+    "recording": "false",
+    "recordDualStereo": "false",
     "amdEnabled": "false",
     "dialTimeout": "45",
-    "callType": "voicebot",
-    "callMode": "test",
-    "leadtype": "test",
-    "serverType": "voicebot",
-    "campaignId": "echosphere-test",
-    "basketId": "echosphere-test",
+    "callType": "voiceBot",
+    "callMode": "studio_test",
+    "leadtype": "studio_test",
+    "serverType": "qa",
+    "campaignId": "echosphere-studio",
+    "basketId": "echosphere-studio",
     "operatorId": "",
-    "operatorPrefix": "",
+    "operatorPrefix": "+91",
+    "domain_name": "kam-freeswitch.edas.tech",
 }
 
 

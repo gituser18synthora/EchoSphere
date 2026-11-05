@@ -35,12 +35,12 @@ FIELDS = [
     {"key": "rejection_reason", "label": "Reason code", "type": "string"},
     {"key": "rejection_reason_label", "label": "Reason", "type": "string"},
 ]
+# What the demo .env carries (deployment addresses); the test bot has no
+# voice channel, so the caller id comes from here too.
 CONFIGURED_DEFAULTS = (
-    '{"sip_route_uri":"sip:kamailio.test:5060",'
-    '"sip_h_route-header":"<sip:kamailio.test:5060;lr>",'
-    '"domain_name":"dialer.test","kamailioHost":"kamailio.test",'
-    '"freeswitchHost":"fs1.test","operatorId":"op1","operatorPrefix":"0",'
-    '"origination_caller_id_number":"918047133633","cli":"918047133633"}'
+    '{"sip_route_uri":"sip:192.168.60.124:5060","sip_h_route-header":"9210",'
+    '"kamailioHost":"192.168.60.124","freeswitchHost":"192.168.60.121",'
+    '"serverType":"qa","cli":"+918047133633"}'
 )
 
 
@@ -249,15 +249,18 @@ class TestDefaults:
         assert names[:23] == list(rc.MANDATORY_ESL_PARAMS)
         by_name = {p["name"]: p for p in data["params"]}
         assert by_name["sip_route_uri"] == {
-            "name": "sip_route_uri", "value": "sip:kamailio.test:5060",
+            "name": "sip_route_uri", "value": "sip:192.168.60.124:5060",
             "mandatory": True, "platform": False, "source": "config",
         }
+        assert by_name["domain_name"]["value"] == "kam-freeswitch.edas.tech"
+        assert by_name["operatorPrefix"]["value"] == "+91"
+        assert by_name["recording"]["value"] == "false"
         assert by_name["tenantId"]["value"] == bot["tenantId"]
         assert by_name["tenantId"]["platform"] is True
         assert by_name["leadId"]["source"] == "generated"
         assert by_name["dialTimeout"]["value"] == "45"
-        assert data["dialTemplate"] == "sofia/external/{number}@{domain_name}"
-        assert data["application"] == "&lua(voicebot.lua)"
+        assert data["dialTemplate"] == "sofia/external/0{number}@{domain_name}"
+        assert data["application"] == "{cli} XML voicebot_calling"
         customer = {c["key"]: c for c in data["customerData"]}
         assert customer["customer_name"]["variable"] == "vb_customer_name"
         assert customer["customer_name"]["value"] == "Rohan"
@@ -298,9 +301,11 @@ class TestPreview:
             ),
         ))
         v = data["variables"]
-        assert data["phoneNumber"] == "+919876543210"
-        assert data["phoneMasked"] == "XXXXXXXX3210"
-        assert v["customerNumber"] == "+919876543210"
+        assert data["phoneNumber"] == "9876543210"
+        assert data["phoneMasked"] == "XXXXXX3210"
+        assert v["customerNumber"] == "9876543210"
+        assert v["cli"] == "8047133633"
+        assert v["origination_caller_id_number"] == "+918047133633"
         assert v["voicebotID"] == bot["id"]
         assert v["tenantId"] == bot["tenantId"]
         assert v["dialTimeout"] == "30"
@@ -317,9 +322,11 @@ class TestPreview:
         ]
         assert data["missingMandatory"] == []
         assert data["canStart"] is True
-        assert data["dialString"] == "sofia/external/+919876543210@dialer.test"
+        assert data["dialString"] == "sofia/external/09876543210@kam-freeswitch.edas.tech"
         assert data["command"].startswith("originate {")
-        assert data["command"].endswith("}sofia/external/+919876543210@dialer.test &lua(voicebot.lua)")
+        assert data["command"].endswith(
+            "}sofia/external/09876543210@kam-freeswitch.edas.tech 8047133633 XML voicebot_calling"
+        )
         assert "vb_product_name='Split AC'" in data["command"]
         assert any("customerNumber is set by the platform" in n for n in data["notes"])
         assert any("voicebotID is set by the platform" in n for n in data["notes"])
@@ -348,7 +355,8 @@ class TestPreview:
             f"{API}/bots/{bot['id']}/testing/real-call/preview", headers=tenant_admin,
             json=_body(params={"sip_route_uri": "", "operatorId": None}),
         ))
-        assert data["missingMandatory"] == ["sip_route_uri", "operatorId"]
+        # operatorId may be empty (the dialer sends it empty without a pool).
+        assert data["missingMandatory"] == ["sip_route_uri"]
         assert data["canStart"] is False
 
     def test_invalid_number_and_values_are_422(self, client, tenant_admin, bot, esl):
@@ -375,13 +383,13 @@ class TestStartAndLifecycle:
         assert response.status_code == 422
         assert esl.instances == []
 
-    def test_blank_mandatory_is_refused(self, client, tenant_admin, bot, esl):
+    def test_blank_required_value_is_refused(self, client, tenant_admin, bot, esl):
         response = client.post(
             f"{API}/bots/{bot['id']}/testing/real-call", headers=tenant_admin,
-            json=_body(params={"operatorId": ""}),
+            json=_body(params={"sip_h_route-header": ""}),
         )
         assert response.status_code == 422
-        assert "operatorId" in response.json()["message"]
+        assert "sip_h_route-header" in response.json()["message"]
         assert esl.instances == []
 
     def test_unpublished_bot_is_refused_before_any_phone_rings(
@@ -414,7 +422,7 @@ class TestStartAndLifecycle:
             json={"phoneNumber": "+91 98765 43210", "params": {"dialTimeout": "20"}, "confirm": True},
         ), expect=202)
         assert started["status"] == "dialing"
-        assert started["phoneMasked"] == "XXXXXXXX3210"
+        assert started["phoneMasked"] == "XXXXXX3210"
         assert started["botId"] == bot["id"]
         assert started["customerVariables"]["vb_customer_name"] == "Rohan"
         assert "sip_route_uri" in started["variableNames"]
@@ -424,6 +432,7 @@ class TestStartAndLifecycle:
         assert sent.job_uuid == started["jobId"]
         assert sent.timeout == 90.0  # max(90, 20 + 15)
         assert sent.commands[0].startswith("originate {")
+        assert sent.commands[0].endswith(" 8047133633 XML voicebot_calling")
         assert f"origination_uuid={started['originationUuid']}" in sent.commands[0]
         assert f"voicebotID={bot['id']}" in sent.commands[0]
         assert "vb_rejection_reason=customer_refused_visit" in sent.commands[0]
@@ -516,6 +525,6 @@ class TestStartAndLifecycle:
             session.close()
         assert row is not None
         assert row.new_value["jobId"] == started["jobId"]
-        assert row.new_value["phoneMasked"] == "XXXXXXXX3210"
+        assert row.new_value["phoneMasked"] == "XXXXXX3210"
         assert "9876543210" not in (row.target_label or "")
         assert "vb_customer_name" in row.new_value["variables"]

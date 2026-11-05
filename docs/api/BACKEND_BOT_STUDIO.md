@@ -745,7 +745,7 @@ variables and command for the given inputs; nothing is dialed.
 
 | Field | Type | Required | Default / validation |
 | --- | --- | --- | --- |
-| `phoneNumber` | string | yes | 8–15 digits after removing spaces/dashes/brackets, optional leading `+`. |
+| `phoneNumber` | string | yes | 8–15 digits after removing spaces/dashes/brackets, optional leading `+`; Indian numbers are reduced to their 10 national digits. |
 | `params` | object | no | Channel variable overrides (≤100). Names `[A-Za-z][A-Za-z0-9_.-]{0,63}`, values ≤500 chars, no control characters. `customerNumber`, `tenantId`, `voicebotID`, `origination_uuid` are ignored (platform-owned). |
 | `customerData` | object | no | Omitted = the bot's saved runtime-context test JSON; `{}` = none. Key → scalar (≤100). Mapped to `vb_<key>` (existing `vb_` kept, system names skipped, nested skipped), values ≤200 chars. |
 | `dialTemplate` / `application` | string | no | Server defaults when absent. |
@@ -754,7 +754,7 @@ variables and command for the given inputs; nothing is dialed.
 Response `data`: `phoneNumber`, `phoneMasked`, `originationUuid`,
 `variables` (the full effective map), `customerVariables`,
 `skippedCustomerFields` (`key`, `variable`, `reason` ∈ `system|nested|null|invalid_key|limit`),
-`missingMandatory`, `dialString`, `application`, `command`, `warnings`,
+`missingMandatory` (required values that are empty: the SIP route, domain, route header, caller id, number, cli, Kamailio host, tenant, dial timeout), `dialString`, `application`, `command`, `warnings`,
 `notes`, `blockers`, `canStart`.
 
 `POST /api/v1/bots/{bot_id}/testing/real-call` — same body plus

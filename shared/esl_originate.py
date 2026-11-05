@@ -21,9 +21,13 @@ Security notes
   customer name like O'Brien can never terminate the quoted value.
 - The dialed number is normalized to digits (optional leading ``+``) and
   must be 8–15 digits; nothing else ever reaches the dial string.
-- The dial string and application come from configuration (or the Studio's
-  advanced override) and are validated as a single token / ``&app(args)``
-  form — no whitespace, no newlines, no stray braces.
+- The dial string and the dialplan target come from configuration and are
+  validated as single tokens: ``<exten> XML <context>`` (what the demo dialer
+  sends: the CLI as exten into the ``voicebot_calling`` context) or the
+  inline ``&app(args)`` form — no newlines, no stray braces or quotes.
+- Indian numbers are reduced to the 10 national digits: the demo dialer
+  dials ``0<10 digits>`` and sends ``customerNumber``/``cli`` as 10 digits
+  with ``origination_caller_id_number=+91<cli>`` (``operatorPrefix=+91``).
 """
 
 from __future__ import annotations
@@ -63,9 +67,26 @@ MANDATORY_ESL_PARAMS: tuple[str, ...] = (
     "serverType",
 )
 
+# The demo dialer sends every mandatory name on every call but leaves some
+# empty (``operatorId`` without a channel pool, ``leadId`` for ad-hoc dials).
+# Only the values the SIP route and the ``voicebot_calling`` dialplan
+# actually consume must be non-empty for a Studio call.
+REQUIRED_NON_EMPTY: tuple[str, ...] = (
+    "sip_route_uri",
+    "domain_name",
+    "sip_h_route-header",
+    "origination_caller_id_number",
+    "customerNumber",
+    "cli",
+    "kamailioHost",
+    "tenantId",
+    "dialTimeout",
+)
+
 # Routes the answered leg to the bot (the dialplan forwards it as the
 # webhook's ``To``/``botId``). Always set from the Studio's bot, never from
-# user input.
+# user input. Spelled as the demo dialer spells it; the dialplan reads
+# ``${voicebotId}`` and FreeSWITCH matches variable names case-insensitively.
 BOT_ID_PARAM = "voicebotID"
 # Lets the platform find the call afterwards: FreeSWITCH adopts it as the
 # channel uuid, the dialplan sends it as the webhook ``callId``, and the
@@ -92,8 +113,11 @@ CUSTOMER_VARIABLE_PREFIX = "vb_"
 _ESL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 _CUSTOMER_KEY = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,36}$")  # + "vb_" ≤ 40
 _PHONE_DIGITS = re.compile(r"^\+?[0-9]{8,15}$")
+_INDIA_PREFIX = "+91"
 _DIAL_TOKEN = re.compile(r"^[A-Za-z0-9_.:@/+\-\[\]=,;!~*$^]+$")
 _APPLICATION = re.compile(r"^&[A-Za-z0-9_]+\([^\s{}()'\"]*\)$")
+# ``<exten> <dialplan> <context>`` — exten after placeholder filling.
+_DIALPLAN_TARGET = re.compile(r"^[A-Za-z0-9_+.\-]+ (XML|inline|lua) [A-Za-z0-9_\-]+$")
 # Unquoted values may contain only these; anything else is single-quoted.
 _PLAIN_VALUE = re.compile(r"^[A-Za-z0-9_.+@:/\-]+$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -122,6 +146,17 @@ def normalize_phone_number(raw: object) -> str:
                        "(optional leading +, spaces and dashes allowed).",
         }])
     return text
+
+
+def national_number(number: str) -> str:
+    """The 10 national digits of an Indian number (``+91…``/``91…``/``0…``
+    stripped); any other number is returned as its digits unchanged."""
+    digits = re.sub(r"\D", "", number or "")
+    if len(digits) == 12 and digits.startswith("91"):
+        return digits[2:]
+    if len(digits) == 11 and digits.startswith("0"):
+        return digits[1:]
+    return digits
 
 
 def mask_phone_number(number: str) -> str:
@@ -278,13 +313,28 @@ def render_dial_string(template: str, variables: dict[str, str], number: str) ->
     return rendered
 
 
-def validate_application(application: str) -> str:
-    """``&lua(voicebot.lua)`` / ``&park()`` — the originate's B-leg app."""
+def validate_application(application: str, variables: dict[str, str] | None = None) -> str:
+    """What the answered leg runs: ``{cli} XML voicebot_calling`` (placeholders
+    filled from the effective variables, as in the dial string) or an inline
+    ``&app(args)``."""
     app = str(application or "").strip()
-    if not _APPLICATION.match(app):
+    if "{" in app:
+        values = dict(variables or {})
+
+        def _fill(match: re.Match) -> str:
+            key = match.group(1)
+            if key not in values:
+                raise OriginateValidationError([{
+                    "field": "application",
+                    "message": f"Placeholder {{{key}}} has no value.",
+                }])
+            return values[key]
+
+        app = re.sub(r"\{([A-Za-z0-9_.-]+)\}", _fill, app)
+    if not (_APPLICATION.match(app) or _DIALPLAN_TARGET.match(app)):
         raise OriginateValidationError([{
             "field": "application",
-            "message": "The application must look like &lua(voicebot.lua) or &park().",
+            "message": "The application must look like '<exten> XML <context>' or &lua(voicebot.lua).",
         }])
     return app
 
@@ -335,7 +385,7 @@ def build_originate_plan(
     which cannot be overridden: the call always targets the selected bot
     and tenant, and the call id stays traceable.
     """
-    number = normalize_phone_number(phone_number)
+    number = national_number(normalize_phone_number(phone_number))
     params: dict[str, object] = {}
     for name in MANDATORY_ESL_PARAMS:
         params[name] = ""
@@ -359,10 +409,20 @@ def build_originate_plan(
     variables[TENANT_PARAM] = tenant_id
     variables[BOT_ID_PARAM] = bot_id
     variables[ORIGINATION_UUID_PARAM] = call_uuid
+    # The dialplan gates on a 10-digit ``cli``; the SIP caller id carries the
+    # operator prefix (demo dialer: ``origination_caller_id_number=+91<cli>``).
+    cli = national_number(variables.get("cli", ""))
+    if cli:
+        variables["cli"] = cli
+        prefix = variables.get("operatorPrefix", "").strip()
+        if not variables.get("origination_caller_id_number", "").strip() or variables[
+            "origination_caller_id_number"
+        ].lstrip("+").endswith(cli):
+            variables["origination_caller_id_number"] = prefix + cli
 
-    missing = [name for name in MANDATORY_ESL_PARAMS if not variables.get(name, "").strip()]
+    missing = [name for name in REQUIRED_NON_EMPTY if not variables.get(name, "").strip()]
     dial = render_dial_string(dial_template, variables, number)
-    app = validate_application(application)
+    app = validate_application(application, variables)
     return OriginatePlan(
         phone_number=number,
         variables=variables,
