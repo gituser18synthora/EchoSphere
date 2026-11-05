@@ -2194,3 +2194,111 @@ export interface CustomerContextCallState {
   isFinalTranscript?: boolean;
   interruptionDetected?: boolean;
 }
+
+/* ---------- Real test calls (Testing → Real call, ESL originate) ---------- */
+
+export type RealCallParamSource = "default" | "config" | "bot" | "generated" | "missing";
+
+export interface RealCallParam {
+  name: string;
+  value: string;
+  mandatory: boolean;
+  /** Set by the platform from the bot/number; shown, not editable. */
+  platform: boolean;
+  source: RealCallParamSource;
+}
+
+export interface RealCallCustomerField {
+  key: string;
+  /** The channel variable it becomes (`customer_name` → `vb_customer_name`). */
+  variable: string;
+  value: unknown;
+  scalar: boolean;
+  source: "test_payload";
+}
+
+export interface RealCallDefaults {
+  botId: string;
+  botName: string;
+  tenantId: string;
+  botStatus: string;
+  eslConfigured: boolean;
+  eslHost: string;
+  callerIdNumber: string;
+  voiceChannel: { enabled: boolean; phoneNumber?: string | null; telephonyProvider?: string | null } | null;
+  dialTemplate: string;
+  application: string;
+  systemParams: string[];
+  params: RealCallParam[];
+  customerData: RealCallCustomerField[];
+  runtimeContext: {
+    configured: boolean;
+    sourceMode: RuntimeContextSourceMode;
+    fields: { key: string; label: string; type: string }[];
+    allowAdditional?: boolean;
+  };
+  warnings: string[];
+  blockers: string[];
+}
+
+export interface RealCallRequest {
+  phoneNumber: string;
+  /** Channel-variable overrides; omitted = server defaults. */
+  params?: Record<string, string>;
+  /** Customer data → vb_* variables; omitted = the bot's saved runtime-context test data. */
+  customerData?: Record<string, unknown>;
+  dialTemplate?: string;
+  application?: string;
+  confirm?: boolean;
+}
+
+export interface RealCallPreview {
+  phoneNumber: string;
+  phoneMasked: string;
+  originationUuid: string;
+  variables: Record<string, string>;
+  customerVariables: Record<string, string>;
+  skippedCustomerFields: { key: string; variable: string; reason: string }[];
+  missingMandatory: string[];
+  dialString: string;
+  application: string;
+  command: string;
+  warnings: string[];
+  notes: string[];
+  blockers: string[];
+  canStart: boolean;
+}
+
+export type RealCallStatus =
+  | "dialing" | "answered" | "failed" | "timeout" | "error" | "hungup" | "ended";
+
+export interface RealCallConversation {
+  id: string;
+  sessionId: string | null;
+  botId: string;
+  status: string;
+  startedAt: string | null;
+  durationSec: number;
+  disposition: string | null;
+  language: string | null;
+}
+
+export interface RealCallJob {
+  jobId: string;
+  botId: string;
+  tenantId: string;
+  phoneMasked: string;
+  originationUuid: string;
+  leadId: string;
+  status: RealCallStatus;
+  detail: string;
+  cause: string | null;
+  channelUuid: string | null;
+  variableNames: string[];
+  customerVariables: Record<string, string>;
+  dialString: string;
+  waitSeconds: number;
+  startedAt: string;
+  updatedAt?: string;
+  conversation?: RealCallConversation | null;
+}

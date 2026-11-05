@@ -281,6 +281,19 @@ class Settings(BaseSettings):
     # monitor's lifetime for channels whose hangup events never arrive —
     # generous because it must outlast the longest allowed call.
     freeswitch_hangup_monitor_max_seconds: float = 14400.0
+    # Real test calls from the Studio (backend/routers/real_calls.py): the
+    # dial string the `bgapi originate` targets — `{number}` is the dialed
+    # number, any other `{name}` is an effective channel variable — and the
+    # application that receives the answered leg (the project's dialplan
+    # bridge script by default). The defaults JSON object pre-fills the
+    # dialer's mandatory channel variables (sip_route_uri, domain_name,
+    # kamailioHost, …); every value stays editable per test call.
+    freeswitch_originate_dial_template: str = "sofia/external/{number}@{domain_name}"
+    freeswitch_originate_application: str = "&lua(voicebot.lua)"
+    freeswitch_originate_defaults: str = ""
+    # Longest the backend watches a background originate for its result
+    # (ring time is bounded by the dialer's dialTimeout, this by the wait).
+    freeswitch_originate_max_wait_seconds: float = 90.0
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not

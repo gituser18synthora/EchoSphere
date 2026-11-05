@@ -20,6 +20,11 @@ vi.mock("@/services/api", () => ({
   simulateTurn: vi.fn(),
   createVoiceSession: vi.fn(),
   getChannel: vi.fn(),
+  getRealCallDefaults: vi.fn(),
+  previewRealCall: vi.fn(),
+  startRealCall: vi.fn(),
+  getRealCallStatus: vi.fn(),
+  hangupRealCall: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), user: { tenantId: "tn_x" }, hasPermission: () => true }),

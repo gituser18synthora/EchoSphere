@@ -712,6 +712,73 @@ workflow marker for 1,800 seconds; pass the returned `sessionId` for later turns
 `200` returns the turn trace; provider failures degrade to a canned safe reply.
 `404` bot; `422` invalid body.
 
+### Real test calls
+
+Dial a tester's own phone through the dialer's FreeSWITCH (`bgapi
+originate` over the event socket) and let the bot answer it like a campaign
+call. Implemented by `backend/routers/real_calls.py`; command building in
+`shared/esl_originate.py`; see [TELEPHONY.md](../TELEPHONY.md#real-test-calls-from-the-studio-originate).
+Reads need an authenticated member of the bot's tenant; placing or ending a
+call needs `manage_testing` or `bots.manage`. ESL credentials never appear
+in responses.
+
+`GET /api/v1/bots/{bot_id}/testing/real-call/defaults` — readiness and the
+effective pre-fill (the Studio view shows only `callerIdNumber` and
+`blockers`; the rest serves API clients and diagnostics): `params` (the dialer's mandatory channel variables with `value`,
+`mandatory`, `platform` and `source` ∈ `default|config|bot|generated|missing`),
+`customerData` (the runtime-context test JSON, each with its `vb_` `variable`
+name and `scalar` flag), `dialTemplate`, `application`, `systemParams`,
+`eslConfigured`, `voiceChannel`, `warnings`, `blockers`.
+
+`POST /api/v1/bots/{bot_id}/testing/real-call/preview` — the effective
+variables and command for the given inputs; nothing is dialed.
+
+```json
+{
+  "phoneNumber": "+91 98765 43210",
+  "params": {"dialTimeout": "30", "operatorId": "op7"},
+  "customerData": {"customer_name": "Rohan", "rejection_reason": "customer_refused_visit"},
+  "dialTemplate": "sofia/external/{number}@{domain_name}",
+  "application": "&lua(voicebot.lua)"
+}
+```
+
+| Field | Type | Required | Default / validation |
+| --- | --- | --- | --- |
+| `phoneNumber` | string | yes | 8–15 digits after removing spaces/dashes/brackets, optional leading `+`. |
+| `params` | object | no | Channel variable overrides (≤100). Names `[A-Za-z][A-Za-z0-9_.-]{0,63}`, values ≤500 chars, no control characters. `customerNumber`, `tenantId`, `voicebotID`, `origination_uuid` are ignored (platform-owned). |
+| `customerData` | object | no | Omitted = the bot's saved runtime-context test JSON; `{}` = none. Key → scalar (≤100). Mapped to `vb_<key>` (existing `vb_` kept, system names skipped, nested skipped), values ≤200 chars. |
+| `dialTemplate` / `application` | string | no | Server defaults when absent. |
+| `confirm` | boolean | start only | Must be `true` to place the call. |
+
+Response `data`: `phoneNumber`, `phoneMasked`, `originationUuid`,
+`variables` (the full effective map), `customerVariables`,
+`skippedCustomerFields` (`key`, `variable`, `reason` ∈ `system|nested|null|invalid_key|limit`),
+`missingMandatory`, `dialString`, `application`, `command`, `warnings`,
+`notes`, `blockers`, `canStart`.
+
+`POST /api/v1/bots/{bot_id}/testing/real-call` — same body plus
+`confirm: true`. `202` returns the job (`jobId`, `status: "dialing"`,
+`phoneMasked`, `originationUuid`, `leadId`, `variableNames`,
+`customerVariables`, `dialString`, `waitSeconds`, `startedAt`); the
+originate runs in the background. `409` when a blocker applies (ESL not
+configured, bot not published/archived, voice channel deactivated); `422`
+without confirmation, with empty mandatory parameters, or for unsafe values
+(`errors[].field` names the parameter). Audited as "Started real test call".
+
+`GET /api/v1/bots/{bot_id}/testing/real-call/{job_id}` — the job with
+`status` ∈ `dialing|answered|failed|timeout|error|hungup|ended`, `detail`,
+`cause` (FreeSWITCH hangup cause or ESL error category), `channelUuid`, and
+`conversation` (`id`, `sessionId`, `status`, `startedAt`, `durationSec`,
+`disposition`, `language`) once the dialplan's webhook created it (matched
+by `call_id = originationUuid`). Jobs live one hour and are tenant-scoped
+(`404` otherwise).
+
+`POST /api/v1/bots/{bot_id}/testing/real-call/{job_id}/hangup` —
+`uuid_kill` on the originated leg; returns the job (`hungup`, or `ended`
+when the channel was already gone). `409` when ESL is not configured or the
+job has no channel; `502` when FreeSWITCH rejects the kill.
+
 ### Full turn simulator
 
 `POST /api/v1/bots/{bot_id}/testing/simulate`

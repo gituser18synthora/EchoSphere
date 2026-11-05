@@ -96,11 +96,63 @@ local function pop_matching(consumer)
   return nil
 end
 
+-- Outbound test/campaign calls originated by EchoSphere (Studio "Real
+-- call", backend/routers/real_calls.py) carry the bot in the `voicebotID`
+-- channel variable and the customer data as `vb_<key>` channel variables.
+-- The helper forwards them as the webhook's `To`/`botId` and `variables`,
+-- so the bot runs on the same call context a campaign call would carry.
+-- Inbound calls without them keep the static-DID behaviour.
+local function url_decode(value)
+  -- uuid_dump encodes with %XX only (a '+' stays a literal plus sign).
+  return (tostring(value or ""):gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end))
+end
+
+local function json_string(value)
+  local escaped = tostring(value or ""):gsub('[%c"\\]', function(ch)
+    if ch == '"' then return '\\"' end
+    if ch == "\\" then return "\\\\" end
+    if ch == "\n" then return "\\n" end
+    if ch == "\r" then return "\\r" end
+    if ch == "\t" then return "\\t" end
+    return string.format("\\u%04x", ch:byte())
+  end)
+  return '"' .. escaped .. '"'
+end
+
+-- Channel variables cannot be enumerated from Lua; `uuid_dump` lists them
+-- (values URL-encoded) as `variable_<name>: <value>` lines.
+local function collect_vb_variables()
+  local dump = freeswitch.API():execute("uuid_dump", uuid) or ""
+  local parts = {}
+  for name, value in dump:gmatch("\nvariable_vb_([%w_%.%-]+): ([^\n]*)") do
+    parts[#parts + 1] = json_string(name) .. ":" .. json_string(url_decode(value))
+  end
+  if #parts == 0 then
+    return ""
+  end
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local bot_id = session:getVariable("voicebotID") or ""
+if bot_id ~= "" and not bot_id:match("^bot_[%w]+$") then
+  freeswitch.consoleLog("err", "voicebot: ignoring malformed voicebotID\n")
+  bot_id = ""
+end
+local variables_json = collect_vb_variables()
+
 local helper = script_dir() .. "/voicebot_webhook.py"
 local command = "/usr/bin/python3 " .. shell_quote(helper)
   .. " --from-number " .. shell_quote(caller)
   .. " --call-id " .. shell_quote(uuid)
-  .. " 2>&1"
+if bot_id ~= "" then
+  command = command .. " --bot-id " .. shell_quote(bot_id)
+end
+if variables_json ~= "" then
+  command = command .. " --variables-json " .. shell_quote(variables_json)
+end
+command = command .. " 2>&1"
 
 local pipe = io.popen(command)
 if not pipe then

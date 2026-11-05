@@ -240,6 +240,66 @@ Two integration surfaces (`voice_runtime/freeswitch.py`):
 Deployment notes for the ESL socket are in
 [DEPLOYMENT.md](DEPLOYMENT.md#4-freeswitch-esl-notes).
 
+### Real test calls from the Studio (`originate`)
+
+Testing → the **Real call** view (third tab next to Phone view and Test
+console; roles with `manage_testing`/`bots.manage`) dials a tester's own
+mobile through the dialer's FreeSWITCH and lets the bot answer it like a
+campaign call. The view asks only for the number, a confirmation and an
+optional ring timeout; everything else below is filled by the backend. The browser never touches the event socket: the backend
+(`backend/routers/real_calls.py`, logic in `shared/esl_originate.py`) builds
+the command, runs it as a background job (`ESLClient.originate` = `bgapi
+originate` with a platform-chosen `Job-UUID`, result from the
+`BACKGROUND_JOB` event) and stores the outcome in Redis for one hour; the
+Studio polls it. Routes: `GET …/testing/real-call/defaults`, `POST
+…/testing/real-call/preview` (nothing dialed), `POST …/testing/real-call`
+(202, needs `confirm: true`), `GET …/testing/real-call/{job}`, `POST
+…/testing/real-call/{job}/hangup`. API reference:
+[BACKEND_BOT_STUDIO.md](api/BACKEND_BOT_STUDIO.md#real-test-calls).
+
+**Channel variables.** The dialer's mandatory set (`sip_route_uri`,
+`ignore_early_media`, `domain_name`, `sip_h_route-header`,
+`origination_caller_id_number`, `customerNumber`, `recording`, `leadId`,
+`campaignId`, `basketId`, `operatorId`, `operatorPrefix`, `cli`,
+`kamailioHost`, `freeswitchHost`, `callType`, `callMode`, `tenantId`,
+`dialTimeout`, `recordDualStereo`, `amdEnabled`, `leadtype`, `serverType`)
+is always present; an empty mandatory value blocks the call. Pre-fill
+precedence (also what the view sends when `params` is omitted): built-in test semantics (`callMode=test`, `dialTimeout=45`,
+`amdEnabled=false`, …) < `FREESWITCH_ORIGINATE_DEFAULTS` (JSON: the
+deployment's SIP route, domain, Kamailio/FreeSWITCH hosts, operator) < the
+bot (its voice-channel DID as `origination_caller_id_number`/`cli`, its
+tenant as `tenantId`). Every value is editable per call; nothing is written
+back to the bot. `customerNumber`, `tenantId`, `voicebotID` (the bot the
+answered leg must reach) and `origination_uuid` (becomes the channel uuid →
+the webhook `callId` → `conversation_sessions.call_id`) are set by the
+platform and cannot be overridden.
+
+**Customer data → `vb_*`.** The bot's runtime-context test JSON (APIs tab)
+is sent automatically when the request omits `customerData` (an explicit
+object replaces it; `{}` sends none). Each scalar key becomes a
+`vb_<key>` channel variable (`customer_name` → `vb_customer_name`,
+`rejection_reason` → `vb_rejection_reason`); keys already prefixed stay as
+they are; a key naming a system parameter is not prefixed (edit it in the
+ESL table instead); nested values are skipped. Values are kept verbatim
+(bounded to the 200 characters the webhook keeps). The dialplan forwards
+them: `voicebot.lua` reads `voicebotID` and the `vb_*` variables from
+`uuid_dump` and passes `--bot-id` / `--variables-json` to
+`voicebot_webhook.py`, which posts `To=<bot id>` (direct bot routing) and
+`variables={…}` — so the bot's `dialer` source mode sees exactly the values
+from the dialog. A dialer-side dialplan must do the same mapping.
+
+**Quoting / safety.** Variable names are shape-checked; every value is
+single-quoted unless it is a plain token, control characters are rejected
+and a single quote becomes `’` (FreeSWITCH has no escape inside quotes). The
+number is normalized to digits with an optional leading `+` (8–15 digits).
+The dial string (`FREESWITCH_ORIGINATE_DIAL_TEMPLATE`, default
+`sofia/external/{number}@{domain_name}`; `{name}` = any effective variable)
+and the application (`FREESWITCH_ORIGINATE_APPLICATION`, default
+`&lua(voicebot.lua)`) are validated as single tokens. The call is refused
+up front when the webhook would refuse it later (bot not published,
+archived, voice channel deactivated) or when ESL is not configured. Every
+start/hangup is audited (masked number, variable names only).
+
 ## Failure codes (worker WebSocket)
 
 | Close code | Meaning |

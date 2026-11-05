@@ -15,6 +15,7 @@ import type {
   GuardrailTrigger, HealthMetric, IdentityConfirmationMode, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
+  RealCallDefaults, RealCallJob, RealCallPreview, RealCallRequest,
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
   RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantApiToken, TenantProfile,
@@ -411,6 +412,20 @@ export const updateContextRecord = (recordId: string, body: {
 }): Promise<RuntimeContextRecord> => http.patch(`/runtime-context-records/${recordId}`, body);
 export const deleteContextRecord = (recordId: string): Promise<{ deleted: boolean }> =>
   http.delete(`/runtime-context-records/${recordId}`);
+
+/* ---------- Real test calls (Testing → Real call: ESL originate via the backend) ---------- */
+export const getRealCallDefaults = (botId: string): Promise<RealCallDefaults> =>
+  http.get(`/bots/${botId}/testing/real-call/defaults`);
+/** Effective channel variables + command for the tester's inputs. Nothing is dialed. */
+export const previewRealCall = (botId: string, body: RealCallRequest): Promise<RealCallPreview> =>
+  http.post(`/bots/${botId}/testing/real-call/preview`, body);
+/** Places a REAL telephone call (202 + job to poll). `confirm` must be true. */
+export const startRealCall = (botId: string, body: RealCallRequest): Promise<RealCallJob> =>
+  http.post(`/bots/${botId}/testing/real-call`, { ...body, confirm: true });
+export const getRealCallStatus = (botId: string, jobId: string): Promise<RealCallJob> =>
+  http.get(`/bots/${botId}/testing/real-call/${jobId}`);
+export const hangupRealCall = (botId: string, jobId: string): Promise<RealCallJob> =>
+  http.post(`/bots/${botId}/testing/real-call/${jobId}/hangup`);
 
 /* ---------- Provider catalog (database-driven voice configuration) ---------- */
 export const getProviderCatalog = (

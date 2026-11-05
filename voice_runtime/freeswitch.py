@@ -199,6 +199,68 @@ class ESLClient:
         if "+OK" not in result:
             raise ProviderError("freeswitch", "upstream", f"hangup failed: {result[:120]}")
 
+    async def originate(
+        self, command_tail: str, *, job_uuid: str, timeout: float
+    ) -> tuple[bool, str] | None:
+        """Run ``originate …`` as a background job and wait for its outcome.
+
+        ``bgapi`` returns at once; FreeSWITCH reports the result in a
+        BACKGROUND_JOB event tagged with the job uuid WE choose (the
+        ``Job-UUID`` header on the bgapi line), so the wait is bounded by
+        ``timeout`` — a ringing phone takes far longer than this socket's
+        reply timeout — and never by the originate's own ring time. The
+        connection is single-purpose: filter on the job, subscribe, fire,
+        wait. Returns ``(answered, detail)`` where ``detail`` is the new
+        channel uuid or the hangup cause, or ``None`` when no result arrived
+        within ``timeout`` (the originate itself keeps running on
+        FreeSWITCH until its dialTimeout). Raises ProviderError when the
+        socket, the auth or the command itself fails.
+        """
+        if not valid_call_uuid(job_uuid):
+            raise ProviderError("freeswitch", "upstream", "invalid job uuid")
+        if "\n" in command_tail or "\r" in command_tail:
+            raise ProviderError("freeswitch", "upstream", "command contains a line break")
+        from shared.esl_originate import parse_originate_result
+
+        await self.command(f"filter Job-UUID {job_uuid}")
+        await self.command("event plain BACKGROUND_JOB")
+        early: tuple[bool, str] | None = None
+        async with self._lock:
+            self._writer.write(
+                f"bgapi {command_tail}\nJob-UUID: {job_uuid}\n\n".encode()
+            )
+            await self._writer.drain()
+            # The command/reply normally comes first; an event that races
+            # it is remembered rather than mistaken for the reply.
+            while True:
+                reply = await asyncio.wait_for(self._read_message(), timeout=self._timeout)
+                if reply.get("Content-Type") == "command/reply":
+                    break
+                if reply.get("Content-Type") == "text/event-plain":
+                    event = parse_event(reply.get("_body", ""))
+                    if event.get("Job-UUID") == job_uuid:
+                        early = parse_originate_result(event.get("_event_body", ""))
+        if "+OK" not in reply.get("Reply-Text", ""):
+            raise ProviderError(
+                "freeswitch", "upstream",
+                f"bgapi rejected: {reply.get('Reply-Text', '')[:120]}",
+            )
+        if early is not None:
+            return early
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            event = await self.next_event(remaining)
+            if event is None:
+                return None
+            if (
+                event.get("Event-Name") == "BACKGROUND_JOB"
+                and event.get("Job-UUID") == job_uuid
+            ):
+                return parse_originate_result(event.get("_event_body", ""))
+
     async def health_check(self) -> dict:
         try:
             status = await self.api("status")

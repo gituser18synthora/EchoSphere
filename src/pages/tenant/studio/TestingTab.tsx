@@ -8,6 +8,7 @@ import { Button, Callout, CardSkeleton, ErrorState, Field, Modal, StatusChip, To
 import { Icon } from "@/components/Icon";
 import { JsonView } from "@/components/JsonView";
 import PhoneCallView from "./PhoneCallView";
+import RealCallTab from "./RealCallTab";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 import { formatChatTime, nowWithMicroseconds } from "@/services/chatTime";
@@ -84,7 +85,11 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   /* Both views render over the same state and stay mounted (the inactive
      one is just hidden), so switching never resets the running session.
      The phone view is the default; the console is the drill-down. */
-  const [view, setView] = useState<"console" | "phone">("phone");
+  const [view, setView] = useState<"console" | "phone" | "real">("phone");
+  /* Real call (a real phone rings through the dialer's FreeSWITCH) is its
+     own view, offered to roles that may run tests; it keeps its job state
+     while hidden like the other two. */
+  const canRealCall = hasPermission("manage_testing") || hasPermission("bots.manage");
 
   /* ---------- Live voice session ---------- */
   const voiceRef = useRef<VoiceClient | null>(null);
@@ -336,6 +341,9 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
         <div className="segmented" role="group" aria-label="Testing view">
           <button aria-pressed={view === "phone"} onClick={() => setView("phone")}>Phone view</button>
           <button aria-pressed={view === "console"} onClick={() => setView("console")}>Test console</button>
+          {canRealCall && (
+            <button aria-pressed={view === "real"} onClick={() => setView("real")} data-testid="view-real-call">Real call</button>
+          )}
         </div>
       </div>
 
@@ -357,6 +365,12 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           onEndCall={stopVoice}
         />
       </div>
+
+      {canRealCall && (
+        <div style={view === "real" ? undefined : { display: "none" }}>
+          <RealCallTab bot={bot} active={view === "real"} />
+        </div>
+      )}
 
       <div className="col gap-16" style={view === "console" ? undefined : { display: "none" }}>
       <div className="grid" style={{ gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "stretch" }}>
