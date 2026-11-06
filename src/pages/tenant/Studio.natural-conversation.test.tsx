@@ -111,7 +111,6 @@ describe("Studio Natural Conversation navigation", () => {
 
   it.each([
     ["Test", "Testing panel"],
-    ["Publish", "Publish panel"],
     ["Test saved conversation", "Testing panel"],
   ])("guards the %s action while the Natural Conversation editor is dirty", async (action, destination) => {
     const user = mount();

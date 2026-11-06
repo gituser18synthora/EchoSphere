@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { getBot, restoreBot } from "@/services/api";
-import { Button, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Health, StatusChip, Tabs } from "@/components/ui";
+import { Button, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Health, Tabs } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import OverviewTab from "./studio/OverviewTab";
@@ -69,7 +69,6 @@ export default function Studio() {
   // A deep link to a hidden tab falls back to Overview — same treatment as an
   // unknown tab segment. The backing APIs reject the calls regardless.
   const activeTab = tabs.some((t) => t.id === tab) ? tab : "overview";
-  const canPublish = hasPermission("bots.publish") || hasPermission("bots.manage");
   const canManage = hasPermission("bots.manage");
   const archived = bot.status === "archived";
 
@@ -89,8 +88,6 @@ export default function Studio() {
     }
   };
 
-  const readinessDone = bot.readiness.filter((r) => r.done).length;
-  const ready = readinessDone === bot.readiness.length;
   const navigateToTab = (next: string) => {
     if (next === activeTab) return;
     if (activeTab === "natural-conversation" && naturalSaving) {
@@ -112,7 +109,6 @@ export default function Studio() {
         <div className="grow" style={{ minWidth: 180 }}>
           <div className="row gap-6">
             <span className="t-strong" style={{ fontSize: 15 }}>{bot.name}</span>
-            <StatusChip status={bot.status} />
           </div>
           <div className="t-micro mt-4">
             Draft {bot.version}{bot.liveVersion ? <> · live {bot.liveVersion}</> : null} · owner {bot.owner} · {bot.languages.join(", ")}
@@ -127,17 +123,6 @@ export default function Studio() {
         )}
         <div className="row gap-6">
           <Button icon="play" disabled={archived} title={archived ? "Restore the bot to run tests" : undefined} onClick={() => navigateToTab("testing")}>Test</Button>
-          {canPublish && (
-            <Button
-              variant="primary"
-              icon="rocket"
-              disabled={archived}
-              title={archived ? "Restore the bot before publishing" : ready ? "Open Publish Center" : `${bot.readiness.length - readinessDone} readiness checks remaining`}
-              onClick={() => navigateToTab("publish")}
-            >
-              {bot.status === "in_review" ? "In review" : "Publish"}
-            </Button>
-          )}
         </div>
       </div>
 
