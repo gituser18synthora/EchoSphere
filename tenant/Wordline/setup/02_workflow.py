@@ -1,8 +1,10 @@
 """Step 02 — wire the merchant lookup into the bot workflow.
 
 Reads the bot's current workflow through the platform API, applies
-``workflow_upgrade.upgrade_workflow`` (pure, idempotent, see that module for
-the exact changes), and saves it as a new approved version.  Dry run prints
+``workflow_upgrade.upgrade_all`` (step 1 lookup wiring + step 2 Terminal ID
+capture; pure, idempotent, see that module for the exact changes), and saves
+it as a new approved version.  Works on the original v10 shape and on the
+DEMO v12 per-field confirmation shape.  Dry run prints
 the change list and node/edge counts; ``--apply`` saves.
 
     env/bin/python tenant/Wordline/setup/02_workflow.py            # dry run
@@ -23,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from tenant.Wordline.setup.common import BOT_ID, check, client, parser  # noqa: E402
 from tenant.Wordline.setup.workflow_upgrade import (  # noqa: E402
-    CONNECTION_NAME, upgrade_workflow)
+    CONNECTION_NAME, upgrade_all)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -35,7 +37,7 @@ def main() -> None:
     print(f"     {current['id']} v{current['version']} {current['status']} "
           f"{len(current['nodes'])} nodes / {len(current['edges'])} edges "
           f"name={current['name']!r}")
-    upgraded, changes = upgrade_workflow(current)
+    upgraded, changes = upgrade_all(current)
     for line in changes:
         print("  •", line)
     if upgraded is current:

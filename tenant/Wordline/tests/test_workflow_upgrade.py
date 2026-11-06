@@ -17,7 +17,9 @@ import shared.orchestration.tool_executor as te
 import shared.orchestration.workflow_engine as wfe
 from tenant.Wordline.setup import workflow_upgrade as up
 
-SNAPSHOT = pathlib.Path(__file__).resolve().parent.parent / "data" / "workflow_v10_snapshot.json"
+DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
+SNAPSHOT = DATA / "workflow_v10_snapshot.json"
+DEMO_SNAPSHOT = DATA / "workflow_demo_v12_snapshot.json"
 FOUND = {
     "merchant_found": True, "customer_verified": True, "merchant_matched_by": "terminal_id",
     "terminal_id": "91379784", "outlet_name": "AGARWAL PUBLIC SCHOOL",
@@ -37,6 +39,24 @@ def upgraded(snapshot) -> dict:
     return definition
 
 
+@pytest.fixture(scope="module")
+def demo_snapshot() -> dict:
+    return json.loads(DEMO_SNAPSHOT.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def demo_upgraded(demo_snapshot) -> dict:
+    definition, _changes = up.upgrade_all(demo_snapshot)
+    return definition
+
+
+@pytest.fixture(scope="module")
+def captured(snapshot) -> dict:
+    """v10 shape after BOTH steps."""
+    definition, _changes = up.upgrade_all(snapshot)
+    return definition
+
+
 # ── the transform ───────────────────────────────────────────────────────────
 
 
@@ -47,9 +67,11 @@ def test_transform_is_idempotent_and_reports_changes(snapshot):
     assert again is first and "already upgraded" in changes2[0]
 
 
-def test_prefill_chain_removed_and_rewired(upgraded):
+def test_prefill_chain_removed_and_rewired(snapshot, upgraded):
     ids = {n["id"] for n in upgraded["nodes"]}
-    assert not ids & set(up.PREFILL_NODES)
+    prefill = {n["id"] for n in up._prefill_nodes(snapshot["nodes"])}
+    assert prefill == {"n_ctx_outlet_name", "n_ctx_bank_name", "n_ctx_asset_type", "n_ctx_contact_number"}
+    assert not ids & prefill
     assert {"n_ctx_customer_name", "n_ctx_docket"} <= ids       # context-fed fields stay
     edges = {(e["from"], e["to"]) for e in upgraded["edges"]}
     assert ("n_start", "n_ctx_customer_name") in edges
@@ -57,7 +79,7 @@ def test_prefill_chain_removed_and_rewired(upgraded):
     assert ("n_bat_tid", "n_bat_details") not in edges
 
 
-def test_readbacks_use_api_mapped_slot_names(upgraded):
+def test_readbacks_use_api_mapped_slot_names(snapshot, upgraded):
     by_id = {n["id"]: n for n in upgraded["nodes"]}
     for node_id in ("n_ask_merchant", "n_bat_details"):
         fields = by_id[node_id]["config"]["readback"]["en"]["fields"]
@@ -65,7 +87,10 @@ def test_readbacks_use_api_mapped_slot_names(upgraded):
         assert "outlet_name" in variables and "bank_name" in variables
         assert not any(v.startswith("ctx_") for v in variables)
     raw = json.dumps(upgraded["nodes"], ensure_ascii=False)
-    for old in up.SLOT_RENAMES:
+    renames = up.slot_renames(snapshot)
+    assert renames == {"ctx_outlet_name": "outlet_name", "ctx_bank_name": "bank_name",
+                       "ctx_asset_type": "asset_type", "ctx_contact_number": "contact_number"}
+    for old in renames:
         assert f'"{old}"' not in raw
 
 
@@ -226,3 +251,158 @@ async def test_battery_failure_goes_straight_to_the_check(engine, monkeypatch):
     r = await _turn(engine, "91379784", "bat-down")
     assert "n_bat_lookup_unavailable" in r["trace"] and "n_bat_check" in r["trace"]
     assert "troubleshoot" in r["reply"].lower() and "switch off" in r["reply"].lower()
+
+
+# ── step 2: Terminal ID capture (both shapes) ───────────────────────────────
+
+
+def test_capture_step_requires_step_one(snapshot):
+    with pytest.raises(up.UpgradeError, match="upgrade_workflow"):
+        up.upgrade_terminal_id_capture(snapshot)
+
+
+def test_capture_step_pins_pattern_and_is_idempotent(captured, demo_upgraded):
+    for definition in (captured, demo_upgraded):
+        asks = [n for n in definition["nodes"] if n["kind"] == "ask"
+                and n["config"].get("variable") in up.TERMINAL_VARIABLES]
+        assert {n["id"] for n in asks} == {"n_ask_tid", "n_bat_tid", "n_tid_retry", "n_bat_tid_retry"}
+        assert all(n["config"]["entity"]["regexPattern"] == up.TERMINAL_ENTITY_PINNED["regexPattern"]
+                   for n in asks)
+        again, notes = up.upgrade_terminal_id_capture(definition)
+        assert again is definition and "already upgraded" in notes[0]
+
+
+def test_pinned_pattern_length_bounds():
+    from shared.orchestration.entity_extractor import identifier_length_bounds
+    assert identifier_length_bounds(dict(up.TERMINAL_ENTITY_PINNED)) == (7, 8)
+    import re
+    rx = re.compile(up.TERMINAL_ENTITY_PINNED["regexPattern"])
+    assert rx.search("1231410").group(1) == "1231410"
+    assert rx.search("9 1 3 7 9 7 8 4").group(1) == "9 1 3 7 9 7 8 4"
+    assert rx.search("1234") is None and rx.search("123456789") is None
+
+
+def test_v10_shape_gets_wrong_details_path(captured):
+    out = {}
+    for e in captured["edges"]:
+        out.setdefault(e["from"], []).append((e.get("label") or "", e["to"]))
+    assert any(to == "n_details_wrong" for _l, to in out["n_ask_merchant"])
+    assert any(to == "n_bat_details_wrong" for _l, to in out["n_bat_details"])
+    assert out["n_details_wrong"] == [("", "n_options_unverified")]
+    assert out["n_bat_details_wrong"] == [("", "n_bat_check")]
+
+
+def test_demo_shape_keeps_its_own_confirmations(demo_snapshot, demo_upgraded):
+    ids = {n["id"] for n in demo_upgraded["nodes"]}
+    assert not ids & {"n_ctx_outlet_name", "n_ctx_bank_name", "n_ctx_asset_model", "n_ctx_contact_number"}
+    assert "n_details_wrong" not in ids and "n_bat_details_wrong" not in ids   # v12 has "wrong → disconnect"
+    by_id = {n["id"]: n for n in demo_upgraded["nodes"]}
+    assert by_id["n_has_pr_asset"]["config"]["variable"] == "asset_type"       # ctx_asset_model renamed
+    assert by_id["n_has_ask_merchant"]["config"]["variable"] == "outlet_name"
+    out = {(e["from"], e.get("label") or ""): e["to"] for e in demo_upgraded["edges"]}
+    assert out[("n_lookup_found", "true")] == "n_has_ask_merchant"
+    assert out[("n_bat_lookup_found", "true")] == "n_has_bat_details"
+    assert out[("n_ask_merchant", "")] if ("n_ask_merchant", "") in out else True
+    untouched = {n["id"] for n in demo_snapshot["nodes"]} - {"n_ctx_outlet_name", "n_ctx_bank_name",
+                                                            "n_ctx_asset_model", "n_ctx_contact_number"}
+    assert untouched <= ids                                                     # nothing else removed
+
+
+# ── engine replay of the finals recorded in the real voice runs ─────────────
+
+S3_FINALS = ["I want to order paper roll.", "One, two, three. Four.", "Six. 7 8.", "Sorry. It is 91379784."]
+S4_FINALS = ["battery problem", "1 2 3 1.", "410.", "A."]
+S7_FINALS = ["I need paper roll", "91.", "37.", "97 84."]
+
+
+class _StoreExecutor:
+    """Lookup against the real merchant store (no HTTP)."""
+
+    def __init__(self):
+        from tenant.Wordline.api.store import MerchantStore
+        self.store = MerchantStore(); self.calls = []
+
+    async def execute(self, **kw):
+        a = kw["args"]; raw = a.get(up.RETRY_VARIABLE) or a.get("spoken_terminal_id")
+        self.calls.append(raw); m = self.store.find_terminal(raw)
+        if not m:
+            return _Result(True, {})
+        r = m.record
+        return _Result(True, {"merchant_found": True, "customer_verified": True, **{
+            k: r[k] for k in ("terminal_id", "outlet_name", "bank_name", "asset_type", "contact_number")}})
+
+
+@pytest.fixture(params=["v10", "demo_v12"])
+def shape_engine(request, monkeypatch, captured, demo_upgraded):
+    definition = captured if request.param == "v10" else demo_upgraded
+    eng = wfe.WorkflowEngine()
+
+    async def _mem(self):
+        if self._checkpointer is None:
+            self._checkpointer = MemorySaver()
+        return self._checkpointer
+
+    monkeypatch.setattr(wfe.WorkflowEngine, "_get_checkpointer", _mem)
+    monkeypatch.setattr(wfe, "load_workflow_definition",
+                        lambda tenant_id, bot_id, name, pinned_versions=None: definition)
+    ex = _StoreExecutor()
+    monkeypatch.setattr(te, "get_tool_executor", lambda: ex)
+    return request.param, ex
+
+
+async def _drive(engine, finals, session, lang="en-IN"):
+    out = []
+    for text in finals:
+        out.append(await _turn(engine, text, session, language=lang) if False else
+                   await wfe.get_workflow_engine().handle_turn_detailed(
+                       session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+                       workflow_name="wf_0a6550d061e6", user_text=text, language=lang, context_values=CONTEXT))
+    return out
+
+
+async def test_paused_dictation_accumulates_before_lookup(shape_engine):
+    shape, ex = shape_engine
+    r = await _drive(None, S3_FINALS, f"s3-{shape}")
+    assert "noted 4 digits" in r[1]["reply"].lower() and "n_api_lookup" not in r[1]["trace"]
+    assert ex.calls[0] == "1234678"                     # 4+3 joined → one 7-digit lookup (a miss)
+    assert "n_tid_retry" in r[2]["trace"]
+    assert "AGARWAL PUBLIC SCHOOL" in r[3]["reply"] and ex.calls[-1] == "91379784"
+
+
+async def test_battery_natural_tid_completes(shape_engine):
+    shape, ex = shape_engine
+    r = await _drive(None, S4_FINALS, f"s4-{shape}", lang="hi-IN")
+    assert "n_bat_api_lookup" not in r[1]["trace"]       # "1 2 3 1." held, not looked up
+    assert "n_bat_api_lookup" in r[2]["trace"] and "BHANU MEDICAL" in r[2]["reply"]
+    assert ex.calls == ["1231410"]
+    assert "n_bat_tid_retry" not in r[3]["trace"]        # the trailing "A." does not restart anything
+
+
+async def test_spoken_pairs_make_one_lookup(shape_engine):
+    shape, ex = shape_engine
+    r = await _drive(None, S7_FINALS, f"s7-{shape}")
+    assert "noted 2 digits" in r[1]["reply"].lower() and "noted 4 digits" in r[2]["reply"].lower()
+    assert ex.calls == ["91379784"] and "AGARWAL PUBLIC SCHOOL" in r[3]["reply"]
+
+
+async def test_demo_shape_per_field_confirmation_and_disconnect(shape_engine):
+    shape, ex = shape_engine
+    if shape != "demo_v12":
+        pytest.skip("v12 shape only")
+    r = await _drive(None, ["paper roll", "91379784"], "v12-confirm")
+    assert "n_has_ask_merchant" in r[1]["trace"] and "n_ask_merchant" in r[1]["trace"]
+    assert "AGARWAL PUBLIC SCHOOL" in r[1]["reply"] and "AXIS" not in r[1]["reply"]   # one field at a time
+    r2 = (await _drive(None, ["haan theek hai"], "v12-confirm"))[0]
+    assert "n_pr_bank" in r2["trace"] and "AXIS Bank" in r2["reply"]
+    r3 = (await _drive(None, ["nahi galat hai"], "v12-confirm"))[0]
+    assert "n_not_verified" in r3["trace"] and r3["done"] is True
+
+
+async def test_v10_shape_wrong_details_continues_unverified(shape_engine):
+    shape, ex = shape_engine
+    if shape != "v10":
+        pytest.skip("v10 shape only")
+    await _drive(None, ["paper roll", "91379784"], "v10-wrong")
+    r = (await _drive(None, ["nahi galat hai"], "v10-wrong"))[0]
+    assert "n_details_wrong" in r["trace"] and "n_options_unverified" in r["trace"]
+    assert "unable to verify" in r["reply"].lower() and "SMS" in r["reply"]

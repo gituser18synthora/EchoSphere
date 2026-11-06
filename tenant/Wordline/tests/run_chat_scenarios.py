@@ -36,40 +36,59 @@ API_DOWN = "--api-down" in sys.argv or "--auth-fail" in sys.argv
 FILTER = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
 
 T = "trace"
+# Workflow shape: the DEMO v12 per-field confirmations ("as per our records,
+# your Outlet Name is X — correct?" → bank → asset [→ contact on battery]),
+# with the lookup wired in front of them (setup/02, workflow v13 on LOCAL).
+YES = "haan theek hai"
 SCENARIOS = {
     "paper_roll_found": [
         ("Hello, I need paper roll for my machine", [(T, "n_ask_tid"), ("reply", "terminal")]),
-        ("9 1 3 7 9 7 8 4", [(T, "n_api_lookup"), (T, "n_ask_merchant"),
-                             ("reply", "agarwal public school"), ("reply", "axis bank"),
-                             ("reply", "paytivo-7210-2g+wifi"), ("noreply", "sharma general store"),
+        ("9 1 3 7 9 7 8 4", [(T, "n_api_lookup"), (T, "n_has_ask_merchant"), (T, "n_ask_merchant"),
+                             ("reply", "agarwal public school"), ("noreply", "axis bank"),
+                             ("noreply", "sharma general store"),
                              ("slot", "merchant_found=true"), ("slot", "customer_verified=true"),
                              ("slot", "terminal_id=91379784")]),
-        ("haan sahi hai", [(T, "n_options"), ("reply", "sms")]),
+        (YES, [(T, "n_pr_bank"), ("reply", "axis bank")]),
+        (YES, [(T, "n_pr_asset"), ("reply", "paytivo-7210-2g+wifi")]),
+        (YES, [(T, "n_options"), ("reply", "sms")]),
         ("SMS wala batao", [(T, "n_sms"), ("reply", "575758")]),
         ("no thanks", [(T, "n_end"), ("done", "true")]),
     ],
-    "paper_roll_retry_then_found": [
+    "paper_roll_paused_dictation_then_found": [
         ("paper roll chahiye", [(T, "n_ask_tid")]),
-        ("12345678", [(T, "n_api_lookup"), (T, "n_tid_retry"), ("notrace", "n_ask_merchant"),
-                      ("reply", "could not find")]),
-        ("7926 0453", [(T, "n_api_lookup_retry"), (T, "n_ask_merchant"),
-                       ("reply", "kunal sweets"), ("reply", "kotak bank"),
-                       ("slot", "spoken_terminal_id_retry=7926 0453")]),
+        ("One, two, three. Four.", [("notrace", "n_api_lookup"), ("reply", "noted 4 digits")]),
+        ("Six. 7 8.", [(T, "n_api_lookup"), (T, "n_tid_retry"), ("reply", "could not find")]),
+        ("9 1 3 7 9 7 8 4", [(T, "n_api_lookup_retry"), (T, "n_ask_merchant"),
+                             ("reply", "agarwal public school"),
+                             ("slot", "spoken_terminal_id_retry=9 1 3 7 9 7 8 4")]),
     ],
     "paper_roll_still_not_found_continues": [
         ("mujhe paper roll chahiye", [(T, "n_ask_tid")]),
         ("12345678", [(T, "n_tid_retry")]),
         ("87654321", [(T, "n_lookup_unverified"), (T, "n_options_unverified"),
-                      ("reply", "unable to locate"), ("noreply", "verified your"),
-                      ("reply", "ivr")]),
+                      ("reply", "unable to locate"), ("noreply", "verified your"), ("reply", "ivr")]),
         ("IVR wala batao", [(T, "n_ivr"), ("reply", "one eight six zero")]),
     ],
-    "battery_found_contact_readback": [
+    "paper_roll_wrong_details_disconnect": [
+        ("paper roll request", [(T, "n_ask_tid")]),
+        ("91379784", [(T, "n_ask_merchant"), ("reply", "agarwal public school")]),
+        ("nahi galat hai", [(T, "n_not_verified"), ("reply", "disconnect"), ("done", "true")]),
+    ],
+    "battery_natural_tid_contact_readback": [
         ("battery problem hai, jaldi drain ho rahi hai", [(T, "n_bat_tid")]),
-        ("1231410", [(T, "n_bat_api_lookup"), (T, "n_bat_details"),
-                     ("reply", "bhanu medical and general store"), ("reply", "idbi bank"),
-                     ("reply", "9892858883"), ("slot", "terminal_id=1231410a")]),
-        ("haan sahi hai", [(T, "n_bat_check"), ("reply", "switch off")]),
+        ("1 2 3 1.", [("notrace", "n_bat_api_lookup"), ("reply", "noted 4 digits")]),
+        ("410.", [(T, "n_bat_api_lookup"), (T, "n_has_bat_details"), (T, "n_bat_details"),
+                  ("reply", "bhanu medical and general store"), ("slot", "terminal_id=1231410a")]),
+        (YES, [(T, "n_bat_bank"), ("reply", "idbi bank")]),
+        (YES, [(T, "n_bat_asset"), ("reply", "antera al9220u")]),
+        (YES, [(T, "n_bat_contact"), ("reply", "9892858883")]),
+        (YES, [(T, "n_bat_check"), ("reply", "switch off")]),
+    ],
+    "spoken_pairs_one_lookup": [
+        ("I need paper roll", [(T, "n_ask_tid")]),
+        ("91.", [("reply", "noted 2 digits")]),
+        ("37.", [("reply", "noted 4 digits"), ("notrace", "n_api_lookup")]),
+        ("97 84.", [(T, "n_api_lookup"), (T, "n_ask_merchant"), ("reply", "agarwal public school")]),
     ],
     "followup_fact_question_after_lookup": [
         ("paper roll request", [(T, "n_ask_tid")]),
