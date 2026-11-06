@@ -1,0 +1,401 @@
+{
+  "_meta": {
+    "source": "Wordline.csv",
+    "schema_version": 1,
+    "generated_at": "2026-11-06T09:07:09+00:00",
+    "record_count": 42,
+    "fields": [
+      "terminal_id",
+      "outlet_name",
+      "bank_name",
+      "asset_type",
+      "contact_number",
+      "issue_type",
+      "issue_code"
+    ],
+    "lookup_keys": [
+      "terminal_id (digit key)",
+      "contact_number (last 10 digits)"
+    ]
+  },
+  "records": [
+    {
+      "terminal_id": "91379784",
+      "outlet_name": "AGARWAL PUBLIC SCHOOL",
+      "bank_name": "AXIS Bank",
+      "asset_type": "PAYTIVO-7210-2G+WIFI",
+      "contact_number": "9303333356",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "79260453",
+      "outlet_name": "KUNAL SWEETS",
+      "bank_name": "KOTAK BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9925805050",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "1231410A",
+      "outlet_name": "BHANU MEDICAL AND GENERAL STORE",
+      "bank_name": "IDBI BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9892858883",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "3137502A",
+      "outlet_name": "HOTEL THE ROSTRAL",
+      "bank_name": "BOI",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "8980818997",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "3318258A",
+      "outlet_name": "WESTEND ENTERTAINMENT",
+      "bank_name": "PNB BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "7987261822",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "2482073A",
+      "outlet_name": "JAYALAKSHMI MEDICALS",
+      "bank_name": "BANDHAN BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9841453746",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "3022650A",
+      "outlet_name": "TRIBAL CO OPERATIVE MARKETING DEVELOPMENT FEDERATION OF IND",
+      "bank_name": "CBI",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "8788233654",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "65079917",
+      "outlet_name": "LA MODE FASHIONS PRIVATE LIMITED",
+      "bank_name": "BOB BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9899060710",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "1432421A",
+      "outlet_name": "NEW BABY STORES",
+      "bank_name": "SODEXO",
+      "asset_type": "LINURA 7220-Hand held GPRS",
+      "contact_number": "8240510392",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "0710141A",
+      "outlet_name": "ADVANCE FERTILITY AND GYNAECOLOG",
+      "bank_name": "YES BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9871250235",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "2537486A",
+      "outlet_name": "INDIAN ARTISAN PROP TAHIR AHMAD",
+      "bank_name": "JK BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9845416500",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "1584709A",
+      "outlet_name": "KERALA KHADI AND VILLAGE INDUSTRIES ASSOCIATION",
+      "bank_name": "SOUTH INDIAN BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9847064055",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "65019701",
+      "outlet_name": "SHAJI MEDICALS",
+      "bank_name": "FEDERAL BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9446239079",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "2894358A",
+      "outlet_name": "DERMAL BLISS",
+      "bank_name": "UBI BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "8660656126",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "1317317A",
+      "outlet_name": "MMTC PAMP INDIA",
+      "bank_name": "INDUSIND BANK",
+      "asset_type": "ANTERA A9210-Hand held GPRS",
+      "contact_number": "7082208151",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "2592724A",
+      "outlet_name": "AFFWA L HQ WAC U AF",
+      "bank_name": "CANARA",
+      "asset_type": "LINURA 7220-Hand held GPRS",
+      "contact_number": "9560887704",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "3011346A",
+      "outlet_name": "GAURAV TRADERS",
+      "bank_name": "INDIAN BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9565813441",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "1964939A",
+      "outlet_name": "WYT HOSPITALITY SERVICES",
+      "bank_name": "CUB BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "8489122112",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "3167106A",
+      "outlet_name": "SPYKAR LIFESTYLES PRIVATE LIMITED",
+      "bank_name": "BFL",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9308048120",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "81970696",
+      "outlet_name": "PALLADIAN HOSPITALITY LLP",
+      "bank_name": "WLAXIS WEIPL NEW",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9820541658",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "10964261",
+      "outlet_name": "YESHASS HEALTH CARE PRIVATE LIMITED",
+      "bank_name": "WLAXIS WEIPL",
+      "asset_type": "ANTERA A9210-Hand held GPRS",
+      "contact_number": "8495833333",
+      "issue_type": "Paper Roll",
+      "issue_code": "paper_roll"
+    },
+    {
+      "terminal_id": "32577872",
+      "outlet_name": "SUDHANSHUS SALES AND MARKETING",
+      "bank_name": "AXIS Bank",
+      "asset_type": "PAYTIVO-7210-2G+WIFI",
+      "contact_number": "9730030993",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "2305073A",
+      "outlet_name": "RAM RATAN VASTRALAYA",
+      "bank_name": "BANDHAN BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "8340294140",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "2544083A",
+      "outlet_name": "SADHANA",
+      "bank_name": "BOI",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9880905195",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "2957818A",
+      "outlet_name": "A H ARTS",
+      "bank_name": "JK BANK",
+      "asset_type": "ANTERA A9210-Hand held GPRS",
+      "contact_number": "6005037463",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "1974857A",
+      "outlet_name": "EYE WORLD OPTICS",
+      "bank_name": "KOTAK BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9920125552",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "1132986A",
+      "outlet_name": "CARE CORNER PHARMACY",
+      "bank_name": "YES BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "7276781631",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "1372318A",
+      "outlet_name": "TRISTAR CARS PVT LTD",
+      "bank_name": "IDBI BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9372629211",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "A2129007",
+      "outlet_name": "BHAGWATI ENTERPRISES",
+      "bank_name": "FEDERAL BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9372204684",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "1257524A",
+      "outlet_name": "PELIKAN OFFICE AUTOMATION PVT LTD",
+      "bank_name": "CUB BANK",
+      "asset_type": "ANTERA A9210-Hand held GPRS",
+      "contact_number": "9043439629",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3096651A",
+      "outlet_name": "LABHAM SUPERMARKET",
+      "bank_name": "INDIAN BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9072891145",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3493433A",
+      "outlet_name": "SRI RAM MEDICALS",
+      "bank_name": "CANARA",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "7094361803",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "65004683",
+      "outlet_name": "BABY CAMP",
+      "bank_name": "BOB BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9746988599",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "2905862A",
+      "outlet_name": "SHANKAR MEDICAL AND GENERAL STORES",
+      "bank_name": "UBI BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9640084843",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3068540A",
+      "outlet_name": "DECCAN CHRONICLE HOLDINGS LIMITED",
+      "bank_name": "PNB BANK",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9885484249",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "4166725M",
+      "outlet_name": "MUKILANS LAB",
+      "bank_name": "TMB BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9841122211",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3440498A",
+      "outlet_name": "RASHTRASEVA SAHAKARI GRAHAK SANG",
+      "bank_name": "SODEXO",
+      "asset_type": "LINURA 7220-Hand held GPRS",
+      "contact_number": "9821336157",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3539060A",
+      "outlet_name": "SNACKS CENTRE",
+      "bank_name": "CBI",
+      "asset_type": "LINURA 7220-Hand held GPRS",
+      "contact_number": "9980692961",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3139511A",
+      "outlet_name": "SAGAR SHOES SHOWROOM",
+      "bank_name": "INDUSIND BANK",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "8800579867",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "3351386A",
+      "outlet_name": "FOOT STEPS",
+      "bank_name": "WORLDLINE EPAYMENTS INDIA PRIVATE LIMITED",
+      "asset_type": "LINURA 7220-Hand held GPRS",
+      "contact_number": "8004750009",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "76976654",
+      "outlet_name": "LIBERTY DRY FRUITS AND GENERAL STORES",
+      "bank_name": "WLAXIS WEIPL NEW",
+      "asset_type": "ANTERA AL9220U-Hand held GPRS",
+      "contact_number": "9833890836",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    },
+    {
+      "terminal_id": "73973908",
+      "outlet_name": "HOTEL IDA",
+      "bank_name": "WLAXIS WEIPL",
+      "asset_type": "Paytivo 7210-Hand held GPRS",
+      "contact_number": "9997907907",
+      "issue_type": "Battery Issue",
+      "issue_code": "battery_issue"
+    }
+  ]
+}

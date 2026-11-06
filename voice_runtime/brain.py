@@ -613,6 +613,19 @@ _SUSPECT_BUFFER_MAX = 6
 # part here.
 _HELD_MULTIWORD_MIN_WORDS = 3
 _HELD_CONTINUATION_WINDOW_S = 5.0
+# Same guard, SHORT speech (below the multi-word threshold): a "haan" / "ji" /
+# "hello" heard while the bot talks is dispatched when the reply ends as the
+# answer to the question the reply closed with. That reading only holds when
+# the reply ended soon after the word: one the bot kept talking over for
+# longer than this was a backchannel to an earlier sentence, or a late reply
+# to the PREVIOUS question, never the answer to one the caller had not yet
+# heard. Live 2026-11-06 (Haier): cv_7094a4ab5cc3 — a "हाँ" to the identity
+# question, held 15.6 s under the intro, confirmed the intro's own question
+# the moment it was asked; cv_c191017d2061 — a "हेलो" said as the reply
+# started, held 8.8 s, closed the call on the confirm hub's else edge while
+# the caller's real answer was still coming. Such text is discarded at reply
+# end and the caller's silence is measured instead.
+_HELD_SHORT_MAX_AGE_S = 2.5
 # Trusted caller-level seeds (identity confirmed / identifier validated /
 # workflow advanced) accept shorter segments than the candidate bootstrap:
 # the turn is vouched for, only the level measurement must be stable enough.
@@ -1211,6 +1224,9 @@ class ConversationBrain(FrameProcessor):
         # Monotonic time of the newest accepted final, used to tell "stragglers
         # are still arriving" from "the utterance has settled".
         self._last_final_at: float | None = None
+        # Monotonic time of the newest final buffered into _pending_segments
+        # (the held-short age at reply end, see _drop_stale_held_short_text).
+        self._pending_newest_final_at: float | None = None
         # Latency instrumentation (shared with the VAD probe) and the caller
         # audio gate, which supplies speech energy/echo evidence per segment.
         self._latency = latency or TurnLatencyTracker(session_id=recorder.session_id)
@@ -1807,6 +1823,8 @@ class ConversationBrain(FrameProcessor):
             ):
                 if self._drop_filler_only_held_text():
                     return
+                if self._held_segment_guard and self._drop_stale_held_short_text():
+                    return
                 # Segments held while the bot was audibly speaking (below the
                 # barge-in word threshold) get their turn now that the caller
                 # has heard the reply out. They settled while the bot spoke,
@@ -2003,6 +2021,7 @@ class ConversationBrain(FrameProcessor):
         the final-event identity.
         """
         self._note_meaningful_input()
+        self._pending_newest_final_at = time.monotonic()
         provenance = provenance or self._final_provenance(None)
         if self._pending_segments:
             joined = " ".join(self._pending_segments).strip()
@@ -2113,6 +2132,47 @@ class ConversationBrain(FrameProcessor):
             "filler_only_dropped", text=held[:120], pending_kind=pending.kind,
         )
         self._latency.count("filler_only_dropped")
+        self._pending_segments.clear()
+        self._last_buffered_final = None
+        self._pending_level_samples.clear()
+        self._pending_turn_audio.clear()
+        self._pending_language = None
+        # Nothing was answered: the no-response ladder resumes.
+        self._arm_silence_timer()
+        return True
+
+    def _drop_stale_held_short_text(self) -> bool:
+        """Held-segment guard, short text: a backchannel-sized segment held
+        during the bot's playback is the answer to the question the reply
+        ended with only if the reply ended soon after it was heard. When the
+        bot kept talking for longer than ``_HELD_SHORT_MAX_AGE_S`` after the
+        newest held final, the word predates the question (a "ji" to an
+        earlier sentence, a late "haan" to the previous question, a "hello"
+        said as the reply began): drop it at reply end, so the caller gets the
+        floor for a real answer, and measure their silence as if nothing had
+        been heard. Multi-word text keeps the multi-word hold; identifier
+        dictation is exempt (digit fragments accumulate across segments).
+        Returns True when the held text was dropped."""
+        held = " ".join(self._pending_segments).strip()
+        newest = self._pending_newest_final_at
+        if not held or newest is None or self._identifier_capture is not None:
+            return False
+        words = len(meaningful_language_words(held))
+        if words >= _HELD_MULTIWORD_MIN_WORDS:
+            return False
+        age = time.monotonic() - newest
+        if age <= _HELD_SHORT_MAX_AGE_S:
+            return False
+        pending = self._pending_ask()
+        self._recorder.add_event(
+            "stale_held_short_dropped",
+            text=held[:120],
+            words=words,
+            age_ms=round(age * 1000.0, 1),
+            max_age_ms=round(_HELD_SHORT_MAX_AGE_S * 1000.0, 1),
+            pending_kind=pending.kind,
+        )
+        self._latency.count("stale_held_short_dropped")
         self._pending_segments.clear()
         self._last_buffered_final = None
         self._pending_level_samples.clear()
