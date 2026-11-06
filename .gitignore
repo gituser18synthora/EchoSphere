@@ -113,3 +113,6 @@ storage/models/
 # Database dumps never belong in the repo (history purged 2026-10-30).
 backups/
 *.sql.gz
+
+# Wordline tenant: pre-save workflow backups written by setup/02_workflow.py
+tenant/Wordline/data/workflow_backup_*.json
