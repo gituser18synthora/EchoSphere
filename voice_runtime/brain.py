@@ -626,6 +626,15 @@ _HELD_CONTINUATION_WINDOW_S = 5.0
 # the caller's real answer was still coming. Such text is discarded at reply
 # end and the caller's silence is measured instead.
 _HELD_SHORT_MAX_AGE_S = 2.5
+# A multi-word final that lands AFTER its own VAD burst closed carries no
+# speech episode, and the turn controller confirms the barge-in from that
+# very transcript a few milliseconds later. Such a hold is the confirmed
+# utterance itself and is reclaimed when the confirmation arrives within
+# this window with no new physical speech episode in between (LOCAL e2e
+# vs_G6U5hNZ-6VB-dsSS__jg-iZ_ 2026-11-07: "नहीं, मना नहीं किया था।" was
+# discarded as superseded_by_barge_in and only the second half of the
+# caller's sentence reached the workflow).
+_HELD_RECLAIM_LATE_FINAL_S = 1.0
 # Trusted caller-level seeds (identity confirmed / identifier validated /
 # workflow advanced) accept shorter segments than the candidate bootstrap:
 # the turn is vouched for, only the level measurement must be stable enough.
@@ -2197,6 +2206,9 @@ class ConversationBrain(FrameProcessor):
             "text": text,
             "at": time.monotonic(),
             "episode": self._vad_episode if self._physical_speech_active else None,
+            # Episode counter at the hold, for a final that landed after its
+            # burst closed (see _HELD_RECLAIM_LATE_FINAL_S).
+            "seen_episode": self._vad_episode,
         })
         del self._held_multiword[:-_SUSPECT_BUFFER_MAX]
         self._interim_texts.clear()
@@ -2241,12 +2253,19 @@ class ConversationBrain(FrameProcessor):
         discarded — it was never confirmed as the caller's."""
         if not self._held_multiword:
             return
-        same = [
-            entry for entry in self._held_multiword
-            if entry.get("episode") is not None
-            and entry["episode"] == self._vad_episode
-            and self._physical_speech_active
-        ]
+        now = time.monotonic()
+
+        def _same_utterance(entry: dict) -> bool:
+            if entry.get("episode") is not None:
+                return entry["episode"] == self._vad_episode and self._physical_speech_active
+            # Held after its own burst closed: the confirmation that follows
+            # within the window, with no new burst since, came from this text.
+            return (
+                entry.get("seen_episode") == self._vad_episode
+                and now - entry["at"] <= _HELD_RECLAIM_LATE_FINAL_S
+            )
+
+        same = [entry for entry in self._held_multiword if _same_utterance(entry)]
         other = [entry for entry in self._held_multiword if entry not in same]
         self._held_multiword = other
         if same:
