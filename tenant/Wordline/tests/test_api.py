@@ -167,9 +167,9 @@ def test_lookup_precedence_retry_and_placeholders(client):
 
 def test_lookup_miss_omits_mapped_keys(client):
     r = client.post("/api/v1/merchants/lookup", json={"spoken_terminal_id": "12345678"}, headers=HEADERS)
-    assert r.status_code == 404
+    assert r.status_code == 200          # a completed query with no match is not an endpoint failure
     body = r.json()
-    assert body["lookup_status"] == "not_found"
+    assert body["lookup_status"] == "not_found" and body["found_count"] == 0
     for key in ("found", "verified", "outlet_name", "bank_name", "contact_number"):
         assert key not in body
     r = client.post("/api/v1/merchants/lookup", json={"request_type": "battery"}, headers=HEADERS)
@@ -199,3 +199,15 @@ def test_listing_is_masked_and_filtered(client):
     r = client.get("/api/v1/merchants", params={"bank": "kotak"}, headers=HEADERS)
     assert {rec["terminal_id"] for rec in r.json()["records"]} == {"79260453", "1974857A"}
     assert client.get("/api/v1/merchants", params={"limit": 500}, headers=HEADERS).status_code == 422
+
+
+def test_studio_test_template_key_is_lowest_precedence_and_placeholder_safe(client):
+    # Studio "Test" button: the connection template fills `tid` from the customer_phone test value.
+    r = client.post("/api/v1/merchants/lookup", json={"tid": "91379784"}, headers=HEADERS)
+    assert r.status_code == 200 and r.json()["outlet_name"] == "AGARWAL PUBLIC SCHOOL"
+    # Live call: the placeholder arrives literally and the real slot wins.
+    r = client.post("/api/v1/merchants/lookup", json={
+        "tid": "{{customer_phone}}", "spoken_terminal_id": "7926 0453"}, headers=HEADERS)
+    assert r.json()["outlet_name"] == "KUNAL SWEETS"
+    r = client.post("/api/v1/merchants/lookup", json={"tid": "{{customer_phone}}"}, headers=HEADERS)
+    assert r.status_code == 422 and r.json()["lookup_status"] == "no_identifier"

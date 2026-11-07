@@ -9,15 +9,17 @@ call.  Dry run by default; ``--apply`` writes through the platform API.
 Why these settings:
 * POST ``/merchants/lookup`` — the engine posts every scalar workflow slot,
   the service picks the Terminal ID (retry answer first); see api/main.py.
-* ``successCondition: status<500`` + ``responseSchema`` — the executor's
-  success condition can only express ``status<N`` / ``status==N``, which
-  cannot separate 404 (not found) from 401/403/422/429 (API errors).  The
-  response schema runs on every status the condition accepts and requires
-  ``lookup_status`` ∈ {``found``, ``not_found``}: a 200 hit and a 404 miss
-  pass (the miss maps nothing and the workflow's ``merchant_found`` condition
-  routes it); a 401/403 (``unauthorized``), 422 (``no_identifier``), 429 or
-  any non-JSON body fails validation and takes the failure edge, like
-  transport errors, timeouts and 5xx.
+* ``successCondition: status<400`` + ``responseSchema`` — the service answers
+  a hit *and* a miss with 200 (``lookup_status`` ``found`` / ``not_found``; a
+  miss maps nothing and the workflow's ``merchant_found`` condition routes
+  it).  The response schema runs on every accepted status and requires
+  ``lookup_status`` ∈ {``found``, ``not_found``}, so a foreign 200 body, a
+  401/403 (``unauthorized``), 422 (``no_identifier``), 429 or any non-JSON
+  body fails validation and takes the failure edge, like transport errors,
+  timeouts and 5xx.  (A miss used to be 404 with ``status<500``; Studio's
+  "Send test request" and the tenant dashboard treat every non-2xx as a
+  failing endpoint, and the test can only send the fixed sample value
+  ``+10000000000``, so each click marked the healthy service "failing".)
 * ``secret://wordline-merchant-api-key`` → env ``WORDLINE_MERCHANT_API_KEY``
   on the voice worker / API process (sent as ``X-API-Key``).
 * ``timeoutMs 2500, retries 1`` — the lookup is a local file read; a hung
@@ -50,20 +52,24 @@ CONNECTION = {
     "description": ("Looks up a Wordline merchant terminal by the Terminal ID the "
                     "caller dictates (or a registered contact number) in the tenant "
                     "merchant data API (tenant/Wordline/api, CSV-sourced). A miss is "
-                    "HTTP 404 with no mapped fields."),
+                    "HTTP 200 lookup_status=not_found with no mapped fields."),
     "method": "POST",
     "url": f"{MERCHANT_API_BASE}/merchants/lookup",
     "authType": "api_key",
     "secretRef": "secret://wordline-merchant-api-key",
     "headers": {"Accept": "application/json"},
-    # No bodyTemplate: the engine then posts the whole scalar slot state, and
-    # the service picks the Terminal ID out of it.  (Workflow slot names are
-    # not an allowed template variable on connection rows, so the Studio
-    # "Test" button — which posts only a template — answers 422
-    # no_identifier; the real check is a Testing Studio chat.)
-    "successCondition": "status<500",
+    # The engine posts the whole scalar slot state on top of this template and
+    # the service picks the Terminal ID out of it.  Workflow slot names are not
+    # allowed template variables on connection rows, so the one template key
+    # exists for the Studio "Test" button: ``{{customer_phone}}`` is an allowed
+    # test variable (Studio fills it with the sample ``+10000000000``, which
+    # matches no terminal → a 200 ``not_found`` → "OK"; the API's own --apply
+    # test below sends a real Terminal ID) and is never a live call-context
+    # key, so on real calls the literal placeholder is sent and ignored.
+    "bodyTemplate": {"tid": "{{customer_phone}}"},
+    "successCondition": "status<400",
     "responseSchema": RESPONSE_SCHEMA,
-    "successMessage": "Merchant details fetched.",
+    "successMessage": "Merchant lookup completed.",
     "failureMessage": "Merchant data API unavailable.",
     "sensitiveMasks": ["contact_number", "contact_number_masked"],
     "isStateChanging": False,
@@ -104,8 +110,8 @@ def main() -> None:
                     "create connection")
     print("connection id:", row["id"])
     probe = check(c.post(f"/api-connections/{row['id']}/test",
-                         json={"testValues": {"spoken_terminal_id": "91379784"}}),
-                  "connection test (Terminal ID 91379784)")
+                         json={"testValues": {"customer_phone": "91379784"}}),
+                  "connection test (Terminal ID 91379784 via test value customer_phone)")
     print(f"     ok={probe.get('ok')} status={probe.get('status')} "
           f"latency={probe.get('latencyMs')}ms body={str(probe.get('body'))[:160]}")
 

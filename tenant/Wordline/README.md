@@ -13,7 +13,7 @@ customer system — an `api_connections` row executed by workflow `api` nodes.
 | Connection | `Wordline Merchant Lookup` (bot-scoped, `api_f34882c461bb` on LOCAL) → `POST http://127.0.0.1:9023/api/v1/merchants/lookup`, `X-API-Key` from `secret://wordline-merchant-api-key` |
 | Prompt | `pr_b88a6bbadb2a` system prompt **v4** (CALLER DATA section: terminal details come from the lookup) |
 | Runtime context | `rcs_0512ea793f71` "Merchant terminal data" — fixtures reduced to `customer_name`, `docket_number`, `customer_verified: false` |
-| Merchant API | `./tenant/Wordline/run.sh` → loopback **:9023** (needs `WORDLINE_MERCHANT_API_KEY`; see `.env.example`) |
+| Merchant API | loopback **:9023**, systemd `wordline-api.service` (DEMO: system unit, key in `/etc/echosphere/wordline-api.env`; LOCAL: user unit `~/.config/systemd/user/wordline-api.service`, key in `~/.config/echosphere/wordline-api.env`); `./tenant/Wordline/run.sh` for ad-hoc runs |
 | Data | `Wordline.csv` (42 rows, tab-separated) → `data/merchants.json` via `scripts/convert_csv.py` |
 
 Status 2026-11-06: implemented and verified on **LOCAL only**.  Nothing was
@@ -37,6 +37,9 @@ deployed to DEMO or NEW PRODUCTION.
   and on the DEMO v12 per-field confirmation shape.
 - `setup/00_import_workflow.py` — import a saved definition as a new
   version (LOCAL↔DEMO alignment, rollback).
+- `setup/04_go_live.py` — knowledge source, scenarios (from a real chat
+  report), readiness recompute, release; `docs/Wordline_Merchant_Helpdesk_FAQ.md`
+  is the knowledge document.
 - `setup/03_context_and_prompt.py` — runtime-context schema + prompt v4.
 - `tests/` — `pytest tenant/Wordline/tests` (converter, store, API, workflow
   transform, engine replay with a fake executor, executor error-routing
@@ -66,27 +69,38 @@ answers `503` while no key is configured and `401` on a wrong one.
 
 Hit: `200 {lookup_status: "found", found: true, verified: true, matched_by,
 terminal_id, outlet_name, bank_name, asset_type, contact_number,
-contact_number_masked, issue_type, issue_code}`.  Miss: `404 {lookup_status:
-"not_found"}` with **no** mapped keys; no identifier: `422 {lookup_status:
-"no_identifier"}`; bad/missing key: `401`, unconfigured key: `503` (both
-`lookup_status: "unauthorized"`).
+contact_number_masked, issue_type, issue_code}`.  Miss: `200 {lookup_status:
+"not_found", found_count: 0, message, hint}` with **no** mapped keys; no
+identifier: `422 {lookup_status: "no_identifier"}`; bad/missing key: `401`,
+unconfigured key: `503` (both `lookup_status: "unauthorized"`).  The GET
+resource routes answer `404` for an unknown id.
 
 Why a miss carries no `found: false`: the workflow engine applies mapped
 response fields with `setdefault`, so a first miss writing `found: false`
 would pin `merchant_found` for the rest of the call and the retry lookup
-could never flip it.  For the same reason the connection's success condition
-is `status<500` — a miss takes the api node's *success* edge and the
+could never flip it.  A miss takes the api node's *success* edge and the
 `merchant_found equals true` condition routes it.
 
-Error routing: the executor's success condition can only say `status<N` or
-`status==N`, which cannot separate a 404 miss from 401/403/422/429, so the
-connection also carries a **response schema** (`lookup_status` required,
-enum `found` | `not_found`).  The executor validates the body on every
-status the condition accepts, so a 200 hit and a 404 miss pass while a
-401/403 (`unauthorized`), 422 (`no_identifier`), 429, a foreign or non-JSON
-body all fail validation and take the *failure* edge together with 5xx,
-timeouts and connection errors.  `tests/test_connection_contract.py` pins
-this with the real executor functions.
+Why a miss is `200`, not `404` (changed 2026-11-07): the platform reads the
+HTTP status as the *endpoint's* health.  Studio's "Send test request" marks
+the connection `failing` on any non-2xx/3xx (the success condition can only
+narrow a 2xx, never widen a 404), shows the connection's failure message
+("Merchant data API unavailable.") and a red "Calls to this endpoint are
+failing" banner, and the tenant dashboard then lists "Fix failing API".  The
+test can only fill `{{customer_phone}}` with the fixed sample `+10000000000`
+(no input box exists for it), which matches no terminal — so with a 404 miss
+every test click reported the healthy service as down.  A completed query
+with no match is a 200 `not_found`; a real outage (5xx, timeout, 401) is
+still reported as failing.
+
+Error routing: the connection's success condition is `status<400` and it
+carries a **response schema** (`lookup_status` required, enum `found` |
+`not_found`).  The executor validates the body on every status the condition
+accepts, so a 200 hit and a 200 miss pass while a 401/403 (`unauthorized`),
+404 (wrong path), 422 (`no_identifier`), 429, a foreign or non-JSON body all
+fail validation and take the *failure* edge together with 5xx, timeouts and
+connection errors.  `tests/test_connection_contract.py` pins this with the
+real executor functions, including the Studio sample-value probe.
 
 Terminal ids are matched on their digits because the workflow's Terminal ID
 question captures digits (`(\d(?:[\s-]?\d){3,})`, spaces/dashes kept) and
@@ -120,8 +134,8 @@ verified your terminal and merchant details".  The four silent prefill asks
 env/bin/python tenant/Wordline/setup/01_api_connection.py --apply
 env/bin/python tenant/Wordline/setup/02_workflow.py --apply
 env/bin/python tenant/Wordline/setup/03_context_and_prompt.py --apply
-env/bin/pytest tenant/Wordline/tests -q                    # 45 offline tests
-env/bin/python tenant/Wordline/tests/run_chat_scenarios.py # 5 live scenarios
+env/bin/pytest tenant/Wordline/tests -q                    # 61 offline tests
+env/bin/python tenant/Wordline/tests/run_chat_scenarios.py # 7 live scenarios (--report for 04_go_live)
 env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --api-down   # stop :9023 first
 env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --auth-fail  # run :9023 under another key first
 ```
@@ -141,7 +155,45 @@ fragments for the 3 s dictation window and the engine accumulates them
 Remaining case: an 8-digit id dictated with a pause after exactly the 7th
 digit dispatches at 7 (a valid length) → miss → the existing retry ask.
 
-## Bringing DEMO up to date (not done; needs approval)
+## Go-live (2026-11-07 01:50–02:05 IST) — both environments
+
+`setup/04_go_live.py` completed the release checklist with real artefacts (no
+checklist override): a bot-scoped knowledge source "Wordline Merchant
+Helpdesk FAQ" from `docs/Wordline_Merchant_Helpdesk_FAQ.md` (the SOP facts the
+flow speaks; 3 chunks, indexed by the API's embedded ingestion), seven
+regression scenarios mirroring `tests/run_chat_scenarios.py` and marked run
+only from a fresh passing `--report` of that suite against the same
+environment, readiness recompute (7/7 green), and release **v0.1.5**
+(review → approved → published) pinning workflow **v13**.
+
+| | LOCAL | DEMO |
+| --- | --- | --- |
+| Release | v0.1.5 → wf v13 | v0.1.5 → wf v13 (v0.1.4 → v10 superseded) |
+| Chat suite | 7/7 | 7/7 (run against DEMO) |
+| Real voice calls (browser path, Sarvam TTS caller) | 5/5 on v13 | 5/5 on the published path: paper roll EN, invalid→corrected ID, battery natural ID + contact, merchant API stopped mid-call → unverified continuation, verification (no contact number before lookup, follow-up answered from looked-up facts, wrong details → disconnect) |
+
+Routing with the knowledge source was checked: configured intents still win
+for FAQ-shaped openers and the verified-context path still answers follow-ups
+from the looked-up record.
+
+## DEMO status before go-live (2026-11-07 01:35 IST)
+
+Done on DEMO: `wordline-api.service` (enabled, Restart=always, journal), key
+in `/etc/echosphere/wordline-api.env` and DEMO `.env`, `echosphere-api` +
+`echosphere-voice` restarted at zero active sessions so they hold the key,
+connection `api_6ea8302b48f6` (status healthy), runtime context without the
+merchant fixtures (+ `customer_verified: false`), workflow v13 and prompt v4
+as set by the Wordline team. Verified through the real executor: hit, miss →
+retry, held dictation, LLM follow-up from looked-up facts.
+
+(Superseded by the go-live above: release v0.1.5 now pins v13 and the
+checklist is fully green.)
+
+The Studio connection "Test" button now works: set test value
+`customer_phone` to a Terminal ID (the body template maps it to `tid`; on
+live calls the unresolved placeholder is ignored).
+
+## Original rollout notes
 
 DEMO today (2026-11-07, read-only): code commit 5e1eaac (this folder), no
 merchant API process, no `WORDLINE_MERCHANT_API_KEY` in `.env`, no API
@@ -169,11 +221,46 @@ Order, all on the DEMO box, no shared code or other tenant touched:
    release pinning v12/v10, `00_import_workflow.py` with a snapshot, and
    `PATCH /api-connections/<id>` status if needed.
 
+## Service operations (systemd) and the 2026-11-07 "API stopped" report
+
+| | DEMO | LOCAL (WSL2) |
+| --- | --- | --- |
+| Unit | `/etc/systemd/system/wordline-api.service` (system, `User=root`, `WantedBy=multi-user.target`) | `~/.config/systemd/user/wordline-api.service` (user, `WantedBy=default.target`) |
+| Key file | `/etc/echosphere/wordline-api.env` (0600 root) | `~/.config/echosphere/wordline-api.env` |
+| Restart policy | `Restart=always`, `RestartSec=3` — SIGKILL → serving again in 3.7 s (tested 10:35 IST) | same — serving again in 4.9 s (tested 10:36 IST) |
+| Boot | enabled, `multi-user.target.wants` symlink present; persistent journald (`Storage=persistent`) | enabled, but a **user** unit only runs while a user session exists — `Linger=no` (enabling linger needs root: `sudo loginctl enable-linger devendramishra`), and the WSL VM itself stops when the last terminal closes |
+| Logs | `journalctl -u wordline-api` | `journalctl --user -u wordline-api` |
+
+Investigation of the 2026-11-07 "Merchant API has stopped working again"
+report (DEMO): the process had been up since 02:03 IST with `NRestarts=0`,
+the port was listening, authenticated lookups returned 200, and the three
+real telephone calls of the morning (09:03, 09:13, 09:53 IST) all read real
+merchant records.  The only failure in the audit log was the Studio "Send
+test request" click at 10:23:44 IST by the tenant-admin login: it sent the
+sample value, the lookup was a 404 miss, and the platform marked the
+connection `failing` with the message "Merchant data API unavailable."  That
+label was the outage.  Fix: miss → `200 not_found` (above), connection
+success condition `status<400`, success message "Merchant lookup completed."
+Verified afterwards: Studio click without test values → `OK / 200 / healthy`
+on both environments, 61 offline tests, 7/7 chat scenarios on LOCAL, a real
+DEMO browser-path call (invalid Terminal ID → retry → real record on the
+published workflow v13).
+
 ## Limitations / notes
 
-- The Studio connection "Test" button posts only a body template; workflow
-  slot names are not an allowed template variable, so it answers `422
-  no_identifier`.  The real check is a Testing Studio chat.
+- The Studio connection "Send test request" button can only send the fixed
+  sample `+10000000000` as `tid` (see *Why a miss is 200*); it answers
+  `OK / HTTP 200 / lookup_status: not_found` for a reachable, authenticated
+  service and `Failed` for an outage or key problem.  The functional check is
+  a Testing Studio chat or `tests/run_chat_scenarios.py`.
+- The Testing Studio chat (`/testing/chat`, shared code) generates LLM
+  follow-up answers with `max_tokens=120`; on the reasoning model
+  `gpt-6-luna` the reasoning budget sometimes consumes all 120 tokens
+  (`finish_reason: length`, empty text) and the tester falls back to "Sorry,
+  could you tell me a bit more…".  Seen 1 in 3 on DEMO on 2026-11-07 for the
+  verified-fact follow-up; the voice path is unaffected (it uses its own
+  budgets) and answered "AXIS Bank" in real calls.  Platform-level, not a
+  Wordline configuration issue.
 - A wrong or missing API key on the platform side (`401`) takes the
   "unavailable" path (verified live with `--auth-fail`); the merchant API log
   shows the `401`s.

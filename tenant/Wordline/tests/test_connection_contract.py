@@ -7,8 +7,8 @@ TestClient) with the exact connection settings of setup/01, and asserts which
 api-node edge each HTTP outcome takes:
 
     200 hit            → success edge, merchant fields mapped
-    404 miss           → success edge, nothing mapped (→ merchant_found false → retry)
-    401 / 403 / 422 / 429 / non-JSON / 5xx / timeout / connect error → failure edge
+    200 miss           → success edge, nothing mapped (→ merchant_found false → retry)
+    401 / 403 / 404 / 422 / 429 / non-JSON / foreign 200 / 5xx / timeout / connect error → failure edge
 """
 
 from __future__ import annotations
@@ -70,7 +70,16 @@ def test_miss_takes_success_edge_with_nothing_mapped(client, connection):
     r = client.post("/api/v1/merchants/lookup", json={"spoken_terminal_id": "12345678"},
                     headers={"X-API-Key": KEY})
     ok, mapped = decide(connection, r.status_code, r.json())
-    assert (r.status_code, ok, mapped) == (404, True, {})
+    assert (r.status_code, ok, mapped) == (200, True, {})
+    assert r.json()["lookup_status"] == "not_found"
+
+
+def test_studio_test_sample_value_is_a_miss_that_passes(client, connection):
+    """Studio's "Send test request" fills {{customer_phone}} with +10000000000 and
+    treats any non-2xx as a failing endpoint — the probe must be a 200 miss."""
+    r = client.post("/api/v1/merchants/lookup", json={"tid": "+10000000000"}, headers={"X-API-Key": KEY})
+    assert r.status_code == 200 and r.json()["lookup_status"] == "not_found"
+    assert decide(connection, r.status_code, r.json()) == (True, {})
 
 
 @pytest.mark.parametrize("headers,body,expected_status", [
@@ -98,6 +107,7 @@ def test_unconfigured_service_takes_failure_edge(client, connection, monkeypatch
     (403, {"error": "forbidden"}, None),                     # gateway / WAF
     (429, {"error": "rate limited"}, None),                  # proxy throttling
     (404, None, "Response was not valid JSON."),             # HTML 404 page from a proxy
+    (404, {"detail": "Not Found"}, None),                    # wrong path on the service itself
     (200, "<html>login</html>", None),                       # non-object body
     (200, {"found": True, "outlet_name": "X"}, None),        # foreign service without the contract
     (500, {"lookup_status": "found"}, None),

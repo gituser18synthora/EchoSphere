@@ -95,7 +95,10 @@ def upgrade_prompt(text: str) -> str | None:
 
 
 def main() -> None:
-    args = parser(__doc__.split("\n")[0]).parse_args()
+    p = parser(__doc__.split("\n")[0])
+    p.add_argument("--skip-prompt", action="store_true",
+                   help="leave the system prompt untouched (runtime context only)")
+    args = p.parse_args()
     c = client(args.base)
 
     current = check(c.get(f"/bots/{BOT_ID}/runtime-context"), "read runtime context") or {}
@@ -111,8 +114,10 @@ def main() -> None:
     active = next((v for v in system.get("versions") or []
                    if v.get("version") == system.get("activeVersion")), None)
     text = (active or {}).get("fullPrompt") or ""
-    new_text = upgrade_prompt(text)
-    if new_text is None:
+    new_text = None if args.skip_prompt else upgrade_prompt(text)
+    if args.skip_prompt:
+        print(f"     prompt {system['id']} v{system.get('activeVersion')} left untouched (--skip-prompt)")
+    elif new_text is None:
         print("     prompt already current (no new version)")
     else:
         print(f"     prompt {system['id']} v{system.get('activeVersion')} → new version; "

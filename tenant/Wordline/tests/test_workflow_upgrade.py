@@ -147,7 +147,7 @@ class _Executor:
         outcome = self.outcomes.pop(0)
         if outcome == "found":
             return _Result(True, dict(FOUND))
-        if outcome == "not_found":        # 404 body carries no mapped keys
+        if outcome == "not_found":        # 200 not_found body carries no mapped keys
             return _Result(True, {})
         return _Result(False, {})          # transport error / timeout / 5xx
 

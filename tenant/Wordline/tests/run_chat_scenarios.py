@@ -13,6 +13,9 @@ Each scenario is a list of (utterance, expectations).  Expectation kinds:
 Run (API on 9001, merchant API on 9023, services started with
 WORDLINE_MERCHANT_API_KEY in their environment):
     env/bin/python tenant/Wordline/tests/run_chat_scenarios.py [name-filter]
+    … --base https://<host>/api/v1 --report /tmp/wl_chat_report.json
+        # another environment (login via ECHOSPHERE_SUPER_ADMIN_* / WORDLINE_SETUP_*);
+        # --report writes the per-scenario results setup/04_go_live.py requires
     env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --api-down
         # only the "unavailable" scenario; stop the merchant API first
     env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --auth-fail
@@ -24,6 +27,7 @@ WORDLINE_MERCHANT_API_KEY in their environment):
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 import uuid
 from pathlib import Path
@@ -33,7 +37,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tenant.Wordline.setup.common import BOT_ID, DEFAULT_BASE, client  # noqa: E402
 
 API_DOWN = "--api-down" in sys.argv or "--auth-fail" in sys.argv
-FILTER = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
+
+
+def _opt(flag: str) -> str | None:
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        return sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+    return None
+
+
+BASE = _opt("--base") or DEFAULT_BASE
+REPORT = _opt("--report")
+_consumed = {v for f in ("--base", "--report") for v in (_opt(f),) if v}
+FILTER = next((a for a in sys.argv[1:] if not a.startswith("--") and a not in _consumed), "")
 
 T = "trace"
 # Workflow shape: the DEMO v12 per-field confirmations ("as per our records,
@@ -143,19 +159,27 @@ def run(c, name: str, turns) -> list[str]:
 
 
 def main() -> int:
-    c = client(DEFAULT_BASE)
+    c = client(BASE)
     suite = API_DOWN_SCENARIOS if API_DOWN else SCENARIOS
     total = passed = 0
     all_failures: dict[str, list[str]] = {}
+    results: dict[str, dict] = {}
     for name, turns in suite.items():
         if FILTER and FILTER not in name:
             continue
         total += 1
         failures = run(c, name, turns)
+        results[name] = {"passed": not failures, "turns": len(turns), "failures": failures}
         if failures:
             all_failures[name] = failures
         else:
             passed += 1
+    if REPORT:
+        import time
+        pathlib.Path(REPORT).write_text(json.dumps({
+            "base": BASE, "bot": BOT_ID, "finished_at": time.time(),
+            "scenarios": results}, indent=1), encoding="utf-8")
+        print(f"report written: {REPORT}")
     print(f"\n{passed}/{total} scenarios passed")
     for name, failures in all_failures.items():
         print(f"  {name}:")

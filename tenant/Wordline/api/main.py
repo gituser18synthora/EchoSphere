@@ -20,26 +20,40 @@ identifier wins in this order: ``terminal_id_retry``,
 ``spoken_terminal_id_retry``, ``terminal_id``, ``spoken_terminal_id``,
 ``tid``, then ``contact_number``, ``phone``, ``caller_phone``, ``mobile``.
 Values may be dictated ("9 1 3 7 9 7 8 4") and may be unresolved templates
-(``{{spoken_terminal_id_retry}}``), which are ignored.
+(``{{spoken_terminal_id_retry}}``), which are ignored.  ``tid`` (lowest
+precedence) is what the platform's connection "Test" button fills: the
+connection's body template sets it from the ``{{customer_phone}}`` test value,
+which is never a live call-context key, so on real calls it arrives as the
+literal placeholder and is ignored.
 
 Response contract — this matters for the workflow:
 
 * a hit is ``200`` with ``lookup_status: "found"``, ``found: true`` /
   ``verified: true`` plus the merchant fields the connection maps into
   workflow variables;
-* a miss is ``404`` with ``lookup_status: "not_found"`` and **no** ``found``
-  / ``verified`` / merchant keys.  The workflow engine applies mapped fields
-  with ``setdefault`` and keeps the first value for the rest of the call, so
-  a miss must not write ``found: false`` — the retry lookup could then never
-  set ``found: true``.  The connection's success condition is ``status<500``:
-  a miss takes the api node's *success* edge and the following condition node
-  (``merchant_found equals true``) routes it.  The connection's *response
-  schema* requires ``lookup_status`` to be ``found`` or ``not_found``, so every
-  other body — ``401``/``403`` (``unauthorized``), ``422``
-  (``no_identifier``), ``429``, a proxy's non-JSON page — fails validation and
-  takes the *failure* edge together with transport errors, timeouts and ``5xx``;
+* a miss is ``200`` with ``lookup_status: "not_found"`` and **no** ``found``
+  / ``verified`` / merchant keys.  A lookup that finds nothing is a *completed*
+  query, not a failed request: the platform (Studio "Send test request",
+  the tenant dashboard's "failing API" recommendation) reads any non-2xx as
+  "endpoint failing", and the Studio test can only send the fixed sample
+  value ``+10000000000`` for ``{{customer_phone}}``, which no terminal
+  matches.  A 404 miss therefore flagged a healthy service as failing on
+  every test click (DEMO, 2026-11-07).  The workflow never routes on the
+  status: the engine applies mapped fields with ``setdefault`` and keeps the
+  first value for the rest of the call, so a miss must not write ``found:
+  false`` (the retry lookup could then never set ``found: true``); the api
+  node takes its *success* edge and the following condition node
+  (``merchant_found equals true``) routes hit vs. miss.  The connection's
+  success condition is ``status<400`` and its *response schema* requires
+  ``lookup_status`` to be ``found`` or ``not_found``, so every other body —
+  ``401``/``403`` (``unauthorized``), ``422`` (``no_identifier``), ``429``, a
+  proxy's non-JSON page, a foreign 200 — fails validation and takes the
+  *failure* edge together with transport errors, timeouts and ``5xx``;
 * a body without any usable identifier is ``422`` (``lookup_status:
-  "no_identifier"``), handled like a miss by the workflow.
+  "no_identifier"``) — the unavailable branch, which cannot happen from the
+  workflow (it always posts the Terminal ID slots);
+* the resource routes ``GET /merchants/{id}`` and ``/merchants/by-contact/``
+  keep REST semantics and answer ``404`` for an unknown id.
 
 Security: binds to loopback (``run.sh``), constant-time API-key check,
 ``503`` while no key is configured (fail closed), contact numbers never
@@ -141,8 +155,16 @@ def masked_view(record: dict) -> dict:
 
 
 def _not_found(hint: str) -> JSONResponse:
+    """Unknown resource on the GET routes."""
     return _err(404, "No merchant found for the shared details.",
                 lookup_status="not_found", hint=hint)
+
+
+def _lookup_miss(hint: str) -> dict:
+    """POST /lookup completed and matched nothing — a 200 with no mapped keys
+    (see the module docstring for why this is not a 404)."""
+    return {"lookup_status": "not_found", "found_count": 0,
+            "message": "No merchant found for the shared details.", "hint": hint}
 
 
 async def _body(request: Request) -> dict:
@@ -195,7 +217,7 @@ async def lookup(request: Request):
         return _err(422, "Send a terminal id or a registered contact number.",
                     lookup_status="no_identifier")
     logger.info("lookup miss (keys tried: %s)", ",".join(tried))
-    return _not_found("Terminal ids are 7-8 characters; check the digits dictated.")
+    return _lookup_miss("Terminal ids are 7-8 characters; check the digits dictated.")
 
 
 @app.get("/api/v1/merchants/by-contact/{number}", dependencies=[Depends(require_api_key)])
