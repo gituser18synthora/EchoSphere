@@ -198,6 +198,8 @@ class _ScriptedESL:
 
     async def api(self, command):
         self.commands.append(command)
+        if command.startswith("uuid_exists "):
+            return "true\n"
         return _ScriptedESL.api_result
 
     async def close(self):

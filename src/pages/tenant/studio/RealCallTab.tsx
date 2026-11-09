@@ -12,9 +12,11 @@ import { formatCallDuration } from "./PhoneCallView";
    so this view is just: number → confirm → Start Call → status → Hang up.
    Per-call choices never change the bot's saved configuration. */
 
-const PHONE_RE = /^\+?[0-9]{8,15}$/;
+// Matches the destination rule in shared/esl_originate.py; caller IDs are separate.
+const PHONE_RE = /^(?:(?:\+?91)|0)?[6-9][0-9]{9}$/;
+const PHONE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+const PHONE_ERROR = "Enter a valid Indian mobile number: 10 digits starting with 6–9, optionally prefixed with +91, 91 or 0.";
 const POLL_MS = 2500;
-const POLL_MAX_MS = 15 * 60 * 1000;
 const RING_MIN = 10;
 const RING_MAX = 120;
 
@@ -24,7 +26,7 @@ export function normalizePhoneInput(raw: string): string {
 
 export function phoneInputError(raw: string): string | undefined {
   if (!raw.trim()) return "Enter the mobile number to call.";
-  if (!PHONE_RE.test(normalizePhoneInput(raw))) return "8 to 15 digits, optional leading + (spaces and dashes are fine).";
+  if (raw.length > 40 || PHONE_CONTROL_RE.test(raw) || !PHONE_RE.test(normalizePhoneInput(raw))) return PHONE_ERROR;
   return undefined;
 }
 
@@ -69,18 +71,28 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
     return () => { cancelled = true; };
   }, [active, bot.id, defaults, loadErr]);
 
-  /* Poll the tracked call while it is live, with a hard stop. */
+  /* Poll until the call ends, including calls lasting over fifteen minutes.
+     Serialize requests and discard replies from a previous polling lifecycle
+     so a slow answered reply cannot resurrect an ended call. */
   useEffect(() => {
     if (!job || !isLive(job)) return;
     const { jobId } = job;
-    const startedAt = Date.now();
-    const id = window.setInterval(() => {
-      if (Date.now() - startedAt > POLL_MAX_MS) { window.clearInterval(id); return; }
-      getRealCallStatus(bot.id, jobId)
-        .then((next) => setJob((cur) => (cur?.jobId === jobId ? next : cur)))
-        .catch(() => { /* transient — keep the last status */ });
-    }, POLL_MS);
-    return () => window.clearInterval(id);
+    let cancelled = false;
+    let id: number;
+    const poll = async () => {
+      let keepPolling = true;
+      try {
+        const next = await getRealCallStatus(bot.id, jobId);
+        if (cancelled) return;
+        setJob((cur) => (cur?.jobId === jobId && isLive(cur) ? next : cur));
+        keepPolling = isLive(next);
+      } catch {
+        /* transient — keep the last status and retry */
+      }
+      if (!cancelled && keepPolling) id = window.setTimeout(() => void poll(), POLL_MS);
+    };
+    id = window.setTimeout(() => void poll(), POLL_MS);
+    return () => { cancelled = true; window.clearTimeout(id); };
   }, [bot.id, job?.jobId, job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Connected-time counter, frozen when the call ends. */
@@ -93,6 +105,7 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
   }, [job?.jobId, job?.status]);
 
   const phoneErr = phoneInputError(phone);
+  const showPhoneError = phoneTouched || confirmed;
   const ringValue = ringSeconds.trim() === "" ? null : Number(ringSeconds);
   const ringErr = ringValue !== null && (!Number.isInteger(ringValue) || ringValue < RING_MIN || ringValue > RING_MAX)
     ? `Whole seconds between ${RING_MIN} and ${RING_MAX}.` : undefined;
@@ -102,7 +115,7 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
 
   const start = async () => {
     if (!canStart) return;
-    setStarting(true); setActionErr(null);
+    setStarting(true); setActionErr(null); setSeconds(0);
     try {
       const started = await startRealCall(bot.id, {
         phoneNumber: normalizePhoneInput(phone),
@@ -155,15 +168,18 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
       <Field
         label="Mobile number to call"
         required
-        error={phoneTouched ? phoneErr : undefined}
-        hint={defaults?.callerIdNumber ? `The phone will see a call from ${defaults.callerIdNumber}.` : undefined}
+        error={showPhoneError ? phoneErr : undefined}
+        hint={`Use a 10-digit Indian mobile number starting with 6–9; +91, 91 or 0 prefix is optional.${defaults?.callerIdNumber ? ` The phone will see a call from ${defaults.callerIdNumber}.` : ""}`}
       >
         <input
           className="input"
+          type="tel"
           inputMode="tel"
+          autoComplete="tel"
+          maxLength={40}
           placeholder="+91 98765 43210"
           value={phone}
-          aria-invalid={phoneTouched && Boolean(phoneErr)}
+          aria-invalid={showPhoneError && Boolean(phoneErr)}
           disabled={live}
           onChange={(e) => setPhone(e.target.value)}
           onBlur={() => setPhoneTouched(true)}
@@ -233,7 +249,11 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
               {STATUS_LABEL[job.status] ?? job.status}
             </span>
             <span className="t-sub">{job.phoneMasked}</span>
-            {job.status === "answered" && <span className="t-num t-sub">{formatCallDuration(seconds)}</span>}
+            {(job.status === "answered" || job.status === "ended" || job.status === "hungup") && (
+              <span className="t-num t-sub">
+                {formatCallDuration(!live && job.conversation ? job.conversation.durationSec : seconds)}
+              </span>
+            )}
             {job.cause && job.status !== "answered" && <span className="tag">{job.cause}</span>}
           </div>
           <div className="t-sub">{job.detail}</div>

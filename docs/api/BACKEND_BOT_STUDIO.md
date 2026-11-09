@@ -745,7 +745,7 @@ variables and command for the given inputs; nothing is dialed.
 
 | Field | Type | Required | Default / validation |
 | --- | --- | --- | --- |
-| `phoneNumber` | string | yes | 8–15 digits after removing spaces/dashes/brackets, optional leading `+`; Indian numbers are reduced to their 10 national digits. |
+| `phoneNumber` | string | yes | Indian mobile: 10 digits starting with 6–9, optionally prefixed with `+91`, `91` or `0`; spaces/dashes/brackets/dots are removed. Maximum 40 input characters; control characters, extensions and other country prefixes are rejected. Reduced to 10 national digits for dialing. This validates format, not number ownership or reachability. |
 | `params` | object | no | Channel variable overrides (≤100). Names `[A-Za-z][A-Za-z0-9_.-]{0,63}`, values ≤500 chars, no control characters. `customerNumber`, `tenantId`, `voicebotID`, `origination_uuid` are ignored (platform-owned). |
 | `customerData` | object | no | Omitted = the bot's saved runtime-context test JSON; `{}` = none. Key → scalar (≤100). Mapped to `vb_<key>` (existing `vb_` kept, system names skipped, nested skipped), values ≤200 chars. |
 | `dialTemplate` / `application` | string | no | Server defaults when absent. |
@@ -773,6 +773,13 @@ without confirmation, with empty mandatory parameters, or for unsafe values
 `disposition`, `language`) once the dialplan's webhook created it (matched
 by `call_id = originationUuid`). Jobs live one hour and are tenant-scoped
 (`404` otherwise).
+
+For an `answered` job, polling reports `ended` when the conversation is
+finalized or a bounded, read-only FreeSWITCH `uuid_exists` check returns
+`false`. This also detects caller hangup before the conversation is persisted.
+An unavailable socket or an unrecognized reply preserves the last status for
+retry. The reconciliation affects the response only and does not overwrite a
+concurrent Studio hangup/originate result in Redis.
 
 `POST /api/v1/bots/{bot_id}/testing/real-call/{job_id}/hangup` —
 `uuid_kill` on the originated leg; returns the job (`hungup`, or `ended`

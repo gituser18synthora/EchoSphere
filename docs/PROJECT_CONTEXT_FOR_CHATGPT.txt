@@ -1,0 +1,644 @@
+ECHOSPHERE — COMPLETE PROJECT CONTEXT FOR CHATGPT
+Prepared from the local repository on 9 November 2026 (Asia/Kolkata).
+
+HOW TO USE THIS DOCUMENT
+Upload this file to ChatGPT, or paste its contents before your next question.
+Suggested opening message:
+"This document describes my existing EchoSphere project. Read it as project
+background for this conversation. Explain your understanding briefly, then
+answer my questions using this architecture and its development restrictions.
+Distinguish verified repository facts from assumptions. Ask for the relevant
+current files when implementation details are needed."
+
+This is a repository-based context snapshot, not a production health report.
+Capabilities below describe code, configuration surfaces and documentation;
+they do not establish that every integration is configured or operational.
+No services, migrations, configuration scripts or tests were run to prepare it.
+
+1. PROJECT IDENTITY AND SCOPE
+
+Project name: AUREXION EchoSphere.
+Product: An enterprise, multi-tenant AI VoiceBot platform.
+Local workspace: /var/www/html/python/EchoSphere
+Development environment supplied by the owner: Ubuntu through WSL, with IDE
+access from Windows. The owner's preferred explanation style is practical
+Hindi/Hinglish with technical terms and code in English.
+
+The platform lets multiple organizations build and operate their own AI voice
+bots. Each organization has its own users, bots, prompts, workflows, knowledge,
+integration settings, conversation records and governance boundaries. There
+are platform-wide administration features and tenant-level authoring tools.
+
+The product combines realtime speech, business workflows, document-grounded
+answers, external API tools, call records, usage accounting and administration.
+It is designed for customer support, service follow-up, collections, booking,
+merchant helpdesks and similar business conversations.
+
+Scope clarification: the IDE also showed an active file under the separate
+ocr_test/banchmark project. That separate project was not inspected. This
+document describes EchoSphere, the supplied workspace. EchoSphere itself does
+have OCR support inside document ingestion, but that does not establish any
+integration with the separate OCR benchmark project.
+
+2. NON-NEGOTIABLE DEVELOPMENT RESTRICTION
+
+The owner established this rule on 21 September 2026 in AGENTS.md:
+NEVER MODIFY LIVE/PRODUCTION CODE. MAKE CODE CHANGES ONLY LOCALLY.
+
+- Do not edit, copy, sync, deploy or replace code on a live server.
+- Do not restart live services to activate local changes.
+- A request to investigate a live issue permits read-only investigation only.
+- Reproduce, fix and test the issue in the local workspace.
+- Earlier permission to deploy an MDND English fix applied only to that
+  completed task. It does not authorize future deployments.
+- This restriction remains until the owner explicitly revises it.
+
+Some older documentation includes deployment commands or mentions historical
+live changes. Those passages do not override this standing restriction.
+Do not run setup, publish or go-live scripts just because their names appear
+in this context; they can change application/database configuration.
+
+3. TECHNOLOGY STACK
+
+Frontend:
+- React + TypeScript, React Router, Vite.
+- Current package.json declares React ^19.3.0, React Router ^7.18.4,
+  TypeScript ^7.0.2 and Vite ^8.3.2.
+- Vitest, Testing Library and jsdom support frontend tests.
+- packageManager is declared as pnpm@10.32.0; README examples use npm.
+- package.json scripts: dev, build, preview, typecheck and test.
+- build performs TypeScript checking before producing the Vite bundle.
+
+Backend and shared Python code:
+- FastAPI, Uvicorn, Pydantic and pydantic-settings.
+- SQLAlchemy, Alembic, PyMySQL, asyncpg, Motor and Redis client.
+- PyJWT and bcrypt for authentication/password handling.
+- httpx for HTTP integrations.
+- Pipecat for realtime audio pipelines.
+- LangGraph plus PostgreSQL checkpoint support for stateful workflows.
+- MCP SDK for external-agent knowledge tools.
+- pytest and pytest-asyncio for backend tests.
+- requirements.txt currently pins Pipecat 1.13.0, FastAPI 0.142.2,
+  SQLAlchemy 2.1.1, LangGraph 1.2.12 and OpenAI SDK 3.22.1.
+
+Document processing includes PyMuPDF, python-docx, openpyxl, python-pptx,
+pytesseract, Pillow, tiktoken and NumPy. Optional cross-encoder reranking is
+available when its extra dependency and configuration are enabled.
+
+Version caveat: README still says React 18 and the voice-runtime overview
+contains an older Pipecat version label. Use dependency manifests, lockfiles
+and the actual environment when deciding versions; do not copy stale labels.
+The versions above are repository declarations, not a fresh installation audit.
+
+4. ARCHITECTURE AND PROCESS BOUNDARIES
+
+This is one repository with separately run service processes and a shared
+Python library. The central import direction is:
+
+    backend -> shared <- voice_runtime
+
+backend and voice_runtime must not import each other's application packages.
+Both can import shared. Shared code must not depend on either application.
+They use the root environment configuration and the common env/ virtualenv.
+
+Main processes and documented default local ports:
+
+    Frontend/Vite          5199  npm run dev
+    Platform API           9001  env/bin/python -m backend.main
+    Voice worker           9002  env/bin/python -m voice_runtime.app
+    MCP server             9003  env/bin/python -m backend.mcp_server.server
+    Telephony gateway      9011  env/bin/python -m voice_runtime.gateway
+    Ingestion worker          - env/bin/python -m backend.workers.ingestion
+
+Ports are configurable. Root .env and shared/config.py determine actual values.
+FreeSWITCH ESL is documented on port 9004; it is a call-control event socket,
+not the REST API or a browser-facing web service.
+
+The gateway runs the same FastAPI application on a separate configured port,
+allowing a telephony provider to reach its webhook and media WebSocket at one
+public host/port. It is distinct from the control-plane Platform API.
+
+The API may embed ingestion by configuration; ingestion can also run as a
+separate worker. Post-call analysis has its own embedded background polling
+mechanism. Do not assume one deployment mode without checking configuration.
+
+5. DATA STORAGE RESPONSIBILITIES
+
+MySQL — control plane:
+- Users, roles/permissions, tenants, bots and voice settings.
+- Prompts/versions, intents, entities and workflow definitions/revisions.
+- Releases, channel configuration, provider catalog and API connections.
+- Conversation session metadata, audit, usage/billing-related records.
+- Knowledge-source metadata and conversation-memory processing records.
+- SQLAlchemy models are grouped under shared/models/.
+- MySQL migrations live under backend/alembic/.
+
+PostgreSQL + pgvector — knowledge and workflow checkpoint plane:
+- Knowledge documents, chunks, embeddings and ingestion jobs.
+- Vector search indexes and PostgreSQL full-text search.
+- LangGraph persistent checkpoints.
+- Knowledge-plane migrations live under backend/alembic_pg/.
+
+MongoDB — conversation transcript documents:
+- Nested per-turn transcript/event structures, scoped to tenant and bot.
+- SessionRecorder persists conversation data; metadata also goes to MySQL.
+
+Redis — short-lived coordination/cache:
+- Trusted voice session mappings issued by the API or verified webhooks.
+- Resolved bot-configuration cache and other sessions/caches.
+- Rate-limit buckets and webhook replay protection.
+
+Filesystem:
+- Uploaded originals under storage/knowledge/ using server-generated paths.
+- Audio/recording/filler assets as configured by the relevant subsystems.
+- Local dev launcher PID files/logs under .devrun/.
+
+Do not flatten these into one database or assume PostgreSQL holds all app data.
+
+6. FRONTEND AND USER ROLES
+
+App routing is defined in src/App.tsx. Authentication/application state lives
+in src/state/AppContext.tsx. The typed API client is src/services/api.ts;
+HTTP helpers are in src/services/http.ts, and voice transport code is in
+src/services/voiceClient.ts. The @ alias resolves to src/.
+
+Roles:
+- super_admin: platform administration.
+- tenant_admin: administration within the assigned organization.
+- tenant_user: tenant membership with permission-controlled access.
+
+Platform pages under /admin include dashboard, organizations/tenant detail,
+onboarding, subscriptions, billing, usage, governance, voice platform,
+knowledge/chunk review, workflow administration, monitoring, security,
+reports, platform configuration and regional settings.
+
+Tenant pages under /t include dashboard, bots, Bot Studio, Knowledge Hub,
+voices, workflows, channels, analytics, conversations, team, integrations
+and settings. Several routes require additional permissions.
+
+Studio implementation is under src/pages/tenant/studio/. Its components cover
+overview, prompts, intents, workflows, knowledge, API connections, voice
+settings, natural conversation, turn detection, channels, testing, real
+calls, analytics and publishing. Check Studio.tsx for current tab exposure.
+
+UI guards improve navigation; the API independently enforces authorization.
+
+7. BOT CONFIGURATION, AUTHORING AND RELEASES
+
+A bot is more than a system prompt. Its resolved configuration can include:
+- System/greeting prompts and their versions/modes.
+- Supported languages, STT/TTS/LLM providers, models and voice identity.
+- Intent/entity definitions, workflow routing and business policies.
+- Authorized knowledge sources and API/tool connections.
+- Runtime/customer context, guardrails, channel and turn-detection settings.
+- Goal policy, naturalness settings and recording-related configuration.
+
+shared/bot_config.py resolves trusted bot configurations. Provider/model/
+language/voice validity is governed by the database-backed provider catalog.
+Do not hardcode arbitrary combinations into UI or runtime code.
+
+Releases support publishing/rollback and pinned workflow revisions. A call
+uses a pinned configuration snapshot for its lifetime; editing a bot does
+not mutate an already-running call. Cache invalidation applies to later
+resolutions, not to an active call's trusted snapshot.
+
+Browser Studio testing can use the latest saved draft. Non-browser channels
+require a published release. Workflow revision/pinning details are documented
+in docs/architecture/orchestration-layering.md; some historical migration
+compatibility paths fall back when a pinned snapshot is missing.
+
+8. REALTIME VOICE CALL FLOW
+
+Typical browser call:
+1. An authenticated UI requests POST /api/v1/voice-sessions.
+2. The API checks bot ownership and writes tenant/bot/session identity to Redis.
+3. The browser connects to /ws/voice/{session_id} on the voice service.
+4. The worker verifies the trusted session and resolves the bot snapshot.
+5. The per-call Pipecat pipeline handles the conversation.
+6. Transcripts, events, session metadata, usage and optional recording persist.
+7. Post-call analysis is queued when enabled.
+
+Typical audio pipeline:
+
+    Audio input -> caller audio/noise gate -> Silero VAD -> STT
+    -> transcript gate -> turn control -> ConversationBrain
+    -> TTS -> audio output
+
+ConversationBrain (voice_runtime/brain.py) coordinates deterministic controls,
+semantic decisions, routing, workflows, knowledge retrieval and response
+generation. Generated response tokens can stream toward TTS.
+
+Important runtime behavior:
+- STT segments are buffered into caller turns; one final segment does not
+  necessarily mean the caller has finished the entire utterance.
+- Endpointing supports configurable pause windows and Smart Turn behavior.
+- Deepgram Flux has a provider-native end-of-turn path.
+- Barge-in cancels in-flight generation/synthesis and controls queued audio.
+- Caller noise, echo, unstable partial transcripts and late finals have
+  dedicated handling; changes here can affect interruption and turn timing.
+- Browser and telephony audio formats/sample rates differ. Preserve transport
+  negotiation instead of applying a single sample rate to all channels.
+- Per-call capacity, timeouts and duration limits are configurable.
+- Per-turn metrics separate STT, endpointing, LLM, TTS and overall latency.
+
+Relevant files include pipeline.py, brain.py, endpointing.py, turn_stop.py,
+barge_in.py, audio_gate.py, transcript_gate.py, smart_turn.py, tts_router.py,
+serializer.py, recording.py, turn_metrics.py and latency_breakdown.py under
+voice_runtime/.
+
+9. INTELLIGENCE, ROUTING AND BUSINESS WORKFLOWS
+
+The runtime uses deterministic controls plus a bounded structured LLM decision
+stage. GoalEngine produces validated ConversationDecision data, including
+intent, signals, slot observations, scope and next action. It has a timeout
+and a deterministic TurnRouter fallback.
+
+Safety, hangup, transfer and other call-control handling must remain effective
+around model-generated decisions. A model reply alone must not authorize an
+external action or bypass verification/business gates.
+
+LangGraph handles stateful business workflows: asking questions, capturing
+slots, branching, validation, API actions, retries, readbacks and completion.
+Audio stays in Pipecat. Ordinary knowledge/FAQ turns do not need LangGraph.
+
+Primary checkpointing uses PostgreSQL. Documented fallback uses in-memory
+state when persistent checkpointing is unavailable, which loses durability.
+
+Current-call context questions such as "Who is calling?" can be answered
+without advancing the workflow's pending step or consuming its retry budget.
+The response should use the bot's actual context and resume the pending
+question. It must not invent identity, location or private customer facts.
+
+Response modes include authored exact delivery and grounded model responses.
+For critical identifiers, amounts, facts or confirmations, preserve the
+configured exact/readback contract. API request/response schemas, when
+authored, can reject an HTTP-200 response that violates the business contract.
+
+10. SHARED ENGINE VS TENANT-SPECIFIC BEHAVIOR
+
+This is a particularly important maintenance boundary:
+- Core engine: graph execution, state, retries, generic behavior and audit.
+- Core router: generic routing composition and intent handling.
+- Language packs: caller-language words and surface forms.
+- Domain signal packs: domain meanings such as refusal or hardship.
+- Named extensions: specialized semantic slots/resolvers where necessary.
+- Workflow definitions/prompts: tenant script, nodes, business vocabulary,
+  entity rules, readbacks, API mappings and tenant-specific outcomes.
+
+Business behavior should normally be configured through workflow nodes/edges,
+prompts, intents, entities and API connections. Setup scripts author those
+records; they are not a separate runtime architecture.
+
+Do not fix one tenant's wording by inserting its name, node ID, slot name or
+language-specific regular expression into the shared engine/router.
+Behavior versions protect existing workflow semantics. Broad changes need
+replay evidence and may require a new opted-in behavior version.
+
+tests/unit/test_core_purity.py checks this boundary. tests/golden/ contains
+workflow/router replay coverage. For shared-orchestration changes, reproduce
+locally and run core-purity plus golden checks. Do not re-record expected
+results merely to make a regression disappear.
+
+11. KNOWLEDGE, DOCUMENT INGESTION AND RAG
+
+shared/knowledge/service.py exposes KnowledgeService, the common service used
+by REST testing, voice conversations and external MCP tools. Voice calls use
+this service directly; they do not make an MCP hop for internal retrieval.
+
+Ingestion flow:
+Upload -> extension/MIME/size/path/deduplication checks -> save original
+-> create queued job -> parse -> chunk -> embed -> store -> verify -> ready.
+
+Upload API: POST /api/v1/knowledge/{source_id}/documents.
+Retrieval test API: POST /api/v1/knowledge/search-test.
+Lifecycle includes status, retry, cancellation, reindex and soft deletion.
+
+Parsing supports common document/spreadsheet/text formats. OCR fallback is
+configuration controlled. Page/section metadata and document structure help
+preserve useful retrieval context. Chunks are token-aware; structured tables
+receive special handling rather than arbitrary splitting.
+
+Hybrid retrieval combines pgvector cosine search and PostgreSQL full-text
+search, with weighted fusion or optional RRF, deduplication, relevance gates,
+optional reranking and a context budget. Returned sources carry document,
+chunk, page/section and score information. Raw embeddings stay internal.
+
+Embedding implementations include OpenAI and deterministic mocks for local
+tests. Selected provider/model/dimension must remain compatible with stored
+vectors and the actual PostgreSQL schema.
+
+Knowledge scopes are bot, tenant and global. Authorized KB IDs pass through
+KnowledgeService authorization and an additional SQL tenant filter.
+Unanswerable retrieval should produce an honest fallback instead of invented
+business policy. Retrieved content is reference data, not executable policy.
+
+KMRAG parsing/retrieval ideas were ported into shared/knowledge/. KMRAG is not
+a separately deployed service here. The documentation explicitly says there
+is no implemented in-repository AgentAssist package/service.
+
+12. AI PROVIDERS, LANGUAGES AND NATURAL SPEECH
+
+The shared provider factory registers:
+- STT: OpenAI/Whisper, Deepgram, AssemblyAI, Sarvam, mock.
+- TTS: OpenAI, ElevenLabs, Azure, Google, Sarvam, Deepgram, mock.
+- LLM: OpenAI, Anthropic, Google, mock.
+
+Adapters are implemented in shared/providers/. Realtime/STT and streaming TTS
+also have runtime-specific adapters. A registered adapter is not evidence
+that its credentials, optional dependencies or voice catalog are configured.
+
+Language behavior includes STT detection, allowed-language policy, runtime
+language evidence, response language and TTS voice/engine selection. Treat
+these as related but distinct settings. Indian-language and Hinglish support
+is an important part of the product; actual capability varies by provider,
+model, voice and the bot's configured languages.
+
+Human speech naturalness uses platform defaults -> tenant overrides -> bot
+overrides, with effective-value/source display. Features include breathing,
+filler words, acknowledgements, latency cues, backchannels, delivery pacing,
+voice identity and optional ambience. Breathing and spoken filler switches
+are independent. Critical responses suppress inappropriate variation/cues.
+Unsupported provider controls must degrade through the supported delivery
+path. Streaming self-correction is intentionally disabled in the documented
+current token path.
+
+13. TELEPHONY AND EXTERNAL BUSINESS INTEGRATIONS
+
+Documented telephony integrations cover Twilio, Telnyx, Plivo, Exotel, Vaani
+and FreeSWITCH, with provider-specific webhook/media handling. Check the
+selected provider implementation before assuming feature equivalence.
+
+Media WebSocket route: /ws/telephony/{provider}/{session_id}.
+Provider webhook authentication and replay protection establish trust before
+session issuance. Dialed-number mapping resolves bot and tenant server-side.
+FreeSWITCH integration includes media serialization and ESL call control
+for supported transfer/hangup operations. Auxiliary FreeSWITCH scripts are
+present under free_sweetch/ (preserve the existing directory spelling).
+
+Business integrations use API-connection configuration and workflow tool/API
+nodes. They can pass permitted context, map responses to slots and take
+success/failure branches. Check request/response schemas, secret references,
+timeouts and idempotency before changing state-changing actions.
+
+Tenant-owned mock/fixture APIs demonstrate integrations. Their presence does
+not prove a production CRM/payment/booking system is connected. In particular,
+Haier documentation describes placeholder CRM hook URLs. OYO documentation
+describes separate party-specific bots connected through an integration
+backbone, with mock outbound-call orchestration; do not assume a general
+mid-call outbound/consult-call or bot-to-bot runtime feature exists.
+
+14. CONVERSATION RECORDS, MEMORY, USAGE AND GOVERNANCE
+
+The recording subsystem collects transcript turns, routing/events, timings
+and provider usage. Optional recordings and conversation playback are separate
+from a generic voice-sample playback feature flag.
+
+shared/post_call/ contains background analysis, structured extraction,
+next-best-action logic and recall. A durable MySQL conversation-memory row
+acts as a queued job with attempts/status/error; processing occurs after
+call finalization instead of blocking audio teardown. Tenant flags govern
+summary generation and use of previous-call summaries.
+
+Post-call analysis can feed structured summaries and conversation metadata.
+Previous-call context can be loaded for a new call when enabled. It must
+respect tenant/customer identity and permitted disclosure boundaries.
+
+The repository contains subscription, invoice, pricing, usage and reporting
+models/routes/UI. Do not infer complete external payment processing or a
+financial reconciliation system solely from the presence of a Billing page.
+
+15. SECURITY AND TENANT ISOLATION
+
+- JWT authentication and role/permission checks protect REST endpoints.
+- Tenant identity comes from verified auth/session/number mappings, not an
+  arbitrary client-supplied tenant ID. Super-admin administration has explicit
+  scope rules; global KB retrieval is not automatic access to every tenant KB.
+- Cross-tenant resource access is generally returned as sanitized not-found.
+- Opaque issued voice session IDs are verified before a pipeline is built.
+- Passwords are bcrypt-hashed. Password-policy and password-change timestamp
+  checks invalidate previously issued JWTs after a password change.
+- Secret values resolve server-side through the supported reference mechanism;
+  do not place credentials in prompts, frontend bundles or new documentation.
+- Soft delete/archive is the default. Hard deletes are blocked while
+  ALLOW_HARD_DELETE=false.
+- Audit logs cover sensitive administration, publishing, knowledge mutations,
+  session issuance and MCP calls.
+- Upload controls include MIME/extension checks, size limits, generated safe
+  paths and deduplication.
+- RAG has injection detection/sanitization and grounding instructions.
+- PII masking and credential-safety rules exist, with class-specific scope.
+- Outbound HTTP uses the project's safe HTTP/SSRF controls and configuration.
+
+These are implemented controls, not proof of formal certification. Documented
+limitations include heuristic injection detection, regex-scoped PII masking
+and availability-oriented fail-open behavior for some Redis-backed replay/
+rate-limit controls. Review the relevant current code for security work.
+
+16. MCP FOR EXTERNAL AGENTS
+
+backend/mcp_server/server.py exposes tenant-scoped knowledge tools through
+streamable HTTP at /mcp. It authenticates platform JWTs, applies tenant scope,
+rate limiting, audit and sanitized errors. Tool schemas in docs/MCP_TOOLS.md
+are the reference for a client; do not treat /mcp as an ordinary REST endpoint.
+The server is a facade over KnowledgeService, not a second knowledge engine.
+
+17. CUSTOMER / TENANT SOLUTION AREAS PRESENT IN THE REPOSITORY
+
+These are source/configuration examples, not a verified current tenant list:
+- zepto/: delivery-partner issues including MDND, onboarding-fee deductions,
+  raincoat/T-shirt/bag deductions and RTO issues.
+- haier/ and tenant/Haier/: rejected work-order follow-up, customer reason
+  confirmation, redispatch/cancel outcomes and webhook contracts.
+- honasa/: order tracking, returns/replacements and commerce support with a
+  local fixture API and setup/scenario scripts.
+- oyo/ and oyo_doc/: booking confirmation, property verification, stock-team
+  validation, shift/escalation and integration-based outcome reporting.
+- frankfinn/: seminar counselling, eligibility and booking flows.
+- au_bank/: debit-card/account-service demonstration with authored demo facts.
+- tenant/Wordline/: merchant-terminal helpdesk, merchant lookup API and
+  paper-roll/battery workflows. README records local-only work on 6 Nov 2026.
+- zee5/: subscription/payment knowledge documents and local setup support.
+- jeeves/: structured-summary artifacts and an address-capture extension.
+- shared orchestration extensions also include collections-related mPokket
+  behavior; prompt documents cover collections/Manappuram work.
+
+Customer IDs, account data, call transcripts, login details and phone numbers
+are intentionally omitted from this handoff. Locate only the specific local
+records needed for a task; do not export customer fixtures wholesale.
+
+18. IMPORTANT DIRECTORY / FILE MAP
+
+    AGENTS.md                         Owner's standing live-code restriction
+    README.md                         Product overview and local setup
+    package.json / requirements.txt   Declared dependencies and commands
+    .env.example                      Environment variable template
+    shared/config.py                  Settings and startup validation
+    backend/main.py                   Platform FastAPI entry point
+    backend/routers/                  REST API groups
+    backend/core/                     Auth, API plumbing, audit, HTTP safety
+    backend/cli.py                    Migrations and seeds
+    backend/workers/ingestion.py      Document worker
+    backend/mcp_server/               External knowledge-tool service
+    backend/alembic/                  MySQL migrations
+    backend/alembic_pg/               PostgreSQL migrations
+    shared/models/                    Control-plane model groups
+    shared/db/                        MySQL, PostgreSQL, MongoDB, Redis clients
+    shared/bot_config.py              Trusted resolved bot configuration
+    shared/voice_sessions.py          Session issuance/storage contract
+    shared/runtime_context.py         Runtime-context support
+    shared/providers/                 STT/TTS/LLM implementations and factory
+    shared/knowledge/                 Ingestion, embeddings, retrieval, security
+    shared/orchestration/             Decisions, routing, workflow execution
+    shared/orchestration/lang/        Language surface forms
+    shared/orchestration/signals/     Domain/generic semantic signals
+    shared/orchestration/extensions/  Specialized named behavior extensions
+    shared/post_call/                 Analysis, structured summaries and recall
+    shared/audio/                     Audio/text preparation utilities
+    voice_runtime/app.py              Voice HTTP/WebSocket application
+    voice_runtime/gateway.py          Telephony gateway launcher
+    voice_runtime/pipeline.py         Per-call audio pipeline
+    voice_runtime/brain.py            Conversation coordination
+    src/App.tsx                      Frontend routes and guards
+    src/services/api.ts               Typed API client
+    src/services/voiceClient.ts        Browser voice client
+    src/pages/admin/                  Platform administration UI
+    src/pages/tenant/                 Tenant UI
+    src/pages/tenant/studio/          Bot Studio components
+    tests/                            Backend unit/integration/golden/perf tests
+    scripts/dev.sh                    Local development process launcher
+    docs/                             Architecture, API and operational guides
+    TODO_BACKEND.md                    Planning record, verify against code
+
+The legacy VoiceBot/ runtime folder has been removed. Follow current
+voice_runtime/ and shared/ paths instead of recreating that old architecture.
+
+19. LOCAL DEVELOPMENT AND VALIDATION REFERENCE
+
+These are reference commands, not commands executed for this document.
+Use only a confirmed local environment and local database configuration.
+
+Initial Python environment:
+    python3 -m venv env
+    env/bin/pip install -r requirements.txt
+
+Create/configure .env from the example only when setting up a new workspace;
+preserve an existing .env and never print its secrets. Local prerequisites
+include MySQL, PostgreSQL with pgvector, Redis and MongoDB. OCR may need the
+corresponding system executable/language assets when enabled.
+
+Local schema/setup operations, only when needed and deliberately authorized:
+    env/bin/python -m backend.cli migrate
+    env/bin/python -m backend.cli pg-migrate
+    env/bin/python -m backend.cli seed
+    env/bin/python -m backend.cli seed --demo   (optional demo data)
+
+Use the repository's intended package manager/lockfile when installing
+frontend dependencies. Main development command: npm run dev.
+
+The local launcher supports:
+    ./scripts/dev.sh start
+    ./scripts/dev.sh status
+    ./scripts/dev.sh logs
+    ./scripts/dev.sh stop
+
+Launch commands manage services; do not run them against production, or stop
+an active local call without checking the impact.
+
+Useful local API routes:
+    /api/docs                  Swagger UI
+    /api/openapi.json          Generated API schema
+    /api/health                Platform liveness
+    /api/health/ready          Datastore readiness
+    /health                    Voice/gateway/MCP health, service-dependent
+
+Relevant validation commands:
+    env/bin/python -m pytest tests/unit
+    env/bin/python -m pytest -m "not perf"
+    env/bin/python -m pytest -m integration
+    env/bin/python -m pytest tests/unit/test_core_purity.py tests/golden
+    env/bin/python -m pytest tests/perf -m perf -s
+    npm run typecheck
+    npm test
+    npm run build
+
+Integration/performance tests use real local services and may write test-owned
+rows. Confirm database targets before running them. Tenant setup/scenario
+suites may have additional prerequisites and can exercise API actions.
+Prefer relevant checks for a change; no need to run every suite for a text edit.
+
+Do not quote old documentation test totals or old performance samples as
+current results. Text/mocked tests also do not prove telephone audio quality.
+This handoff does not claim that the current build/test suites were run.
+
+20. KNOWN FEATURE FLAGS / LIMITS
+
+src/services/flags.ts currently declares:
+    liveCallFeed: false
+    voiceSamplePlayback: false
+    scheduledPublish: false
+    knowledgeConnectors: false
+    tenantCostVisibility: true
+    exportGeneration: false
+
+Meaning: realtime live-feed UI, generic voice-sample playback UI, scheduled
+publishing, knowledge-connector OAuth and queued export generation should
+not be described as enabled just because a UI placeholder exists. Some
+related capabilities exist through other contracts: conversation recording
+playback, governed TTS preview and synchronous report/export downloads are
+distinct. Verify each feature's route and implementation independently.
+
+Other practical limits:
+- Per-call state is in the worker handling that socket; scaling new call
+  admission does not migrate an ongoing audio connection.
+- Persisted workflow state does not preserve a disconnected audio socket.
+- Provider support is constrained by credentials, catalog and capabilities.
+- A saved/published tenant config in documentation may differ from the current
+  local or live database. Historical README status is not a fresh audit.
+- The implementation and generated route/schema definitions take precedence
+  over stale counts, examples and roadmap statements in documentation.
+
+21. READING GUIDE FOR FOLLOW-UP WORK
+
+Overall design: README.md, docs/ARCHITECTURE.md,
+docs/architecture/orchestration-layering.md.
+
+Voice behavior: docs/VOICE_RUNTIME.md, docs/VOICE_PROVIDERS.md,
+docs/STT_LANGUAGE_DETECTION.md, docs/HUMAN_SPEECH_NATURALNESS.md.
+
+Workflows/context: docs/WORKFLOWS.md, docs/WORKFLOW_VALUE_READBACK.md,
+docs/CONTEXT_QUESTIONS.md.
+
+Knowledge: docs/KNOWLEDGE_AND_RAG.md, docs/PGVECTOR.md, docs/MCP_TOOLS.md.
+
+Security and setup: docs/MULTI_TENANCY.md, docs/SECURITY.md,
+docs/ENVIRONMENT.md, docs/DEPLOYMENT.md, docs/TESTING.md,
+docs/PERFORMANCE_TESTING.md.
+
+Telephony: docs/TELEPHONY.md, docs/VAANI_INTEGRATION.md.
+API contracts: docs/api/README.md and its linked per-area references.
+Customer work: the relevant tenant README, approved source script, workflow,
+prompt, integration contract and scenario tests.
+
+22. HOW CHATGPT SHOULD HELP WITH THIS PROJECT
+
+- Treat this as an existing multi-tenant product with shared behavior and
+  tenant-specific configuration, not a blank-slate chatbot project.
+- Explain in clear Hindi/Hinglish unless another language is requested.
+- Before suggesting a fix, identify whether the issue belongs to frontend,
+  API, trusted configuration, voice/audio, model decision, workflow definition,
+  language/domain pack, provider, retrieval or external integration.
+- Request the smallest relevant current file/error/event excerpt when this
+  snapshot cannot establish the answer. Do not invent unseen implementation.
+- Preserve tenant isolation, role checks, secret references, audit, release
+  snapshots, API contracts and the shared import direction.
+- Keep tenant wording/business facts out of the generic engine.
+- Distinguish a prompt/config fix from an engine or audio fix. A prompt alone
+  cannot reliably repair transport echo, late STT finals or playback races.
+- For bugs, give the trigger, root cause evidence, local fix, relevant tests
+  and remaining uncertainty. Check adjacent tenant behavior for shared changes.
+- Never expose .env values, passwords, API tokens or unnecessary customer data.
+- Never modify/deploy live code or restart live services under this document.
+- Reading this file supplies conversation context, not automatic persistent
+  memory across every future chat; include it again where necessary.
+
+END OF PROJECT CONTEXT

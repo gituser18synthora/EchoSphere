@@ -75,6 +75,31 @@ def _plan(number="+91 98765 43210", **kwargs):
 
 
 class TestPhoneNumber:
+    @pytest.mark.parametrize("number", [
+        "6000000001", "7000000001", "8000000001", "9876543210",
+        "+919876543210", "919876543210", "09876543210",
+        "+91 (98765) 43-210", " 98765 43210 ",
+    ])
+    def test_supported_mobile_formats_build_the_same_national_destination(self, number):
+        plan = _plan(number=number)
+        expected = national_number(normalize_phone_number(number))
+        assert len(expected) == 10
+        assert plan.variables["customerNumber"] == expected
+        assert plan.dial_string == f"sofia/external/0{expected}@kam-freeswitch.edas.tech"
+
+    @pytest.mark.parametrize("bad", [
+        "12345678", "987654321", "98765432101", "1234567890", "5123456789",
+        "0000000000", "+915123456789", "+91987654321", "+9198765432100",
+        "+14155550123", "+9876543210", "00919876543210", "009876543210",
+        "98765abc10", "9876543210 ext 12", "98765\n43210", "9876543210\n",
+        "98765\t43210", "9" * 16,
+    ])
+    def test_invalid_mobile_is_rejected_before_an_originate_can_be_built(self, bad):
+        with pytest.raises(OriginateValidationError) as exc:
+            _plan(number=bad)
+        assert exc.value.errors[0]["field"] == "phoneNumber"
+        assert "10 digits starting with 6–9" in exc.value.errors[0]["message"]
+
     def test_spaces_dashes_and_brackets_are_dropped(self):
         assert normalize_phone_number("+91 (98765) 43-210") == "+919876543210"
         assert normalize_phone_number("09876543210") == "09876543210"

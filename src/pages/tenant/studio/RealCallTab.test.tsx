@@ -2,9 +2,9 @@
    backend fills the dialer parameters and the bot's customer test data; the
    view sends only the number (and an optional ring timeout). */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RealCallTab, { normalizePhoneInput, phoneInputError } from "@/pages/tenant/studio/RealCallTab";
 import * as api from "@/services/api";
 import type { RealCallDefaults, RealCallJob, VoiceBot } from "@/types/domain";
@@ -38,6 +38,8 @@ const JOB: RealCallJob = {
 
 const mocked = vi.mocked(api);
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(() => {
   mocked.getRealCallDefaults.mockReset();
   mocked.startRealCall.mockReset();
@@ -52,12 +54,99 @@ describe("helpers", () => {
   it("normalizes and validates the number like the backend", () => {
     expect(normalizePhoneInput("+91 (98765) 43-210")).toBe("+919876543210");
     expect(phoneInputError("")).toMatch(/Enter/);
-    expect(phoneInputError("12345")).toMatch(/8 to 15/);
+    expect(phoneInputError("12345")).toMatch(/10 digits/);
     expect(phoneInputError("+91 98765 43210")).toBeUndefined();
+  });
+
+  it.each([
+    "6000000001", "7000000001", "8000000001", "9876543210",
+    "+919876543210", "919876543210", "09876543210", "+91 (98765) 43-210",
+  ])("accepts the supported Indian mobile format %s", (number) => {
+    expect(phoneInputError(number)).toBeUndefined();
+  });
+
+  it.each([
+    "12345678", "987654321", "98765432101", "1234567890", "5123456789",
+    "0000000000", "+915123456789", "+91987654321", "+9198765432100",
+    "+14155550123", "+9876543210", "00919876543210", "009876543210",
+    "98765abc10", "9876543210 ext 12", "98765\n43210", "9876543210\n",
+    "98765\t43210", "9".repeat(16),
+  ])("rejects an invalid mobile number %s", (number) => {
+    expect(phoneInputError(number)).toMatch(/10 digits starting with 6–9/);
   });
 });
 
 describe("RealCallTab", () => {
+  it("shows a number error and blocks dialing until the destination is corrected", async () => {
+    render(<RealCallTab bot={BOT} active />);
+    await screen.findByText(/call from/);
+    const phone = screen.getByTestId("real-call-phone");
+    fireEvent.click(screen.getByTestId("real-call-confirm"));
+    for (const number of ["12345678", "1234567890", "98765432101", "+14155550123", "98765abc10"]) {
+      fireEvent.change(phone, { target: { value: number } });
+      expect(phone).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByText(/Enter a valid Indian mobile number/)).toBeInTheDocument();
+      expect(screen.getByTestId("real-call-start")).toBeDisabled();
+      fireEvent.click(screen.getByTestId("real-call-start"));
+    }
+    expect(mocked.startRealCall).not.toHaveBeenCalled();
+    fireEvent.change(phone, { target: { value: "+91 (98765) 43-210" } });
+    expect(phone).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText(/Enter a valid Indian mobile number/)).toBeNull();
+    expect(screen.getByTestId("real-call-start")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("real-call-start"));
+    await waitFor(() => expect(mocked.startRealCall).toHaveBeenCalledWith(BOT.id, { phoneNumber: "+919876543210" }));
+  });
+
+  async function startConnectedCall() {
+    mocked.startRealCall.mockResolvedValue({ ...JOB, status: "answered" });
+    vi.useFakeTimers();
+    await act(async () => { render(<RealCallTab bot={BOT} active />); });
+    fireEvent.change(screen.getByTestId("real-call-phone"), { target: { value: "9876543210" } });
+    fireEvent.click(screen.getByTestId("real-call-confirm"));
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-start")); });
+    expect(screen.getByTestId("real-call-hangup")).toBeInTheDocument();
+  }
+
+  it("returns to Start Call and freezes the duration after the caller hangs up", async () => {
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "answered" });
+    await startConnectedCall();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent("00:05");
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "ended", detail: "The call has ended." });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByTestId("real-call-start")).toBeInTheDocument();
+    const finalStatus = screen.getByTestId("real-call-status").textContent;
+    const polls = mocked.getRealCallStatus.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(screen.getByTestId("real-call-status").textContent).toBe(finalStatus);
+    expect(mocked.getRealCallStatus).toHaveBeenCalledTimes(polls);
+  });
+
+  it("ignores an answered poll arriving after a successful Studio hangup", async () => {
+    let resolvePoll!: (job: RealCallJob) => void;
+    mocked.getRealCallStatus.mockImplementation(() => new Promise((resolve) => { resolvePoll = resolve; }));
+    mocked.hangupRealCall.mockResolvedValue({ ...JOB, status: "hungup", detail: "Ended from the Studio." });
+    await startConnectedCall();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-hangup")); });
+    expect(screen.getByTestId("real-call-start")).toBeInTheDocument();
+    await act(async () => { resolvePoll({ ...JOB, status: "answered" }); });
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent("Ended");
+  });
+
+  it("keeps checking remote hangup after a call exceeds fifteen minutes", async () => {
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "answered" });
+    await startConnectedCall();
+    await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60 * 1000); });
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "ended", detail: "The call has ended." });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByTestId("real-call-start")).toBeInTheDocument();
+  });
+
   it("fetches readiness only once shown and never on mount while hidden", async () => {
     const { rerender } = render(<RealCallTab bot={BOT} active={false} />);
     expect(mocked.getRealCallDefaults).not.toHaveBeenCalled();
@@ -89,7 +178,7 @@ describe("RealCallTab", () => {
     await user.click(screen.getByTestId("real-call-confirm"));
     expect(start).toBeDisabled();
     await user.tab();
-    expect(screen.getByText(/8 to 15 digits/)).toBeInTheDocument();
+    expect(screen.getByText(/Enter a valid Indian mobile number/)).toBeInTheDocument();
 
     await user.clear(screen.getByTestId("real-call-phone"));
     await user.type(screen.getByTestId("real-call-phone"), "+91 98765 43210");

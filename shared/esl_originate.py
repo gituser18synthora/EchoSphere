@@ -19,8 +19,9 @@ Security notes
   line and inside the ``{...}`` variable block). Control characters are
   rejected; a single quote is replaced by the typographic apostrophe so a
   customer name like O'Brien can never terminate the quoted value.
-- The dialed number is normalized to digits (optional leading ``+``) and
-  must be 8–15 digits; nothing else ever reaches the dial string.
+- The dialed number must be a 10-digit Indian mobile starting with 6–9,
+  optionally prefixed with ``+91``, ``91`` or ``0``. Formatting separators
+  are removed; control characters and other content are rejected.
 - The dial string and the dialplan target come from configuration and are
   validated as single tokens: ``<exten> XML <context>`` (what the demo dialer
   sends: the CLI as exten into the ``voicebot_calling`` context) or the
@@ -112,8 +113,11 @@ CUSTOMER_VARIABLE_PREFIX = "vb_"
 # header form (``sip_h_route-header``).
 _ESL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 _CUSTOMER_KEY = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,36}$")  # + "vb_" ≤ 40
-_PHONE_DIGITS = re.compile(r"^\+?[0-9]{8,15}$")
-_INDIA_PREFIX = "+91"
+_INDIAN_MOBILE = re.compile(r"(?:(?:\+?91)|0)?[6-9][0-9]{9}")
+MOBILE_NUMBER_ERROR = (
+    "Enter a valid Indian mobile number: 10 digits starting with 6–9, "
+    "optionally prefixed with +91, 91 or 0."
+)
 _DIAL_TOKEN = re.compile(r"^[A-Za-z0-9_.:@/+\-\[\]=,;!~*$^]+$")
 _APPLICATION = re.compile(r"^&[A-Za-z0-9_]+\([^\s{}()'\"]*\)$")
 # ``<exten> <dialplan> <context>`` — exten after placeholder filling.
@@ -135,15 +139,18 @@ class OriginateValidationError(ValueError):
 
 
 def normalize_phone_number(raw: object) -> str:
-    """Digits with an optional leading ``+``; spaces, dashes and brackets
-    are dropped. Anything else (letters, ``;``, SIP syntax) is rejected."""
-    text = str(raw or "").strip()
-    text = re.sub(r"[\s().-]", "", text)
-    if not _PHONE_DIGITS.match(text):
+    """Validate this dialer's Indian mobile format before building a command.
+
+    Preserve accepted prefixes here; ``national_number`` strips them when
+    rendering customerNumber and the dial string. Caller IDs use their own
+    normalization and are not subject to the mobile-only destination rule.
+    """
+    original = str(raw or "")
+    text = re.sub(r"[\s().-]", "", original)
+    if len(original) > 40 or _CONTROL.search(original) or not _INDIAN_MOBILE.fullmatch(text):
         raise OriginateValidationError([{
             "field": "phoneNumber",
-            "message": "Enter a phone number with 8 to 15 digits "
-                       "(optional leading +, spaces and dashes allowed).",
+            "message": MOBILE_NUMBER_ERROR,
         }])
     return text
 

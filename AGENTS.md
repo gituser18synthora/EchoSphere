@@ -11,3 +11,14 @@ workspace.**
 - Earlier authorization to deploy the MDND English fix was specific to that
   completed task and does not authorize future live changes.
 - Keep this restriction in force unless the user explicitly revises it.
+
+# User preference: language for prompts and instructions
+
+The user established this standing preference on 2026-11-09:
+
+- Always write prompts and instructions provided to the user in English,
+  including reusable prompts, project instructions, and step-by-step directions.
+- Explanations and general conversation may remain in Hindi/Hinglish unless
+  the user requests another language.
+- Apply this preference in future conversations for this workspace without
+  asking the user to repeat it, unless the user explicitly changes it.

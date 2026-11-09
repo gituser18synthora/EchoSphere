@@ -75,6 +75,7 @@ router = APIRouter(tags=["Testing"])
 JOB_TTL_SECONDS = 3600
 _JOB_KEY = "real_call:{job_id}"
 _MAX_WAIT_CAP_SECONDS = 180.0
+_STATUS_PROBE_TIMEOUT_SECONDS = 2.0
 _background_jobs: set[asyncio.Task] = set()
 
 # Built-in values that mirror the demo dialer's voicebot originate
@@ -371,6 +372,41 @@ def _conversation_for(db: Session, bot: VoiceBot, call_uuid: str) -> dict | None
     }
 
 
+async def _refresh_answered_status(job: dict) -> None:
+    """Originate success means answered, not that the call is still live.
+
+    Prefer a finalized conversation; otherwise inspect the originated channel
+    without altering it. Only an explicit missing-channel reply proves hangup:
+    an unavailable ESL socket must never be interpreted as a disconnected call.
+    This reconciliation is response-only so a poll cannot overwrite a concurrent
+    Studio hangup/originate result in Redis.
+    """
+    if job.get("status") != "answered":
+        return
+    conversation = job.get("conversation") or {}
+    ended = conversation.get("status") in {"completed", "ended", "failed", "cancelled"}
+    if not ended:
+        call_uuid = job.get("channelUuid") or job.get("originationUuid") or ""
+        if not fs.valid_call_uuid(call_uuid) or not fs.esl_configured():
+            return
+        client = None
+        try:
+            client = fs.ESLClient(timeout=_STATUS_PROBE_TIMEOUT_SECONDS)
+            reply = await asyncio.wait_for(
+                client.api(f"uuid_exists {call_uuid}"),
+                timeout=_STATUS_PROBE_TIMEOUT_SECONDS,
+            )
+            ended = reply.strip().lower() == "false"
+        except (ProviderError, OSError, TimeoutError):
+            logger.warning("Could not refresh real call status job=%s", job["jobId"])
+        finally:
+            if client is not None:
+                await client.close()
+    if ended:
+        job["status"] = "ended"
+        job["detail"] = "The call has ended."
+
+
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
@@ -569,6 +605,7 @@ async def real_call_status(
     bot = _bot_checked(db, bot_id, user)
     job = await _job_checked(db, bot, job_id)
     job["conversation"] = _conversation_for(db, bot, job.get("originationUuid") or "")
+    await _refresh_answered_status(job)
     return ok(job)
 
 
