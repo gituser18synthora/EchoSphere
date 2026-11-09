@@ -1,0 +1,182 @@
+[
+  {
+    "clip": "incident_later",
+    "label": "background",
+    "review": "user_confirmed",
+    "classification": "caller",
+    "interrupted": true,
+    "recorded_interrupted": true,
+    "accepted": true
+  },
+  {
+    "clip": "incident_now_1",
+    "label": "background_candidate",
+    "review": "unverified",
+    "classification": "background_suspect",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "incident_now_2",
+    "label": "background_candidate",
+    "review": "unverified",
+    "classification": "background_suspect",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "incident_identity",
+    "label": "caller_candidate",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "incident_yes",
+    "label": "caller_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "incident_tomorrow",
+    "label": "caller_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "incident_soft_ok",
+    "label": "soft_caller_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "recent_normal_1",
+    "label": "caller_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "recent_normal_2",
+    "label": "caller_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "start_incident",
+    "label": "call_start_unknown",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "start_quiet",
+    "label": "call_start_unknown",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "start_hello",
+    "label": "call_start_unknown",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "start_latest",
+    "label": "call_start_unknown",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "soft_recent_1",
+    "label": "soft_caller_candidate",
+    "review": "unverified",
+    "classification": "background_suspect",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "soft_recent_2",
+    "label": "soft_caller_candidate",
+    "review": "unverified",
+    "classification": "background_suspect",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "soft_overlap",
+    "label": "soft_overlap_candidate",
+    "review": "unverified",
+    "classification": "caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "overlap_words",
+    "label": "caller_interruption_candidate",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": true,
+    "recorded_interrupted": false,
+    "accepted": true
+  },
+  {
+    "clip": "overlap_no",
+    "label": "caller_interruption_candidate",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": true,
+    "recorded_interrupted": true,
+    "accepted": true
+  },
+  {
+    "clip": "continuous_review_1",
+    "label": "continuous_speech_review",
+    "review": "unverified",
+    "classification": "unknown",
+    "interrupted": true,
+    "recorded_interrupted": true,
+    "accepted": true
+  },
+  {
+    "clip": "continuous_review_2",
+    "label": "continuous_speech_review",
+    "review": "unverified",
+    "classification": "background_suspect/caller",
+    "interrupted": false,
+    "recorded_interrupted": false,
+    "accepted": true
+  }
+]

@@ -36,6 +36,11 @@ const JOB: RealCallJob = {
   dialString: "sofia/external/+919876543210@dialer.test", waitSeconds: 90, startedAt: "2026-11-05T10:00:00Z",
 };
 
+const COMPLETED_CONVERSATION = {
+  id: "cv_real_call", sessionId: "vs_real_call", botId: BOT.id,
+  status: "completed", startedAt: null, durationSec: 2, disposition: null, language: "hi-IN",
+};
+
 const mocked = vi.mocked(api);
 
 afterEach(() => vi.useRealTimers());
@@ -113,7 +118,7 @@ describe("RealCallTab", () => {
     await startConnectedCall();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.getByTestId("real-call-status")).toHaveTextContent("00:05");
-    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "ended", detail: "The call has ended." });
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "ended", detail: "The call has ended.", conversation: COMPLETED_CONVERSATION });
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
     expect(screen.queryByTestId("real-call-hangup")).toBeNull();
     expect(screen.getByTestId("real-call-start")).toBeInTheDocument();
@@ -122,6 +127,75 @@ describe("RealCallTab", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(screen.getByTestId("real-call-status").textContent).toBe(finalStatus);
     expect(mocked.getRealCallStatus).toHaveBeenCalledTimes(polls);
+  });
+
+  it("loads the delayed conversation after remote hangup without restarting the call", async () => {
+    mocked.getRealCallStatus
+      .mockResolvedValueOnce({ ...JOB, status: "ended", conversation: null })
+      .mockResolvedValueOnce({ ...JOB, status: "answered", conversation: null })
+      .mockResolvedValue({ ...JOB, status: "answered", conversation: COMPLETED_CONVERSATION });
+    await startConnectedCall();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByText("Saving conversation details…")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent("Ended");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent("Conversation completed · 2s");
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent(COMPLETED_CONVERSATION.id);
+    expect(screen.getByRole("link", { name: "open Conversations" })).toHaveAttribute(
+      "href", `/t/conversations?conversationId=${COMPLETED_CONVERSATION.id}`,
+    );
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    const polls = mocked.getRealCallStatus.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(mocked.getRealCallStatus).toHaveBeenCalledTimes(polls);
+  });
+
+  it("fetches the conversation after Studio hangup even if Redis still says answered", async () => {
+    mocked.hangupRealCall.mockResolvedValue({ ...JOB, status: "hungup", conversation: null });
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "answered", conversation: COMPLETED_CONVERSATION });
+    await startConnectedCall();
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-hangup")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByTestId("real-call-start")).toBeInTheDocument();
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+    expect(screen.getByRole("link", { name: "open Conversations" })).toHaveAttribute(
+      "href", `/t/conversations?conversationId=${COMPLETED_CONVERSATION.id}`,
+    );
+  });
+
+  it("bounds conversation lookup and allows a manual retry", async () => {
+    mocked.hangupRealCall.mockResolvedValue({ ...JOB, status: "hungup", conversation: null });
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "answered", conversation: null });
+    await startConnectedCall();
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-hangup")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(120000); });
+    const polls = mocked.getRealCallStatus.mock.calls.length;
+    expect(screen.getByRole("button", { name: "Refresh conversation" })).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(mocked.getRealCallStatus).toHaveBeenCalledTimes(polls);
+    mocked.getRealCallStatus.mockResolvedValue({ ...JOB, status: "hungup", conversation: COMPLETED_CONVERSATION });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh conversation" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByRole("link", { name: "open Conversations" })).toBeInTheDocument();
+    expect(screen.queryByTestId("real-call-hangup")).toBeNull();
+  });
+
+  it("does not attach an older call's delayed conversation to a new call", async () => {
+    let resolvePoll!: (job: RealCallJob) => void;
+    mocked.hangupRealCall.mockResolvedValue({ ...JOB, status: "hungup", conversation: null });
+    mocked.getRealCallStatus.mockImplementation(() => new Promise((resolve) => { resolvePoll = resolve; }));
+    await startConnectedCall();
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-hangup")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    mocked.startRealCall.mockResolvedValue({ ...JOB, jobId: "next-call", status: "dialing" });
+    fireEvent.click(screen.getByTestId("real-call-confirm"));
+    await act(async () => { fireEvent.click(screen.getByTestId("real-call-start")); });
+    await act(async () => { resolvePoll({ ...JOB, status: "ended", conversation: COMPLETED_CONVERSATION }); });
+    expect(screen.getByTestId("real-call-status")).toHaveTextContent("Dialing");
+    expect(screen.queryByRole("link", { name: "open Conversations" })).toBeNull();
   });
 
   it("ignores an answered poll arriving after a successful Studio hangup", async () => {

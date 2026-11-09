@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { flagConversation, getConversation, listConversations, simulateAction } from "@/services/api";
 import { getToken } from "@/services/http";
@@ -77,6 +77,39 @@ export default function Conversations() {
   const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
   const money = useDisplayCurrency(showCosts);
   const [open, setOpen] = useState<Conversation | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedConversationId = searchParams.get("conversationId");
+  const [linkedConversationLoading, setLinkedConversationLoading] = useState(false);
+  const [linkedConversationError, setLinkedConversationError] = useState<string | null>(null);
+  const [linkedConversationRetry, setLinkedConversationRetry] = useState(0);
+
+  // Resolve a direct link independently of the paginated/filtered list.
+  // The detail API applies the same tenant authorization as a row selection.
+  useEffect(() => {
+    if (!linkedConversationId) {
+      setLinkedConversationLoading(false);
+      setLinkedConversationError(null);
+      return;
+    }
+    let cancelled = false;
+    setOpen(null);
+    setLinkedConversationLoading(true);
+    setLinkedConversationError(null);
+    getConversation(linkedConversationId)
+      .then((conversation) => { if (!cancelled) setOpen(conversation); })
+      .catch((error: Error) => { if (!cancelled) setLinkedConversationError(error.message); })
+      .finally(() => { if (!cancelled) setLinkedConversationLoading(false); });
+    return () => { cancelled = true; };
+  }, [linkedConversationId, linkedConversationRetry]);
+
+  const clearConversationLink = () => {
+    if (!linkedConversationId) return;
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("conversationId");
+      return next;
+    }, { replace: true });
+  };
   const [filter, setFilter] = useState("all");
   const [botFilter, setBotFilter] = useState("all");
   const [query, setQuery] = useState("");
@@ -145,6 +178,11 @@ export default function Conversations() {
         </div>
       </div>
 
+      {linkedConversationLoading && <div className="t-sub" role="status">Loading conversation…</div>}
+      {linkedConversationError && (
+        <ErrorState message={linkedConversationError} onRetry={() => setLinkedConversationRetry((value) => value + 1)} />
+      )}
+
       <Tabs
         tabs={[
           { id: "all", label: "All", count: q.data?.length },
@@ -179,7 +217,7 @@ export default function Conversations() {
       <div className="card conversation-list-card">
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
-          onRowClick={(c) => setOpen(c)}
+          onRowClick={(c) => { clearConversationLink(); setOpen(c); }}
           empty={{ icon: "headphones", title: "No conversations match", body: "Try widening the filters or the date range — new calls appear here within seconds of ending." }}
           columns={[
             {
@@ -267,7 +305,7 @@ export default function Conversations() {
       {/* The page owns the currency selection and passes it down: a second
           useDisplayCurrency() instance in the drawer would hold its own state
           and could show a different currency than the list behind it. */}
-      <ConversationDrawer conv={open} money={money} onClose={() => setOpen(null)} onUpdate={(c) => { setOpen(c); q.reload(); }} />
+      <ConversationDrawer conv={open} money={money} onClose={() => { clearConversationLink(); setOpen(null); }} onUpdate={(c) => { setOpen(c); q.reload(); }} />
     </>
   );
 }

@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Conversations from "@/pages/tenant/Conversations";
 import * as api from "@/services/api";
@@ -145,6 +145,42 @@ describe("Tenant conversation review", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
+  });
+
+  it("opens a directly linked conversation even when it is outside the listed page", async () => {
+    vi.mocked(api.listConversations).mockResolvedValue([]);
+    render(<MemoryRouter initialEntries={["/t/conversations?conversationId=cv-001"]}><Conversations /></MemoryRouter>);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("cv-001")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Namaste, this is Billing Bot.")).toBeInTheDocument();
+    expect(api.getConversation).toHaveBeenCalledWith("cv-001");
+  });
+
+  it("removes the conversation link on close while preserving other query parameters", async () => {
+    const user = userEvent.setup();
+    function LocationProbe() {
+      return <output data-testid="location-search">{useLocation().search}</output>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/t/conversations?conversationId=cv-001&keep=1"]}>
+        <Conversations /><LocationProbe />
+      </MemoryRouter>,
+    );
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Close panel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("location-search")).toHaveTextContent("?keep=1");
+  });
+
+  it("shows a retryable error when a direct conversation link is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getConversation).mockRejectedValueOnce(new Error("Conversation not found."));
+    render(<MemoryRouter initialEntries={["/t/conversations?conversationId=cv-001"]}><Conversations /></MemoryRouter>);
+    expect(await screen.findByText("Conversation not found.")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("cv-001")).toBeInTheDocument();
   });
 
   it("shows the call date and hides the QA score column", async () => {

@@ -42,6 +42,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
+from voice_runtime.frames import TranscriptPlayoutFrame
 
 from shared.audio.pcm import resample_pcm, silence_pcm
 from shared.audio.text import has_speakable_text, sanitize_for_tts, strip_foreign_scripts
@@ -700,6 +701,8 @@ class StreamingTTSRouter(TTSService):
                 state = _Generation(engine=engine, provider=provider)
                 state.marker, self._pending_marker = self._pending_marker, None
                 self._generations[context_id] = state
+                if getattr(self._recorder, "transcript_playout_only", False):
+                    await self.append_to_audio_context(context_id, TranscriptPlayoutFrame(context_id=context_id))
                 if (self._native_breathing(engine)
                         and self._recent_latency_filler()):
                     # The latency filler already breathed into this reply's
@@ -1234,6 +1237,11 @@ class StreamingTTSRouter(TTSService):
         self._subgenerations.pop(sub_id, None)
         if state.active != sub_id:
             return  # stale final from a replaced (fallback) dispatch
+        if state.active_got_audio and getattr(self._recorder, "transcript_playout_only", False):
+            await self.append_to_audio_context(context_id, TranscriptPlayoutFrame(
+                context_id=context_id, text=" ".join(state.texts[:state.seq]),
+                audio_bytes=state.audio_bytes, sample_rate=self.sample_rate,
+            ))
         state.active = None
         # Only an audibly-completed real sentence owes the next one a pause —
         # never a mid-sentence flush fragment, never a silent segment, and a
@@ -1352,9 +1360,17 @@ class StreamingTTSRouter(TTSService):
                 ),
             )
         if self.audio_context_available(context_id):
+            # The transport flushes its trailing partial audio chunk on stop.
+            # Completion evidence must follow that flush, never precede it.
             await self.append_to_audio_context(
                 context_id, TTSStoppedFrame(context_id=context_id)
             )
+            if not failed and state.audio_bytes and getattr(self._recorder, "transcript_playout_only", False):
+                await self.append_to_audio_context(context_id, TranscriptPlayoutFrame(
+                    context_id=context_id,
+                    text=" ".join(state.texts),
+                    complete=True, audio_bytes=state.audio_bytes, sample_rate=self.sample_rate,
+                ))
             await self.remove_audio_context(context_id)
         if state.marker is not None:
             # Tell the brain the marked reply's synthesis is complete (all

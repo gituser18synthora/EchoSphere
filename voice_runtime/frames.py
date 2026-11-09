@@ -10,6 +10,20 @@ from uuid import uuid4
 from pipecat.frames.frames import DataFrame, OutputAudioRawFrame, SystemFrame
 
 
+@dataclass
+class TranscriptPlayoutFrame(DataFrame):
+    """Provider-completed text queued behind its audio, consumed after output.
+
+    This is transport-delivery evidence, not acknowledgement from the far end.
+    An interrupted partial sentence without word alignment is never estimated.
+    """
+    context_id: str = ""
+    text: str = ""
+    complete: bool = False
+    audio_bytes: int = 0
+    sample_rate: int = 8000
+
+
 @dataclass(eq=False)
 class FillerAudioOwner:
     """One filler turn's identity, shared by its queued PCM and cancellation.

@@ -77,7 +77,7 @@ from pipecat.turns.user_start.base_user_turn_start_strategy import (
     BaseUserTurnStartStrategy,
 )
 
-from voice_runtime.announcements import speech_word_count, speech_words
+from voice_runtime.announcements import meaningful_speech_words, speech_word_count, speech_words
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +149,14 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         provisional_duck: bool = False, commit_secs: float = 1.0,
         on_provisional=None, on_provisional_change=None,
         on_confirmed=None, speech_classifier=None, enforce_background: bool = True,
-        on_suppressed=None, **kwargs
+        on_suppressed=None, require_transcript: bool = False,
+        meaningful_words: int = 2, start_protection: bool = False,
+        caller_reference_ready=None, **kwargs
     ):
+        self._require_transcript = bool(require_transcript)
+        self._meaningful_words = max(1, int(meaningful_words))
+        self._start_protection = bool(start_protection)
+        self._reference_ready = caller_reference_ready
         super().__init__(**kwargs)
         self._min_words = max(1, int(min_words))
         self._vad_fallback_secs = max(0.0, float(vad_fallback_secs))
@@ -205,12 +211,13 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         (``_INTERIM_VAD_MIN_S``), and the interim's first ``min_words`` words
         did not change since the previous interim of this speech episode.
         """
-        words = tuple(speech_words(text or ""))
-        if len(words) < self._min_words:
+        words = tuple(meaningful_speech_words(text or "") if self._require_transcript else speech_words(text or ""))
+        threshold = self._meaningful_words if self._require_transcript else self._min_words
+        if len(words) < threshold:
             self._interim_words.append(words)
             return None
-        head = words[: self._min_words]
-        previous = self._interim_words[-1][: self._min_words] if self._interim_words else None
+        head = words[:threshold]
+        previous = self._interim_words[-1][:threshold] if self._interim_words else None
         self._interim_words.append(words)
         del self._interim_words[:-_INTERIM_HISTORY]
         sustained = self._sustained()
@@ -250,6 +257,8 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
     def _background_suspect(self, arbiter: str) -> bool:
         """Whether the live gated speech reads as background and, when
         enforcing, must NOT confirm this interruption."""
+        if self._startup_hold():
+            return True
         if self._speech_classifier is None:
             return False
         try:
@@ -273,6 +282,14 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             except Exception:  # noqa: BLE001 — evidence must never block a turn
                 logger.debug("barge-in suppression hook failed", exc_info=True)
         return self._enforce_background
+
+    def _startup_hold(self) -> bool:
+        if not self._start_protection:
+            return False
+        try:
+            return self._reference_ready is None or not self._reference_ready()
+        except Exception:
+            return True  # Opted-in conservative startup; do not guess a speaker.
 
     async def _confirm(self, why: str) -> ProcessFrameResult:
         sustained = self._sustained()
@@ -322,7 +339,7 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
                 self._vad_speech_since = time.monotonic()
                 self._last_suppressed_at = None
                 self._interim_words = []     # stability is judged per speech episode
-            if self._provisional_duck and not self._background_suspect_live_for_pause():
+            if self._provisional_duck and not self._require_transcript and not self._startup_hold() and not self._background_suspect_live_for_pause():
                 await self._begin_provisional()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             # The speech was not sustained through the fallback window; a new
@@ -344,17 +361,19 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             if self._bot_speaking:
                 # A telephony recording notice is not the caller interrupting:
                 # only the words left after stripping it count toward the gate.
-                words = speech_word_count(frame.text or "")
-                if words >= self._min_words:
+                words = len(meaningful_speech_words(frame.text or "")) if self._require_transcript else speech_word_count(frame.text or "")
+                threshold = self._meaningful_words if self._require_transcript else self._min_words
+                if words >= threshold:
                     if self._background_suspect("transcript"):
                         return ProcessFrameResult.CONTINUE
                     return await self._confirm(
-                        f"transcript ({words} words >= {self._min_words})"
+                        f"transcript ({words} words >= {threshold})"
                     )
 
         window = self._sustain_window
         if (
             self._bot_speaking
+            and not self._require_transcript
             and window > 0
             and self._vad_speech_since is not None
             and time.monotonic() - self._vad_speech_since >= window

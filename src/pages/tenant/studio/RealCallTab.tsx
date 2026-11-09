@@ -17,6 +17,7 @@ const PHONE_RE = /^(?:(?:\+?91)|0)?[6-9][0-9]{9}$/;
 const PHONE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
 const PHONE_ERROR = "Enter a valid Indian mobile number: 10 digits starting with 6–9, optionally prefixed with +91, 91 or 0.";
 const POLL_MS = 2500;
+const CONVERSATION_WAIT_MS = 120_000;
 const RING_MIN = 10;
 const RING_MAX = 120;
 
@@ -46,6 +47,12 @@ export function statusTone(status: string): string {
 const isLive = (job: RealCallJob | null): boolean =>
   job?.status === "dialing" || job?.status === "answered";
 
+const isEnded = (job: RealCallJob | null): boolean =>
+  job?.status === "ended" || job?.status === "hungup";
+
+const hasFinalConversation = (job: RealCallJob): boolean =>
+  Boolean(job.conversation && ["completed", "ended", "failed", "cancelled"].includes(job.conversation.status));
+
 export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: boolean }) {
   const [defaults, setDefaults] = useState<RealCallDefaults | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -59,6 +66,8 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
   const [hangingUp, setHangingUp] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
+  const [conversationLookupExpired, setConversationLookupExpired] = useState(false);
+  const [conversationLookupAttempt, setConversationLookupAttempt] = useState(0);
 
   /* Readiness (ESL configured, bot publishable, caller id) is fetched the
      first time the view is shown — never on page open, and it dials nothing. */
@@ -94,6 +103,45 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
     id = window.setTimeout(() => void poll(), POLL_MS);
     return () => { cancelled = true; window.clearTimeout(id); };
   }, [bot.id, job?.jobId, job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* The phone can disconnect before the recorder writes its conversation.
+     Keep the call ended while waiting for that record; Redis may still report
+     answered, so these replies must update conversation metadata only. */
+  useEffect(() => {
+    if (!job || !isEnded(job) || hasFinalConversation(job)) return;
+    const { jobId } = job;
+    let cancelled = false;
+    let timer = 0;
+    setConversationLookupExpired(false);
+    const deadline = window.setTimeout(() => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      setConversationLookupExpired(true);
+    }, CONVERSATION_WAIT_MS);
+    const poll = async () => {
+      try {
+        const next = await getRealCallStatus(bot.id, jobId);
+        if (cancelled) return;
+        if (next.conversation) {
+          setJob((cur) => cur?.jobId === jobId && isEnded(cur)
+            ? { ...cur, conversation: next.conversation } : cur);
+        }
+        if (hasFinalConversation(next)) {
+          window.clearTimeout(deadline);
+          return;
+        }
+      } catch {
+        /* A transient failure must not discard the ended call or its record. */
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), POLL_MS);
+    };
+    timer = window.setTimeout(() => void poll(), POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearTimeout(deadline);
+    };
+  }, [bot.id, job?.jobId, job?.status, job?.conversation?.status, conversationLookupAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Connected-time counter, frozen when the call ends. */
   useEffect(() => {
@@ -260,13 +308,26 @@ export default function RealCallTab({ bot, active }: { bot: VoiceBot; active: bo
           {job.conversation ? (
             <div className="t-micro">
               Conversation {job.conversation.status}
-              {job.conversation.durationSec ? ` · ${job.conversation.durationSec}s` : ""}
+              {` · ${job.conversation.durationSec}s`}
               {job.conversation.disposition ? ` · ${job.conversation.disposition}` : ""}
-              {" · "}<a href="/t/conversations">open Conversations</a>
+              {" · "}<code>{job.conversation.id}</code>
+              {" · "}<a href={`/t/conversations?conversationId=${encodeURIComponent(job.conversation.id)}`}>open Conversations</a>
             </div>
           ) : job.status === "answered" ? (
             <div className="t-micro">Connecting the bot… the conversation will appear in Conversations shortly.</div>
           ) : null}
+          {isEnded(job) && !hasFinalConversation(job) && (
+            <div className="t-micro" role="status">
+              {conversationLookupExpired ? (
+                <>
+                  Conversation details are not available yet.{" "}
+                  <Button variant="ghost" onClick={() => setConversationLookupAttempt((value) => value + 1)}>
+                    Refresh conversation
+                  </Button>
+                </>
+              ) : "Saving conversation details…"}
+            </div>
+          )}
         </div>
       )}
     </div>

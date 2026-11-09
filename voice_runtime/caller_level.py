@@ -155,12 +155,17 @@ class CallerLevelBaseline:
         self, *, margin_db: float = 10.0, min_segments: int = 3, enforce: bool = False,
         bot_audio_allowance_db: float = 12.0, consistency_db: float = DEFAULT_CONSISTENCY_DB,
         history: int = BASELINE_HISTORY,
+        start_protection: bool = False, quiet_failopen_enabled: bool = True,
+        quiet_max_holds: int = 2,
     ) -> None:
         self.margin_db = float(margin_db)
         self.bot_audio_allowance_db = max(0.0, float(bot_audio_allowance_db))
         self.min_segments = max(1, int(min_segments))
         self.consistency_db = max(0.5, float(consistency_db))
         self.enforce = bool(enforce)
+        self.start_protection = bool(start_protection)
+        self.quiet_failopen_enabled = bool(quiet_failopen_enabled)
+        self.quiet_max_holds = max(0, int(quiet_max_holds))
         self._levels: deque[float] = deque(maxlen=max(1, int(history)))
         self._rebased = 0
         self._trusted = 0
@@ -282,6 +287,9 @@ class CallerLevelBaseline:
         return False, self.observe(value)
 
     # ── classification ───────────────────────────────────────────────────
+    def quiet_should_fail_open(self, held_count: int) -> bool:
+        return self.quiet_failopen_enabled and held_count >= self.quiet_max_holds
+
     def effective_margin(self, during_bot_audio: bool = False) -> float:
         """The margin applied to a segment: wider while the bot is speaking."""
         if during_bot_audio:

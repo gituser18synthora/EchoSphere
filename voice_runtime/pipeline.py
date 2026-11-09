@@ -1094,6 +1094,9 @@ def build_voice_pipeline(
             bot_audio_allowance_db=turn["background_bot_audio_allowance_db"],
             min_segments=int(round(turn["background_baseline_min_segments"])),
             enforce=turn["background_speech_guard"] >= 0.5,
+            start_protection=turn["background_start_protection"] >= 0.5,
+            quiet_failopen_enabled=turn["background_quiet_failopen_enabled"] >= 0.5,
+            quiet_max_holds=int(round(turn["background_quiet_max_holds"])),
         )
         if audio_gate is not None
         else None
@@ -1260,6 +1263,10 @@ def build_voice_pipeline(
                     if caller_level is not None else None
                 ),
                 enforce_background=caller_level.enforce if caller_level is not None else False,
+                require_transcript=turn["barge_in_require_transcript"] >= 0.5,
+                meaningful_words=int(round(turn["barge_in_meaningful_words"])),
+                start_protection=turn["background_start_protection"] >= 0.5,
+                caller_reference_ready=lambda: bool(caller_level and caller_level.established),
                 on_suppressed=lambda arbiter, sustained, verdict, enforced: recorder.add_event(
                     "barge_in_background_suppressed" if enforced
                     else "barge_in_background_shadow",
@@ -1268,7 +1275,7 @@ def build_voice_pipeline(
                     **verdict.as_event(),
                 ),
             )
-            if barge_in_min_words > 0
+            if barge_in_min_words > 0 or turn["barge_in_require_transcript"] >= 0.5 or turn["background_start_protection"] >= 0.5
             else VADUserTurnStartStrategy()
         )
         # The Sarvam adapter marks every final ``finalized`` and advertises
@@ -1306,6 +1313,10 @@ def build_voice_pipeline(
         # barge-in and releases or discards it once the arbiter decides.
         processors.append(playback_duck)
     processors.append(transport.output())
+    recorder.transcript_playout_only = turn["transcript_playout_only"] >= 0.5
+    if recorder.transcript_playout_only:
+        from voice_runtime.transcript_playout import TranscriptPlayoutObserver
+        processors.append(TranscriptPlayoutObserver(recorder.playout_ledger))
     if audio_gate is not None and echo_reference is not None:
         output = transport.output()
         if hasattr(output, "attach_echo_reference"):

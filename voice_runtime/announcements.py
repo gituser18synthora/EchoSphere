@@ -107,9 +107,19 @@ def speech_word_count(text: str) -> int:
     return len(speech_words(text))
 
 
+def meaningful_speech_words(text: str) -> list[str]:
+    """Lexical tokens, including identifiers/numbers; no punctuation-only tokens.
+
+    Unlike language-voting words this does not drop meaningful business terms
+    or number words. Recording notices are stripped by the existing matcher.
+    """
+    return [word for word in speech_words(text) if any(char.isalnum() for char in word)]
+
+
 __all__ = [
     "RECORDING_ANNOUNCEMENT_RE",
     "is_recording_announcement",
+    "meaningful_speech_words",
     "speech_word_count",
     "speech_words",
     "strip_recording_announcement",

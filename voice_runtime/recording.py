@@ -121,6 +121,9 @@ class SessionRecorder:
         # because pipeline teardown does not reliably deliver Cancel/End frames
         # to processors sitting after the output transport.
         self.recording_writer: "CallRecordingWriter | None" = None
+        self.transcript_playout_only = False
+        from voice_runtime.transcript_playout import PlayoutLedger
+        self.playout_ledger = PlayoutLedger()
 
     def set_recording(self, *, path: str, duration_sec: float, sample_rate: int,
                       channels: int, size_bytes: int) -> None:
@@ -135,6 +138,24 @@ class SessionRecorder:
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
+
+    def transcript_rows(self) -> list[dict]:
+        """Default rows are unchanged; opt-in uses confirmed delivery only."""
+        rows = []
+        self.playout_ledger.used.clear()
+        for turn in self.turns:
+            spoken, delivery = turn.text, None
+            if self.transcript_playout_only and turn.role == "bot":
+                spoken, delivery = self.playout_ledger.for_turn(turn.text)
+            row = {
+                "role": turn.role, "text": self._redact_for_transcript(spoken),
+                "ts": turn.timestamp, "route": turn.route, "kbUsed": turn.kb_used,
+                "kbSources": turn.kb_sources, "latencyMs": turn.latency_ms,
+            }
+            if delivery is not None:
+                row["delivery"] = delivery
+            rows.append(row)
+        return rows
 
     def stt_transcript_characters(self) -> int:
         """Characters of accepted caller speech, from the final turn list.
@@ -293,18 +314,7 @@ class SessionRecorder:
             # Flush the audio tail and wrap the WAV — idempotent with the
             # pipeline's own stop hook, whichever fires first.
             await self.recording_writer.close()
-        transcript = [
-            {
-                "role": t.role,
-                "text": self._redact_for_transcript(t.text),
-                "ts": t.timestamp,
-                "route": t.route,
-                "kbUsed": t.kb_used,
-                "kbSources": t.kb_sources,
-                "latencyMs": t.latency_ms,
-            }
-            for t in self.turns
-        ]
+        transcript = self.transcript_rows()
         try:
             payload = {
                 "session_id": self.session_id,

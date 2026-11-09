@@ -639,14 +639,6 @@ _HELD_RECLAIM_LATE_FINAL_S = 1.0
 # workflow advanced) accept shorter segments than the candidate bootstrap:
 # the turn is vouched for, only the level measurement must be stable enough.
 _TRUSTED_MIN_SEGMENT_MS = 400.0
-# Consecutive bot-quiet background-suspect holds after which the next suspect
-# segment is dispatched anyway (``background_quiet_failopen``). A level
-# verdict is a heuristic: a caller who moved away from the handset, switched
-# to speakerphone or simply speaks softly must not be locked out of the call
-# by it — two silent holds already cost them a repeat and a no-response
-# prompt. The dispatched turn can then vouch for its own level
-# (``_note_trusted_turn`` → ``observe_trusted`` re-bases on a material change).
-_QUIET_SUSPECT_HOLD_LIMIT = 2
 # Unsupported languages still require repetition before the client is warned:
 # a single mislabel must not surface a false "caller speaks Tamil" notice.
 _UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
@@ -2505,17 +2497,23 @@ class ConversationBrain(FrameProcessor):
         suspect = level_verdict.suspect
         action, reason = "accepted", level_verdict.label
         trained = False
+        if baseline.start_protection and not baseline.established and during_bot:
+            self._suspect_in_turn = True
+            self._suspects_held_during_bot_audio += 1
+            action, reason = "held", "caller_reference_not_ready"
         if suspect and not enforced:
             reason = (
                 "background_suspect_identifier_exempt"
                 if baseline.enforce else "background_suspect_shadow"
             )
-        if suspect and enforced:
+        if action == "held":
+            pass
+        elif suspect and enforced:
             if self._bot_speaking:
                 self._suspect_in_turn = True
                 action, reason = "held", "background_during_bot_audio"
                 self._suspects_held_during_bot_audio += 1
-            elif self._quiet_suspect_holds >= _QUIET_SUSPECT_HOLD_LIMIT:
+            elif baseline.quiet_should_fail_open(self._quiet_suspect_holds):
                 # Fail open: the level verdict alone must never lock the
                 # caller out. The segment is dispatched as a normal turn
                 # (still never trains the baseline by level); if the call

@@ -770,8 +770,8 @@ without confirmation, with empty mandatory parameters, or for unsafe values
 `status` ∈ `dialing|answered|failed|timeout|error|hungup|ended`, `detail`,
 `cause` (FreeSWITCH hangup cause or ESL error category), `channelUuid`, and
 `conversation` (`id`, `sessionId`, `status`, `startedAt`, `durationSec`,
-`disposition`, `language`) once the dialplan's webhook created it (matched
-by `call_id = originationUuid`). Jobs live one hour and are tenant-scoped
+`disposition`, `language`) once the recorder persists it at call finalization
+(matched by `call_id = originationUuid`). Jobs live one hour and are tenant-scoped
 (`404` otherwise).
 
 For an `answered` job, polling reports `ended` when the conversation is
@@ -780,6 +780,14 @@ finalized or a bounded, read-only FreeSWITCH `uuid_exists` check returns
 An unavailable socket or an unrecognized reply preserves the last status for
 retry. The reconciliation affects the response only and does not overwrite a
 concurrent Studio hangup/originate result in Redis.
+
+The Studio stops the connected timer on `ended`/`hungup` but continues a
+separate conversation lookup for up to two minutes while finalization is
+pending. These replies update conversation metadata only, preserving the
+ended state. A manual refresh is available if the record is still missing.
+Once available, the Studio displays the conversation ID and links to
+`/t/conversations?conversationId=<id>`, which opens that record's details
+independently of the currently listed page or filters.
 
 `POST /api/v1/bots/{bot_id}/testing/real-call/{job_id}/hangup` —
 `uuid_kill` on the originated leg; returns the job (`hungup`, or `ended`

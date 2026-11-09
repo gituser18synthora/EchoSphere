@@ -1,0 +1,685 @@
+{
+  "schema_version": 1,
+  "source": "Recent demo recordings, read-only export, 2026-11-09",
+  "audio_root": "storage/tmp/background_replay",
+  "clips": [
+    {
+      "id": "incident_later",
+      "call_id": "cv_7dc1675ff773",
+      "label": "background",
+      "review": "user_confirmed",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_later.wav",
+      "sha256": "f1adfff3d6d18a1ce4a514ba307cb9bc6905a7f6f5b5bf77a667e494e06df3a9",
+      "start_s": 10.402,
+      "end_s": 12.382,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "बाद में।",
+          "speech_dbfs": -48.0,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": true,
+          "vad_seconds": 0.72,
+          "segment_ms": 1180.0,
+          "offset_s": 12.082,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": true,
+          "observed_sustained_s": 0.82
+        }
+      ]
+    },
+    {
+      "id": "incident_now_1",
+      "call_id": "cv_7dc1675ff773",
+      "label": "background_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_now_1.wav",
+      "sha256": "bedb5d2f143ee73e1df6753ee137b208c1b07286e8fa7ad3fd3a18aa6f1282fb",
+      "start_s": 25.129,
+      "end_s": 27.929,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "अभी।",
+          "speech_dbfs": -49.9,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 2.08,
+          "segment_ms": 2000.0,
+          "offset_s": 27.629,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 2.08
+        }
+      ]
+    },
+    {
+      "id": "incident_now_2",
+      "call_id": "cv_7dc1675ff773",
+      "label": "background_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_now_2.wav",
+      "sha256": "0e224dd7c14061a61509ce1cc9150dcb50945e3d5000c5802847776ab9900d2d",
+      "start_s": 37.511,
+      "end_s": 38.831,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "अभी।",
+          "speech_dbfs": -46.1,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 2.08,
+          "segment_ms": 520.0,
+          "offset_s": 38.531,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 2.08
+        }
+      ]
+    },
+    {
+      "id": "incident_identity",
+      "call_id": "cv_7dc1675ff773",
+      "label": "caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_identity.wav",
+      "sha256": "c935d17142d89dafe17912ef8221cd923c6408cb22e29cd32877dfee89a0de26",
+      "start_s": 7.388,
+      "end_s": 9.148,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "हाँ बोलो जी।",
+          "speech_dbfs": -28.3,
+          "baseline_dbfs": null,
+          "during_bot_audio": false,
+          "vad_seconds": 0.72,
+          "segment_ms": 960.0,
+          "offset_s": 8.848,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.72
+        }
+      ]
+    },
+    {
+      "id": "incident_yes",
+      "call_id": "cv_7dc1675ff773",
+      "label": "caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_yes.wav",
+      "sha256": "5ede58504b4ddde247d6a97142df0ab24abe00c954cc7a6473399e148551ae28",
+      "start_s": 20.447,
+      "end_s": 22.987,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -32.7,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 1.5,
+          "segment_ms": 1740.0,
+          "offset_s": 22.687,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 1.5
+        }
+      ]
+    },
+    {
+      "id": "incident_tomorrow",
+      "call_id": "cv_7dc1675ff773",
+      "label": "caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_tomorrow.wav",
+      "sha256": "3d0d8f2a58984b4b76d76efbf28e8a72db1554a6987f05c9c5e103c89535f7ee",
+      "start_s": 22.981,
+      "end_s": 24.421,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "कल सुबह।",
+          "speech_dbfs": -25.6,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 1.12,
+          "segment_ms": 640.0,
+          "offset_s": 24.121,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 1.12
+        }
+      ]
+    },
+    {
+      "id": "incident_soft_ok",
+      "call_id": "cv_7dc1675ff773",
+      "label": "soft_caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/incident_soft_ok.wav",
+      "sha256": "10bfe62f205f796e0320060603228daa4d27a1a97783300b5738153fd6ae4343",
+      "start_s": 38.072,
+      "end_s": 39.832,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "ठीक है।",
+          "speech_dbfs": -36.4,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 0.64,
+          "segment_ms": 960.0,
+          "offset_s": 39.532,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.64
+        }
+      ]
+    },
+    {
+      "id": "recent_normal_1",
+      "call_id": "cv_948773909cf9",
+      "label": "caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/recent_normal_1.wav",
+      "sha256": "34c16fbd7b18a3607af34841f01550e9528c75f7355f52e23d041566123b3ae2",
+      "start_s": 32.017,
+      "end_s": 34.717,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "नहीं नहीं, अरे।",
+          "speech_dbfs": -24.4,
+          "baseline_dbfs": -27.7,
+          "during_bot_audio": false,
+          "vad_seconds": 1.46,
+          "segment_ms": 1900.0,
+          "offset_s": 34.417,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 1.46
+        }
+      ]
+    },
+    {
+      "id": "recent_normal_2",
+      "call_id": "cv_948773909cf9",
+      "label": "caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/recent_normal_2.wav",
+      "sha256": "576b330ee17678588736ac9b0630196c8acc5d8258af114139647995c4775604",
+      "start_s": 34.384,
+      "end_s": 37.924,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "कॉल तो नहीं आया था, नहीं विज़िट हुआ था।",
+          "speech_dbfs": -21.1,
+          "baseline_dbfs": -27.7,
+          "during_bot_audio": false,
+          "vad_seconds": 2.5,
+          "segment_ms": 2740.0,
+          "offset_s": 37.624,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 2.5
+        }
+      ]
+    },
+    {
+      "id": "start_incident",
+      "call_id": "cv_7dc1675ff773",
+      "label": "call_start_unknown",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/start_incident.wav",
+      "sha256": "2c90c739f5efdd2e7cd2a21454d877822c278ba46cd5cd821ab232ef267030d9",
+      "start_s": 0.202,
+      "end_s": 1.662,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -38.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.48,
+          "segment_ms": 660.0,
+          "offset_s": 1.362,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.48
+        }
+      ]
+    },
+    {
+      "id": "start_quiet",
+      "call_id": "cv_434cd7562fba",
+      "label": "call_start_unknown",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/start_quiet.wav",
+      "sha256": "45c2ae63f60ea3f3a7dd4403c332f040f720ec6429c38f796261352a275c1d2a",
+      "start_s": 0.283,
+      "end_s": 2.063,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "चाहिए।",
+          "speech_dbfs": -49.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.6,
+          "segment_ms": 980.0,
+          "offset_s": 1.763,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.6
+        }
+      ]
+    },
+    {
+      "id": "start_hello",
+      "call_id": "cv_c191017d2061",
+      "label": "call_start_unknown",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/start_hello.wav",
+      "sha256": "4f95b0f13cb1d21dcdd8da4f4c59ae2313ab105d497f4def529a85b45631711e",
+      "start_s": 18.712,
+      "end_s": 20.112,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "हेलो।",
+          "speech_dbfs": -29.6,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.44,
+          "segment_ms": 600.0,
+          "offset_s": 19.812,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.44
+        }
+      ]
+    },
+    {
+      "id": "start_latest",
+      "call_id": "cv_10814a1fad98",
+      "label": "call_start_unknown",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/start_latest.wav",
+      "sha256": "6d2b2108cdb049c9de9ef98b4ab1ecab86162d9d904af5e0f2514805b0864dd3",
+      "start_s": 0,
+      "end_s": 1.654,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "अभी तो क्या करना है?",
+          "speech_dbfs": -42.2,
+          "baseline_dbfs": null,
+          "during_bot_audio": false,
+          "vad_seconds": 0.7,
+          "segment_ms": 1060.0,
+          "offset_s": 1.354,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.7
+        }
+      ]
+    },
+    {
+      "id": "soft_recent_1",
+      "call_id": "cv_948773909cf9",
+      "label": "soft_caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/soft_recent_1.wav",
+      "sha256": "9924b793526f5c349eec034f4239a3c215de971caecdf0ded644fa077ca11841",
+      "start_s": 59.259,
+      "end_s": 60.699,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "ठीक है।",
+          "speech_dbfs": -37.9,
+          "baseline_dbfs": -24.4,
+          "during_bot_audio": false,
+          "vad_seconds": 0.38,
+          "segment_ms": 640.0,
+          "offset_s": 60.399,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.38
+        }
+      ]
+    },
+    {
+      "id": "soft_recent_2",
+      "call_id": "cv_434cd7562fba",
+      "label": "soft_caller_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/soft_recent_2.wav",
+      "sha256": "34a37f75a5478a1259d955d813933e7c1484cc872aa4cea17d931ef81e2934b2",
+      "start_s": 56.07,
+      "end_s": 57.55,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "ठीक है।",
+          "speech_dbfs": -39.3,
+          "baseline_dbfs": -25.8,
+          "during_bot_audio": false,
+          "vad_seconds": 0.4,
+          "segment_ms": 680.0,
+          "offset_s": 57.25,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.4
+        }
+      ]
+    },
+    {
+      "id": "soft_overlap",
+      "call_id": "cv_c191017d2061",
+      "label": "soft_overlap_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/soft_overlap.wav",
+      "sha256": "ff21e4ecd6126eb3dbd7a11fab34593b8e1070721cd898724c3c3c3a94b45dd8",
+      "start_s": 35.942,
+      "end_s": 37.262,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "जी।",
+          "speech_dbfs": -30.0,
+          "baseline_dbfs": -21.8,
+          "during_bot_audio": true,
+          "vad_seconds": 0.64,
+          "segment_ms": 520.0,
+          "offset_s": 36.962,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.64
+        }
+      ]
+    },
+    {
+      "id": "overlap_words",
+      "call_id": "cv_7094a4ab5cc3",
+      "label": "caller_interruption_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/overlap_words.wav",
+      "sha256": "671dd2a9177e6d27f1b6af5c9a7696a3e995b513aeeee5332b4ad647266581e3",
+      "start_s": 37.241,
+      "end_s": 41.781,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "नहीं किया।",
+          "speech_dbfs": -21.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.84,
+          "segment_ms": 3740.0,
+          "offset_s": 41.481,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.84
+        }
+      ]
+    },
+    {
+      "id": "overlap_no",
+      "call_id": "cv_434cd7562fba",
+      "label": "caller_interruption_candidate",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/overlap_no.wav",
+      "sha256": "bfd68d940d796063ae7720df6714d03117ab1a125bc440ab196a344853cf02f7",
+      "start_s": 27.97,
+      "end_s": 29.37,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "नहीं नहीं।",
+          "speech_dbfs": -37.2,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.42,
+          "segment_ms": 600.0,
+          "offset_s": 29.07,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": true,
+          "observed_sustained_s": 0
+        }
+      ]
+    },
+    {
+      "id": "continuous_review_1",
+      "call_id": "cv_434cd7562fba",
+      "label": "continuous_speech_review",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/continuous_review_1.wav",
+      "sha256": "164233724f9c17c46e8b53230d8998569d260bd31227f6200afc96f69628d2c4",
+      "start_s": 0.283,
+      "end_s": 29.37,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "चाहिए।",
+          "speech_dbfs": -49.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.6,
+          "segment_ms": 980.0,
+          "offset_s": 1.763,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.6
+        },
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -32.5,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.6,
+          "segment_ms": 640.0,
+          "offset_s": 8.588,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.6
+        },
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -31.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.4,
+          "segment_ms": 660.0,
+          "offset_s": 11.913,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.4
+        },
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -36.6,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.32,
+          "segment_ms": 540.0,
+          "offset_s": 14.523,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.32
+        },
+        {
+          "text": "हाँ।",
+          "speech_dbfs": -33.4,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.38,
+          "segment_ms": 600.0,
+          "offset_s": 16.707,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 0.38
+        },
+        {
+          "text": "नहीं नहीं।",
+          "speech_dbfs": -37.2,
+          "baseline_dbfs": null,
+          "during_bot_audio": true,
+          "vad_seconds": 0.42,
+          "segment_ms": 600.0,
+          "offset_s": 29.07,
+          "recorded_classification": "unknown",
+          "recorded_action": "accepted",
+          "recorded_interrupted": true,
+          "observed_sustained_s": 0
+        }
+      ]
+    },
+    {
+      "id": "continuous_review_2",
+      "call_id": "cv_7dc1675ff773",
+      "label": "continuous_speech_review",
+      "review": "unverified",
+      "device": "unknown",
+      "speakerphone_verified": false,
+      "file": "clips/continuous_review_2.wav",
+      "sha256": "d186a85b087df7a2370b5a520a167d6ca3ec39a8dd62e02757f39f861a925721",
+      "start_s": 22.981,
+      "end_s": 38.831,
+      "sample_rate": 8000,
+      "alignment": "Event timestamps with padding; not word-aligned ground truth.",
+      "segments": [
+        {
+          "text": "कल सुबह।",
+          "speech_dbfs": -25.6,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 1.12,
+          "segment_ms": 640.0,
+          "offset_s": 24.121,
+          "recorded_classification": "caller",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 1.12
+        },
+        {
+          "text": "अभी।",
+          "speech_dbfs": -49.9,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 2.08,
+          "segment_ms": 2000.0,
+          "offset_s": 27.629,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 2.08
+        },
+        {
+          "text": "अभी।",
+          "speech_dbfs": -46.1,
+          "baseline_dbfs": -28.3,
+          "during_bot_audio": false,
+          "vad_seconds": 2.08,
+          "segment_ms": 520.0,
+          "offset_s": 38.531,
+          "recorded_classification": "background_suspect",
+          "recorded_action": "accepted",
+          "recorded_interrupted": false,
+          "observed_sustained_s": 2.08
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Only incident_later has user-confirmed speaker ground truth.",
+    "Other labels are review candidates, not verified caller/background attribution.",
+    "No recording establishes speakerphone use; device labels remain unknown.",
+    "Continuous windows require review; continuous background conversation is not established.",
+    "Recording timestamps are approximate; event replay is not a full VAD/STT/audio end-to-end test."
+  ]
+}
