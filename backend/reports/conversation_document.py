@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 import fitz
 
 from shared.models import ConversationSession
+from shared.post_call.dispositions import STRUCTURED_DISPOSITION_FIELD
 
 PDF_CONTENT_TYPE = "application/pdf"
 TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
@@ -238,8 +239,16 @@ def build_conversation_document(
     ]
     if not conversation.contained and conversation.escalation_reason:
         details.append(("Escalation reason", conversation.escalation_reason))
+    # The runtime's stored disposition, else the structured summary's own
+    # ``disposition`` field (bots whose runtime never sets one — see
+    # shared.post_call.dispositions). A stored code reads as words; a
+    # structured value is already a label and is shown as written.
     if conversation.disposition:
         details.append(("Disposition", _words(conversation.disposition)))
+    elif structured_disposition := ((summary or {}).get("structuredFields") or {}).get(
+        STRUCTURED_DISPOSITION_FIELD
+    ):
+        details.append(("Disposition", str(structured_disposition)))
     if conversation.sentiment:
         details.append(("Sentiment", _words(conversation.sentiment)))
 

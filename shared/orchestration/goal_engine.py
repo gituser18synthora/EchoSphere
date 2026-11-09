@@ -194,6 +194,10 @@ class GoalSpec(BaseModel):
 
 
 SUMMARY_FIELD_TYPES = ("yes_no", "choice", "text", "date", "time")
+# Bound on one choice option / mapped value of a summary field (see
+# SummaryFieldSpec._clean_options): long enough for a client's official
+# disposition label while still keeping the analyst vocabulary compact.
+_MAX_OPTION_CHARS = 80
 
 
 class SummaryFieldSpec(BaseModel):
@@ -275,7 +279,11 @@ class SummaryFieldSpec(BaseModel):
             return []
         out: list[str] = []
         for item in v:
-            text = str(item or "").strip()[:60]
+            # 80: long enough for a client's official disposition label
+            # ("Connected – Issue Resolved (Either by customer or local
+            # Tech.)" is 62 characters); options and mapped values share
+            # the bound so a mapped value always matches its option.
+            text = str(item or "").strip()[:_MAX_OPTION_CHARS]
             if text and text not in out:
                 out.append(text)
         return out[:24]
@@ -298,7 +306,7 @@ class SummaryFieldSpec(BaseModel):
         if not isinstance(v, dict):
             return {}
         return {
-            str(k).strip().lower()[:120]: str(val if val is not None else "").strip()[:60]
+            str(k).strip().lower()[:120]: str(val if val is not None else "").strip()[:_MAX_OPTION_CHARS]
             for k, val in list(v.items())[:48]
             if str(k or "").strip()
         }

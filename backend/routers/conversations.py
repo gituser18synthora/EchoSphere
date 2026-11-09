@@ -40,6 +40,7 @@ from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
 from shared.models import ConversationMemory, ConversationSession, UsageEvent, User, VoiceBot
+from shared.post_call.dispositions import structured_dispositions
 from backend.serializers import (
     serialize_conversation,
     serialize_conversation_memory,
@@ -124,10 +125,16 @@ def list_conversations(
     ).order_by(ConversationSession.id.desc())
     rows = db.scalars(stmt.offset(params.offset).limit(params.page_size)).all()
     names = _bot_names(db, [c.bot_id for c in rows])
+    # Structured-summary dispositions for this page (one query): bots whose
+    # runtime never sets the session disposition still show their official
+    # disposition in the list column.
+    dispositions = structured_dispositions(db, [c.id for c in rows])
     include_costs = can_view_costs(user)
     return paginated(
         [serialize_conversation(c, bot_name=names.get(c.bot_id, "—"),
-                                include_costs=include_costs) for c in rows],
+                                include_costs=include_costs,
+                                structured_disposition=dispositions.get(c.id))
+         for c in rows],
         page=params.page, page_size=params.page_size, total=total,
     )
 
@@ -205,6 +212,7 @@ async def get_conversation(
     include_costs = can_view_costs(user)
     return ok(serialize_conversation(
         c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
+        structured_disposition=structured_dispositions(db, [c.id]).get(c.id),
         recording=recording_descriptor(c, doc),
         # The breakdown is not even computed for viewers without costs.view.
         cost_breakdown=(

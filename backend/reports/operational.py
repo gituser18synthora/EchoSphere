@@ -12,6 +12,7 @@ from sqlalchemy import String, cast, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.reports.registry import ReportColumn, ReportData, ReportDefinition
+from shared.post_call.dispositions import effective_disposition, structured_dispositions
 from shared.models import (
     ConversationSession,
     Invoice,
@@ -84,6 +85,10 @@ CONVERSATIONS_EXPORT = ReportDefinition(
         ReportColumn("language", "Language", "text", 12),
         ReportColumn("qa_score", "QA Score", "integer", 11),
         ReportColumn("flagged", "Flagged", "text", 10),
+        # Appended last so existing consumers that read columns by position
+        # keep working: the runtime's stored disposition, else the bot's
+        # structured-summary disposition (shared.post_call.dispositions).
+        ReportColumn("disposition", "Disposition", "text", 34, wrap=True),
     ),
 )
 
@@ -311,6 +316,9 @@ def build_conversations_export(
             ConversationSession.id.asc(),
         )
     ).all()
+    # Same disposition the conversations list shows: the runtime's stored
+    # value, else the bot's structured-summary disposition field.
+    structured = structured_dispositions(db, [conversation.id for conversation, _ in records])
     return ReportData(
         CONVERSATIONS_EXPORT,
         [
@@ -324,6 +332,9 @@ def build_conversations_export(
                 "sentiment": conversation.sentiment,
                 "intents": "; ".join(conversation.intents or []),
                 "outcome": "Contained" if conversation.contained else "Escalated",
+                "disposition": effective_disposition(
+                    conversation.disposition, structured.get(conversation.id)
+                ) or "",
                 "escalation_reason": conversation.escalation_reason or "",
                 "csat": conversation.csat,
                 "cost_usd": conversation.cost_usd,

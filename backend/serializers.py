@@ -9,6 +9,7 @@ import re
 from datetime import date, datetime
 
 from shared.orchestration.behavior import resolve_behavior
+from shared.post_call.dispositions import effective_disposition
 from shared.post_call.structured import display_structured_fields
 from shared.models import (
     AiConfigProfile,
@@ -679,7 +680,8 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
                            cost_breakdown: dict | None = None,
                            summary: dict | None = None,
                            character_usage: dict | None = None,
-                           include_costs: bool = True) -> dict:
+                           include_costs: bool = True,
+                           structured_disposition: str | None = None) -> dict:
     """One conversation for the API.
 
     ``costUsd`` is the single authoritative total for BOTH the list and the
@@ -733,8 +735,11 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "language": c.language or "en-US",
         "qaScore": c.qa_score,
         "flagged": c.flagged,
-        # Call outcome captured by the runtime conversation policy.
-        "disposition": c.disposition,
+        # Call outcome captured by the runtime conversation policy; for bots
+        # whose structured summary declares a ``disposition`` field (and whose
+        # runtime therefore never set one) the persisted summary value fills
+        # the same column (shared.post_call.dispositions).
+        "disposition": effective_disposition(c.disposition, structured_disposition),
         # Which published prompt version this call actually ran on.
         "promptId": c.prompt_id,
         "promptVersion": c.prompt_version,
