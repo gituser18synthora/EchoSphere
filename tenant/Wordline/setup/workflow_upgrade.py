@@ -77,6 +77,27 @@ Step 3 — ``upgrade_visit_details`` (2026-11-10, CSV gained ``Address`` and
    same variable and continue to the same next step, so routing after them
    is identical.  Edges into the original nodes keep their ids and labels;
    only their target becomes the gate.
+
+Step 4 — ``upgrade_option_hubs`` (2026-11-10, DEMO cv_cb68cbdc84a0):
+
+7. "Tell me the IVR process" at the options hub was labelled ``question``
+   by the intent classifier; the engine lets a question label take a literal
+   edge only when the words have no question shape, and "tell"/"batao" are
+   question markers — so the turn went off-script and the knowledge base
+   answered instead of ``n_ivr`` (the hub's labels already carry "ivr
+   process" / "tell me about ivr": a label change alone cannot fix it).  The
+   three option hubs (``n_options``, ``n_options_unverified``,
+   ``n_pr_again``) get ``optionHub: true`` (engine opt-in, see
+   ``_choose_intent_edge_detailed``): a question naming an option selects
+   it; a question naming none ("who is the contact person?") stays
+   off-script.
+8. "No, that's all" there was labelled ``refusal`` and no edge supported it:
+   the LLM said "You're welcome" and the call stayed open.  Each option hub
+   gets one closing edge to the existing ``n_end`` with decline / closing
+   tokens only — no affirm-classified token ("theek hai" at "which option?"
+   means "go on", not "goodbye"), no "thank you" (it rides along with real
+   answers).  With ``optionHub`` an option named in the same breath still
+   wins ("nahi, IVR batao" → IVR).
 """
 
 from __future__ import annotations
@@ -263,6 +284,23 @@ VISIT_REJECT_PREFIX = {
     "en": "Sorry Sir, the line may not have been clear. Let me ask again. ",
     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। ",
 }
+# Step 4 — option hubs.
+OPTION_HUBS = ("n_options", "n_options_unverified", "n_pr_again")
+CLOSE_NODE = "n_end"
+# Decline / closing tokens only.  Every token must classify as ``refusal`` or
+# as no signal (tests pin it): an affirm token would close the call on "theek
+# hai, batao".  Left out on purpose: "thank you", bare "nothing", "that's it",
+# bare "itna hi" — they ride along with real answers ("thank you, IVR batao").
+CLOSING_LABEL = "/".join((
+    "No", "No thanks", "No thank you", "Nope", "Nothing else", "Nothing more",
+    "That's all", "That is all", "Thats all", "That will be all", "No need", "Not needed",
+    "Not required", "I don't need anything", "I'm done", "Goodbye",
+    "Nahi", "Nahin", "Nahi ji", "Nahi chahiye", "Kuch nahi", "Kuch nahi chahiye",
+    "Aur kuch nahi", "Bas", "Bas itna hi", "Bas ho gaya", "Nahi bas", "Zarurat nahi",
+    "Koi zarurat nahi", "Rehne do",
+    "नहीं", "नहीं जी", "नहीं चाहिए", "कुछ नहीं", "और कुछ नहीं", "बस", "बस इतना ही",
+    "ज़रूरत नहीं", "कोई ज़रूरत नहीं", "रहने दो", "नहीं बस",
+))
 ADDRESS_VARIABLE = "address"
 PERSON_VARIABLE = "contact_person"
 # original ask → (gate condition id, record ask id, Studio label of the record ask)
@@ -662,12 +700,57 @@ def upgrade_visit_details(definition: dict) -> tuple[dict, list[str]]:
     return upgraded, changes
 
 
+# ── step 4: option hubs (IVR question routing, closing edge) ────────────────
+
+
+def is_option_hub_upgraded(definition: dict) -> bool:
+    nodes = {n.get("id"): n for n in definition.get("nodes") or []}
+    hubs = [h for h in OPTION_HUBS if h in nodes]
+    edges = {(e.get("from"), e.get("to")) for e in definition.get("edges") or []}
+    return bool(hubs) and all(
+        (nodes[h].get("config") or {}).get("optionHub") is True and (h, CLOSE_NODE) in edges
+        for h in hubs)
+
+
+def upgrade_option_hubs(definition: dict) -> tuple[dict, list[str]]:
+    """Step 4: ``optionHub`` on the option hubs + one closing edge each to
+    ``n_end``.  Idempotent; nothing else is touched."""
+    if is_option_hub_upgraded(definition):
+        return definition, ["already upgraded (option hubs) — no change"]
+    nodes = copy.deepcopy(list(definition.get("nodes") or []))
+    edges = copy.deepcopy(list(definition.get("edges") or []))
+    by_id = {n["id"]: n for n in nodes}
+    if CLOSE_NODE not in by_id or by_id[CLOSE_NODE].get("kind") != "end":
+        raise UpgradeError(f"{CLOSE_NODE} must be the workflow's end node")
+    hubs = [h for h in OPTION_HUBS if h in by_id]
+    if not hubs:
+        return definition, ["no option hub in this workflow — no change"]
+    changes: list[str] = []
+    for hub_id in hubs:
+        hub = by_id[hub_id]
+        if hub.get("kind") != "intent":
+            raise UpgradeError(f"{hub_id} is a {hub.get('kind')} node, expected an intent hub")
+        hub.setdefault("config", {})["optionHub"] = True
+        if any(e.get("from") == hub_id and e.get("to") == CLOSE_NODE for e in edges):
+            changes.append(f"{hub_id}: optionHub on; closing edge already present")
+            continue
+        edge = {"id": f"e_{hub_id}__{CLOSE_NODE}__closing", "from": hub_id, "to": CLOSE_NODE,
+                "label": CLOSING_LABEL}
+        edges.append(edge)
+        changes.append(f"{hub_id}: optionHub on; closing edge → {CLOSE_NODE} "
+                       f"({len(CLOSING_LABEL.split('/'))} tokens)")
+    upgraded = {**definition, "nodes": nodes, "edges": edges}
+    _validate(upgraded)
+    return upgraded, changes
+
+
 def upgrade_all(definition: dict) -> tuple[dict, list[str]]:
     """All steps, each idempotent."""
     step1, changes = upgrade_workflow(definition)
     step2, more = upgrade_terminal_id_capture(step1)
     step3, visit = upgrade_visit_details(step2)
-    return step3, changes + more + visit
+    step4, hubs = upgrade_option_hubs(step3)
+    return step4, changes + more + visit + hubs
 
 
 def _validate(definition: dict) -> None:

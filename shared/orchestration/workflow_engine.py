@@ -556,7 +556,7 @@ def _token_score(tokens: list[str], lowered: str) -> int:
 
 def _choose_intent_edge_detailed(
     meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None,
-    behavior: WorkflowBehavior | None = None,
+    behavior: WorkflowBehavior | None = None, *, option_hub: bool = False,
 ) -> tuple[dict | None, str, str]:
     """Pick the outgoing edge the utterance actually supports.
 
@@ -566,8 +566,32 @@ def _choose_intent_edge_detailed(
     literal match — the caller may retry or take an authored else/fallback
     edge). The matched token is "" for signal-only matches without a literal
     hit.
+
+    ``option_hub`` (intent node config ``optionHub: true``, opt-in): the hub
+    asks the caller to pick one of several options whose nodes EXPLAIN that
+    option ("SMS, IVR, or shall I raise it — which would you like to know
+    about?").  There, naming an option is the answer even when it is worded
+    as a request or a question, and an option named in the same breath as a
+    generic yes/no is the real answer:
+
+    * a ``question`` label takes the edge of a SPECIFIC literal option token
+      even when the words have a question shape — "Tell me the IVR process"
+      (labelled question 0.98; "tell"/"batao" are question markers) was
+      answered by the LLM from the knowledge base instead of the hub's IVR
+      step (DEMO cv_cb68cbdc84a0, 2026-11-10).  A question naming no option
+      ("who is the contact person?") stays off-script as before;
+    * a generic ``refusal`` / ``affirm`` label that some edge supports never
+      overrides a specific option token of another edge in the same
+      utterance ("nahi, IVR batao" → IVR, not the decline edge); against a
+      specific token of the supporting edge itself the longer token wins.
+    Without the flag the behaviour is unchanged.
     """
     lowered = (text or "").lower()
+    best, best_token = None, ""
+    for edge, tokens, _signals in meta:
+        token = _best_token(tokens, lowered)
+        if len(token) > len(best_token):
+            best, best_token = edge, token
     if signal:
         wanted = (signal, *_COMPATIBLE_SIGNALS.get(signal, ()))
         supporting = [
@@ -577,12 +601,25 @@ def _choose_intent_edge_detailed(
         ]
         if supporting:
             edge, token = max(supporting, key=lambda pair: len(pair[1]))
+            if option_hub and signal in _GENERIC_ANSWER_SIGNALS:
+                # The option the caller NAMED beats the yes/no the label
+                # heard: "nahi, IVR batao" (refusal) is the IVR option, not
+                # the decline edge — even though "nahi" is the longer token.
+                # Against a specific token of the supporting edge itself
+                # ("no, that's all"), the longer specific token wins.
+                backing = {id(e) for e, _t in supporting}
+                other, other_token = None, ""
+                for candidate, tokens, _signals in meta:
+                    if id(candidate) in backing:
+                        continue
+                    candidate_token = _best_token(tokens, lowered)
+                    if len(candidate_token) > len(other_token):
+                        other, other_token = candidate, candidate_token
+                if other is not None and _specific_answer_token(other_token) and (
+                    not _specific_answer_token(token) or len(other_token) > len(token)
+                ):
+                    return other, "token", other_token
             return edge, "signal", token
-    best, best_token = None, ""
-    for edge, tokens, _signals in meta:
-        token = _best_token(tokens, lowered)
-        if len(token) > len(best_token):
-            best, best_token = edge, token
     if signal and signal not in _LITERAL_FALLBACK_SIGNALS:
         # The classifier called this a non-flow signal. Two labels yield to a
         # SPECIFIC literal edge token: 'clarify' ("हाँ, नाम पूछा था तो guard
@@ -604,7 +641,7 @@ def _choose_intent_edge_detailed(
                 signal == "clarify"
                 or (signal == "question"
                     and (behavior or WorkflowBehavior()).question_label_yields_hub
-                    and not looks_like_question(text))
+                    and (option_hub or not looks_like_question(text)))
             )
         ):
             return best, "token", best_token
@@ -616,10 +653,11 @@ def _choose_intent_edge_detailed(
 
 def _choose_intent_edge(
     meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None,
-    behavior: WorkflowBehavior | None = None,
+    behavior: WorkflowBehavior | None = None, *, option_hub: bool = False,
 ) -> tuple[dict | None, str]:
     """(edge, reason) form of :func:`_choose_intent_edge_detailed`."""
-    edge, why, _token = _choose_intent_edge_detailed(meta, text, signal, behavior)
+    edge, why, _token = _choose_intent_edge_detailed(
+        meta, text, signal, behavior, option_hub=option_hub)
     return edge, why
 
 
@@ -1217,7 +1255,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             elif kind == "intent":
                 out_edges = edges_from.get(awaiting, [])
                 chosen, why = _choose_intent_edge(
-                    edge_meta_from.get(awaiting, []), text, signal, behavior
+                    edge_meta_from.get(awaiting, []), text, signal, behavior,
+                    option_hub=_node_config(node).get("optionHub") is True,
                 )
                 # The hub's captures run FIRST so every decision below (the
                 # declared correction edge, the acknowledgement, the else

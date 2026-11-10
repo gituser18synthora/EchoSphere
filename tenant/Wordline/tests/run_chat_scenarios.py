@@ -172,6 +172,17 @@ RECORD_SCENARIOS = {
          [(T, "n_has_docket"), ("reply", "docket"),
           ("slot", "visit_details=address sahi hai, sunday off hai, subah 11 baje aa jaiye")]),
     ],
+    # Option hubs (workflow step 4, optionHub): closing tokens close through
+    # n_end, a named option still wins, "haan theek hai" never closes.
+    "options_hub_nothing_else_closes": [*_TO_OPTIONS, ("Nothing else", [(T, "n_end"), ("done", "true")])],
+    "options_hub_no_closes": [*_TO_OPTIONS, ("No", [(T, "n_end"), ("done", "true")])],
+    "options_hub_thats_all_closes": [*_TO_OPTIONS, ("No, that's all. Thank you.",
+                                                    [(T, "n_end"), ("done", "true")])],
+    "options_hub_named_option_beats_no": [*_TO_OPTIONS, ("nahi, IVR wala batao",
+                                                         [(T, "n_ivr"), ("notrace", "n_end")])],
+    "options_hub_ivr_request": [*_TO_OPTIONS, ("Tell me the IVR process.", [(T, "n_ivr")])],
+    "options_hub_affirm_does_not_close": [*_TO_OPTIONS, ("haan theek hai",
+                                                         [("notrace", "n_end"), ("done", "false")])],
 }
 # LLM follow-ups once the details are verified (options hub): the verified
 # context carries the TTS-ready values and the model says them as written.

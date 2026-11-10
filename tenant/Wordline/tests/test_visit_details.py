@@ -136,7 +136,9 @@ async def _to_paper_roll_options(engine, session, tid="91379784", lang="en-IN"):
 # ── structure ───────────────────────────────────────────────────────────────
 
 
-def test_step3_only_adds_gates_and_record_asks(snapshot, upgraded):
+def test_step3_only_adds_gates_and_record_asks(snapshot):
+    # Step 3 alone on top of steps 1-2 (the v17 snapshot already has them).
+    upgraded, _changes = up.upgrade_visit_details(snapshot)
     before = {n["id"]: n for n in snapshot["nodes"]}
     after = {n["id"]: n for n in upgraded["nodes"]}
     added = set(after) - set(before)
@@ -167,7 +169,7 @@ def test_step3_only_adds_gates_and_record_asks(snapshot, upgraded):
         assert cfg["rejectAnswerPatterns"] == ocfg["rejectAnswerPatterns"]
         assert "{" not in cfg["question"]
         assert not any("{" in text for text in cfg["textByLanguage"].values())
-    again, changes = up.upgrade_all(upgraded)
+    again, changes = up.upgrade_visit_details(upgraded)
     assert again is upgraded and "already upgraded" in changes[-1]
 
 

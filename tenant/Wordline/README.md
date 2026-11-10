@@ -9,7 +9,7 @@ customer system — an `api_connections` row executed by workflow `api` nodes.
 | Thing | Value |
 | --- | --- |
 | Tenant / bot | `tn_ccc488c2c47d` / `bot_a9d4caca70dc` "Customer Support" (published) |
-| Workflow | `wf_0a6550d061e6` "Paper roll and battery support" — 2026-11-10: LOCAL **v15** / DEMO **v18** = the Wordline team's v14 / v17 + step 3 (record-aware request / visit asks; 66 nodes / 113 edges). Earlier: LOCAL v13 = DEMO v12 (per-field confirmations) + lookup wiring + pinned Terminal ID capture; snapshots of v10, DEMO v12 and DEMO v17 in `data/` |
+| Workflow | `wf_0a6550d061e6` "Paper roll and battery support" — 2026-11-10: LOCAL **v16** (release v0.1.7) = v15 + step 4 option hubs (66 nodes / 116 edges; LOCAL only); DEMO **v18** = the Wordline team's v17 + step 3. LOCAL v15 = their v14 + step 3 (record-aware request / visit asks; 66 nodes / 113 edges). Earlier: LOCAL v13 = DEMO v12 (per-field confirmations) + lookup wiring + pinned Terminal ID capture; snapshots of v10, DEMO v12 and DEMO v17 in `data/` |
 | Connection | `Wordline Merchant Lookup` (bot-scoped, `api_f34882c461bb` on LOCAL) → `POST http://127.0.0.1:9023/api/v1/merchants/lookup`, `X-API-Key` from `secret://wordline-merchant-api-key` |
 | Prompt | `pr_b88a6bbadb2a` system prompt — LOCAL **v6** / DEMO **v7** (2026-11-10: address + contact person, say the speech-shaped values as written); v4 introduced the CALLER DATA section |
 | Runtime context | `rcs_0512ea793f71` "Merchant terminal data" — fixtures reduced to `customer_name`, `docket_number`, `customer_verified: false` |
@@ -217,6 +217,41 @@ setup scripts, README) and `systemctl restart wordline-api` — no platform
 service restart, no further config step.  Check afterwards: `curl
 :9023/api/v1/health` (records 42, `data_generated_at` 2026-11-10) and one
 authenticated lookup returning `address` / `contact_person`.
+
+## Option hubs (step 4, 2026-11-10) — LOCAL only so far
+
+DEMO cv_cb68cbdc84a0: at `n_options` "Tell me the IVR process." was labelled
+`question` (0.98) by the intent classifier and answered by the knowledge
+base instead of `n_ivr`; "No. That's all." was labelled `refusal`, no edge
+supported it, the LLM said "You're welcome" and the call stayed open.
+
+Root cause (1): the engine lets a `question` label take a literal edge only
+when the words have no question shape, and "tell" / "batao" are global
+question markers — the IVR edge already carried "ivr process" / "tell me
+about ivr", so no label change could help, and giving an edge a
+question-signal token would route EVERY question there (a signal edge wins
+without a literal match). (2): no edge at the options hubs carried a
+decline.
+
+Fix: engine opt-in `optionHub: true` on an intent node
+(`shared/orchestration/workflow_engine.py`, default off — every other
+workflow unchanged): a question naming an option selects it (a question
+naming none stays off-script), and an option named next to a generic yes/no
+beats the yes/no edge ("nahi, IVR batao" → IVR).  `workflow_upgrade.py`
+step 4 sets it on `n_options`, `n_options_unverified`, `n_pr_again` and adds
+one closing edge each to the existing `n_end` with decline/closing tokens
+only (every token classifies as `refusal` or no signal; no "theek hai" /
+"thank you").
+
+Verified LOCAL: offline 140 tenant + 9 engine tests (`tests/unit/test_option_hub.py`)
++ 3473 orchestration unit tests; chat 16/16 on a side API with the new
+engine; real voice 5/5 (cv_3616d42f64f3 IVR question → n_ivr → n_end,
+cv_957ba5f4088a question stays off-script then "No, that's all" → n_end,
+cv_763004d0421e Hindi "nahi, IVR ka process" → n_ivr, cv_fa9f82afcc26
+"Nothing else" → n_end, cv_4c38c2d744f9 unverified hub IVR question → n_ivr).
+DEMO needs the platform code (engine) deployed + api/voice/gateway restart
+BEFORE workflow step 4 is saved there (closing edges without the engine
+opt-in would let a refusal-labelled "nahi, IVR batao" close the call).
 
 ## Running locally
 
