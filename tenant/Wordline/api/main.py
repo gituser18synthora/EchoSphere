@@ -12,7 +12,8 @@ Endpoints (all under ``/api/v1``; every data endpoint needs ``X-API-Key``):
     POST /merchants/lookup               resolve a merchant from workflow slots
     GET  /merchants/{terminal_id}        exact / digit-key terminal lookup
     GET  /merchants/by-contact/{number}  registered contact number lookup
-    GET  /merchants                      filtered listing, contact numbers masked
+    GET  /merchants                      filtered listing, contact numbers masked,
+                                         no address / contact person
 
 ``POST /merchants/lookup`` is what the workflow calls.  The executor posts
 the whole scalar slot state, so the body is a loose object; the first usable
@@ -30,7 +31,13 @@ Response contract — this matters for the workflow:
 
 * a hit is ``200`` with ``lookup_status: "found"``, ``found: true`` /
   ``verified: true`` plus the merchant fields the connection maps into
-  workflow variables;
+  workflow variables — ``terminal_id``, ``outlet_name``, ``bank_name``,
+  ``asset_type``, ``contact_number``, ``address``, ``contact_person`` …;
+  ``outlet_name``, ``asset_type``, ``address`` and ``contact_person`` come
+  back TTS-ready (``api/speech.py``: "Agarwal Public School", "Paytivo 7210
+  2G plus WiFi", "…, Indore, Madhya Pradesh 452016", "K C Tiwari") because
+  the bot speaks them verbatim and the TTS spells ALL-CAPS words letter by
+  letter.  The stored JSON keeps the CSV text;
 * a miss is ``200`` with ``lookup_status: "not_found"`` and **no** ``found``
   / ``verified`` / merchant keys.  A lookup that finds nothing is a *completed*
   query, not a failed request: the platform (Studio "Send test request",
@@ -75,6 +82,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 
+from tenant.Wordline.api.speech import spoken_address, spoken_model, spoken_name
 from tenant.Wordline.api.store import MerchantStore, Match, clean_value, mask_contact
 
 API_KEY_ENV = "WORDLINE_MERCHANT_API_KEY"
@@ -84,6 +92,10 @@ TERMINAL_KEYS = ("terminal_id_retry", "spoken_terminal_id_retry", "terminal_id",
 CONTACT_KEYS = ("contact_number", "phone", "caller_phone", "mobile")
 MERCHANT_FIELDS = ("terminal_id", "outlet_name", "bank_name", "asset_type",
                    "contact_number", "issue_type", "issue_code")
+# Returned by the single-merchant views only (lookup, GET by id / contact):
+# the bot needs them for the visit / request-raising steps; the bulk listing
+# does not carry personal details.
+VISIT_FIELDS = ("address", "contact_person")
 
 logger = logging.getLogger("wordline.merchant_api")
 if not logger.handlers:  # standalone service: INFO lines to stderr next to uvicorn's
@@ -93,7 +105,7 @@ if not logger.handlers:  # standalone service: INFO lines to stderr next to uvic
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-app = FastAPI(title="Wordline Merchant Data API", version="1.0.0",
+app = FastAPI(title="Wordline Merchant Data API", version="1.1.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 store = MerchantStore()
 
@@ -139,17 +151,39 @@ async def _auth_problem(_request: Request, exc: _AuthProblem):
 # ── views ────────────────────────────────────────────────────────────────────
 
 
+def spoken_fields(record: dict) -> dict:
+    """The four fields the bot reads out, shaped for TTS (``api/speech.py``).
+
+    ``outlet_name`` (MERCHANT), ``asset_type`` (ASSETMODEL), ``address`` and
+    ``contact_person``: ALL-CAPS words re-cased, acronyms / model numbers
+    kept, abbreviations expanded, the export's address labels and repeats
+    removed.  The stored record (``data/merchants.json``) keeps the CSV text.
+    An absent address / contact person is ``None`` — the connection maps
+    nothing for it, so the workflow's ``exists`` checks stay false.
+    """
+    person = spoken_name(record.get("contact_person"))
+    return {
+        "outlet_name": spoken_name(record.get("outlet_name")) or record.get("outlet_name"),
+        "asset_type": spoken_model(record.get("asset_type")) or record.get("asset_type"),
+        "address": spoken_address(record.get("address"), record.get("contact_person")) or None,
+        "contact_person": person or None,
+    }
+
+
 def merchant_view(match: Match) -> dict:
     record = match.record
+    spoken = spoken_fields(record)
     view = {"lookup_status": "found", "found": True, "verified": True,
             "matched_by": match.matched_by}
-    view.update({k: record.get(k) for k in MERCHANT_FIELDS})
+    view.update({k: spoken.get(k, record.get(k)) for k in MERCHANT_FIELDS})
     view["contact_number_masked"] = mask_contact(str(record.get("contact_number") or ""))
+    view.update({k: spoken[k] for k in VISIT_FIELDS})
     return view
 
 
 def masked_view(record: dict) -> dict:
-    view = {k: record.get(k) for k in MERCHANT_FIELDS if k != "contact_number"}
+    spoken = spoken_fields(record)
+    view = {k: spoken.get(k, record.get(k)) for k in MERCHANT_FIELDS if k != "contact_number"}
     view["contact_number_masked"] = mask_contact(str(record.get("contact_number") or ""))
     return view
 

@@ -148,7 +148,7 @@ def _next_version(c) -> str:
     return f"v{best[0]}.{best[1]}.{best[2] + 1}"
 
 
-def stage_release(c, apply: bool) -> None:
+def stage_release(c, apply: bool, notes: str | None = None) -> None:
     wf = check(c.get(f"/bots/{BOT_ID}/workflow"), "read workflow")
     rels = check(c.get(f"/bots/{BOT_ID}/releases"), "list releases") or []
     open_rel = next((r for r in rels if r.get("stage") in ("draft", "review", "approved")), None)
@@ -159,7 +159,8 @@ def stage_release(c, apply: bool) -> None:
         return
     rel = open_rel or check(c.post(f"/bots/{BOT_ID}/releases", json={
         "version": version,
-        "notes": (f"Merchant lookup API: workflow v{wf['version']} (Terminal ID lookup, pinned 7-8 "
+        "notes": (notes.replace("{wf}", str(wf["version"])) if notes else
+                  f"Merchant lookup API: workflow v{wf['version']} (Terminal ID lookup, pinned 7-8 "
                   "digit capture), connection 'Wordline Merchant Lookup', runtime context without "
                   "merchant fixtures, helpdesk FAQ knowledge source, regression scenarios."),
     }), f"create release {version}")
@@ -181,13 +182,15 @@ def main() -> None:
     p.add_argument("stage", nargs="?", default="all",
                    choices=["knowledge", "scenarios", "recompute", "release", "all"])
     p.add_argument("--report", type=Path, default=None, help="run_chat_scenarios.py --report output")
+    p.add_argument("--notes", default=None,
+                   help="release notes for the release stage ({wf} = pinned workflow version)")
     args = p.parse_args()
     c = client(args.base)
     stages = {
         "knowledge": lambda: stage_knowledge(c, args.apply),
         "scenarios": lambda: stage_scenarios(c, args.apply, args.report, args.base),
         "recompute": lambda: stage_recompute(c, args.apply),
-        "release": lambda: stage_release(c, args.apply),
+        "release": lambda: stage_release(c, args.apply, args.notes),
     }
     for name, fn in stages.items():
         if args.stage in ("all", name):

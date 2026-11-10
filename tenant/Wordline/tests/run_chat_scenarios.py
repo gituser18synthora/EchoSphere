@@ -22,6 +22,10 @@ WORDLINE_MERCHANT_API_KEY in their environment):
         # only the "unavailable" scenario; run the merchant API under a key the
         # platform does not hold first (WORDLINE_MERCHANT_API_KEY=other ./tenant/Wordline/run.sh)
         # so every lookup answers 401 → failure edge, never the not-found re-ask
+    env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --previous-service --base …
+        # an environment whose merchant service predates address / contact person
+        # (DEMO until its code deploy): the record-aware request / visit scenarios
+        # are replaced by their fallback expectations (the original asks run)
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tenant.Wordline.setup.common import BOT_ID, DEFAULT_BASE, client  # noqa: E402
 
 API_DOWN = "--api-down" in sys.argv or "--auth-fail" in sys.argv
+PREVIOUS_SERVICE = "--previous-service" in sys.argv
 
 
 def _opt(flag: str) -> str | None:
@@ -65,7 +70,9 @@ SCENARIOS = {
                              ("slot", "merchant_found=true"), ("slot", "customer_verified=true"),
                              ("slot", "terminal_id=91379784")]),
         (YES, [(T, "n_pr_bank"), ("reply", "axis bank")]),
-        (YES, [(T, "n_pr_asset"), ("reply", "paytivo-7210-2g+wifi")]),
+        # TTS-ready "Paytivo 7210 2G plus WiFi" from the 2026-11-10 service;
+        # "PAYTIVO-7210-2G+WIFI" from a service that predates it — both say "paytivo".
+        (YES, [(T, "n_pr_asset"), ("reply", "paytivo")]),
         (YES, [(T, "n_options"), ("reply", "sms")]),
         ("SMS wala batao", [(T, "n_sms"), ("reply", "575758")]),
         ("no thanks", [(T, "n_end"), ("done", "true")]),
@@ -98,7 +105,8 @@ SCENARIOS = {
         (YES, [(T, "n_bat_bank"), ("reply", "idbi bank")]),
         (YES, [(T, "n_bat_asset"), ("reply", "antera al9220u")]),
         (YES, [(T, "n_bat_contact"), ("reply", "9892858883")]),
-        (YES, [(T, "n_bat_check"), ("reply", "switch off")]),
+        # wf v14 (Wordline team, 2026-11-10): "switch off the terminal" step first
+        (YES, [(T, "n_bat_switch_off"), ("reply", "switch off")]),
     ],
     "spoken_pairs_one_lookup": [
         ("I need paper roll", [(T, "n_ask_tid")]),
@@ -112,6 +120,100 @@ SCENARIOS = {
         ("which bank is my terminal with?", [("reply", "axis")]),
     ],
 }
+# 2026-11-10: the API returns TTS-ready values plus address / contact_person;
+# with a found record the request / visit steps read them back (workflow step 3).
+AGARWAL_ADDRESS = "agarwal public school, bicholi mardana road, indore, madhya pradesh 452016"
+EYE_WORLD_ADDRESS = ("shop number 17, saifee park, 680 dr. mascarenhas road, mazgaon, mumbai, "
+                     "maharashtra 400010")
+_TO_OPTIONS = [
+    ("I need paper roll", [(T, "n_ask_tid")]),
+    ("91379784", [(T, "n_ask_merchant"), ("reply", "agarwal public school")]),
+    (YES, [(T, "n_pr_bank"), ("reply", "axis bank")]),
+    (YES, [(T, "n_pr_asset")]),
+    (YES, [(T, "n_options")]),
+]
+_TO_DAMAGED = [
+    ("battery problem hai", [(T, "n_bat_tid")]),
+    ("1974857A", [(T, "n_bat_details"), ("reply", "eye world optics")]),
+    (YES, [(T, "n_bat_bank")]),
+    (YES, [(T, "n_bat_asset")]),
+    (YES, [(T, "n_bat_contact"), ("reply", "9920125552")]),
+    (YES, [(T, "n_bat_switch_off")]),
+    ("haan switch off kar diya", [(T, "n_bat_check")]),
+    ("battery phool gayi hai, swollen hai", [(T, "n_bat_damaged")]),
+]
+RECORD_SCENARIOS = {
+    "paper_roll_tts_ready_values": [
+        ("I need paper roll", [(T, "n_ask_tid")]),
+        ("91379784", [(T, "n_ask_merchant"), ("reply", "your outlet name is agarwal public school."),
+                      ("slot", f"address={AGARWAL_ADDRESS}"), ("slot", "contact_person=k c tiwari"),
+                      ("slot", "outlet_name=agarwal public school")]),
+        (YES, [(T, "n_pr_bank"), ("reply", "axis bank")]),
+        # the tester may switch to Hindi after "haan theek hai": language-neutral checks
+        (YES, [(T, "n_pr_asset"), ("reply", "model paytivo 7210 2g plus wifi"),
+               ("noreply", "paytivo-7210")]),
+    ],
+    "paper_roll_raise_with_record": [
+        *_TO_OPTIONS,
+        ("aap request raise kar do", [(T, "n_raise_has_record"), (T, "n_raise_record"),
+                                      ("notrace", "n_raise"),
+                                      ("reply", AGARWAL_ADDRESS), ("reply", "k c tiwari"),
+                                      ("noreply", "first, please share"), ("noreply", "{")]),
+        ("sab sahi hai, weekly off sunday hai, subah 10 se shaam 6 baje, 5 rolls chahiye",
+         [(T, "n_anything_else"), ("slot", "request_details=sab sahi hai, weekly off sunday hai, "
+                                           "subah 10 se shaam 6 baje, 5 rolls chahiye")]),
+    ],
+    "battery_damaged_visit_with_record": [
+        *_TO_DAMAGED,
+        ("haan aage badho", [(T, "n_bat_visit_has_record"), (T, "n_bat_visit_record"),
+                             ("notrace", "n_bat_visit"),
+                             ("reply", EYE_WORLD_ADDRESS), ("reply", "ali h"), ("noreply", "{")]),
+        ("address sahi hai, sunday off hai, subah 11 baje aa jaiye",
+         [(T, "n_has_docket"), ("reply", "docket"),
+          ("slot", "visit_details=address sahi hai, sunday off hai, subah 11 baje aa jaiye")]),
+    ],
+}
+# LLM follow-ups once the details are verified (options hub): the verified
+# context carries the TTS-ready values and the model says them as written.
+# Opt-in (--llm-followups): the Testing Studio chat generates these replies with
+# max_tokens=120 on a reasoning model and sometimes gets an empty completion
+# (→ "Sorry, could you tell me a bit more…" / the off-script placeholder) —
+# a platform tester limit, not a bot behaviour; the voice path has its own budget.
+LLM_FOLLOWUPS = {
+    "followup_contact_person_question": [
+        *_TO_OPTIONS,
+        ("What is the contact person name in your records?", [("reply", "k c tiwari"),
+                                                               ("noreply", "t i w a r i")]),
+    ],
+    "followup_registered_address_question": [
+        *_TO_OPTIONS,
+        ("What is my registered address?", [("reply", "bicholi mardana road"),
+                                            ("noreply", "merchant pin code")]),
+    ],
+}
+# The same journeys on a service without the new fields: the gates stay false
+# and the ORIGINAL asks run, word for word.
+PREVIOUS_SERVICE_SCENARIOS = {
+    "paper_roll_raise_previous_service": [
+        *_TO_OPTIONS,
+        ("aap request raise kar do", [(T, "n_raise_has_record"), (T, "n_raise"),
+                                      ("notrace", "n_raise_record"),
+                                      # original script asks for every detail (EN or HI)
+                                      ("reply", "outlet name"), ("noreply", "bicholi")]),
+    ],
+    "battery_damaged_visit_previous_service": [
+        *_TO_DAMAGED,
+        ("haan aage badho", [(T, "n_bat_visit_has_record"), (T, "n_bat_visit"),
+                             ("notrace", "n_bat_visit_record"), ("reply", "complete address"),
+                             ("noreply", "saifee")]),
+    ],
+}
+if PREVIOUS_SERVICE:
+    SCENARIOS.update(PREVIOUS_SERVICE_SCENARIOS)
+else:
+    SCENARIOS.update(RECORD_SCENARIOS)
+    if "--llm-followups" in sys.argv:
+        SCENARIOS.update(LLM_FOLLOWUPS)
 API_DOWN_SCENARIOS = {
     "lookup_unavailable_continues": [
         ("paper roll chahiye", [(T, "n_ask_tid")]),

@@ -55,6 +55,28 @@ Step 2 — ``upgrade_terminal_id_capture`` (2026-11-07, after real voice tests):
    v10 shape) gets a "no / wrong details" edge to an apology message that
    continues the journey unverified.  v12's confirmations already carry
    their own "wrong → disconnect" edges and are left alone.
+
+Step 3 — ``upgrade_visit_details`` (2026-11-10, CSV gained ``Address`` and
+``Contact Person``; the API returns them TTS-ready as ``address`` /
+``contact_person`` and the connection maps them into slots):
+
+6. The two free-text steps that collect the visit details after a Terminal
+   ID lookup — ``n_raise`` (we raise the paper roll request) and
+   ``n_bat_visit`` (engineer visit for a damaged battery) — asked the caller
+   to dictate the outlet name, T-I-D, complete address, contact number and
+   contact person although a verified record already holds them.  A
+   condition ``address exists`` now sits in front of each: with a record the
+   flow goes to a new ask (``n_raise_record`` / ``n_bat_visit_record``) that
+   reads the registered address and contact person back (deterministic
+   ``readback`` groups — one for both values, one for an address without a
+   contact person) and asks only for corrections plus what the record cannot
+   know (weekly off, preferred working time, the paper roll quantity).
+   Without a record — lookup miss, API down, wrong details, the below-80 %
+   journey (no lookup), or a merchant service that predates the two fields —
+   the original node runs unchanged.  The new asks store the answer in the
+   same variable and continue to the same next step, so routing after them
+   is identical.  Edges into the original nodes keep their ids and labels;
+   only their target becomes the gate.
 """
 
 from __future__ import annotations
@@ -149,6 +171,106 @@ TEXT = {
         "hi": ("माफ़ कीजिए Sir, terminal details verify नहीं हो पाईं। फिर भी "
                "मैं battery की problem troubleshoot करने में आपकी मदद कर सकता हूँ।"),
     },
+}
+
+# Step 3 — record-aware visit-detail asks.  ``{address}`` / ``{contact_person}``
+# are rendered by the node's ``readback`` groups from the looked-up slots; the
+# plain ``question`` / ``textByLanguage`` carry no placeholder (they are what a
+# re-ask, the LLM's "pending question" and the Studio editor show).
+VISIT_TEXT = {
+    "n_raise": {
+        "both": {
+            "en": ("I understand, Sir or Ma'am. If you're unable to place the request through SMS "
+                   "or I-V-R, I can raise the paper roll request on your behalf. I already have "
+                   "your Outlet Name, T-I-D and registered contact number. As per our records, "
+                   "your address is {address}, and the contact person is {contact_person}. If any "
+                   "of these details have changed, please tell me the correct ones. Please also "
+                   "share your Work Order details, including your weekly off, your preferred "
+                   "working time when our team can visit, and the required paper roll quantity, "
+                   "which should be between one and nine."),
+            "hi": ("जी सर या मैम, मैं आपकी बात समझ सकता हूँ। अगर आप SMS या I-V-R के जरिए request "
+                   "नहीं कर पा रहे हैं, तो मैं आपकी तरफ से paper roll की request raise कर सकता "
+                   "हूँ। आपका Outlet Name, T-I-D और registered contact number मेरे पास पहले से है। "
+                   "हमारे records के अनुसार आपका address {address} है, और contact person "
+                   "{contact_person} हैं। अगर इनमें से कुछ बदल गया है, तो कृपया सही details "
+                   "बताइए। साथ ही अपने Work Order की details बताइए, जिसमें आपका weekly off भी "
+                   "शामिल हो, अपना preferred working time बताइए, जिस समय हमारी team visit कर सके, "
+                   "और आपको कितने paper rolls चाहिए, उसकी quantity बताइए। ये quantity one से "
+                   "nine के बीच होनी चाहिए।"),
+        },
+        "address_only": {
+            "en": ("I understand, Sir or Ma'am. If you're unable to place the request through SMS "
+                   "or I-V-R, I can raise the paper roll request on your behalf. I already have "
+                   "your Outlet Name, T-I-D and registered contact number. As per our records, "
+                   "your address is {address}. If it has changed, please tell me the correct "
+                   "address. Please also share the contact person's name, your Work Order "
+                   "details, including your weekly off, your preferred working time when our team "
+                   "can visit, and the required paper roll quantity, which should be between one "
+                   "and nine."),
+            "hi": ("जी सर या मैम, मैं आपकी बात समझ सकता हूँ। अगर आप SMS या I-V-R के जरिए request "
+                   "नहीं कर पा रहे हैं, तो मैं आपकी तरफ से paper roll की request raise कर सकता "
+                   "हूँ। आपका Outlet Name, T-I-D और registered contact number मेरे पास पहले से है। "
+                   "हमारे records के अनुसार आपका address {address} है। अगर address बदल गया है, "
+                   "तो कृपया सही address बताइए। साथ ही contact person का नाम, अपने Work Order की "
+                   "details, जिसमें आपका weekly off भी शामिल हो, अपना preferred working time, और "
+                   "paper rolls की quantity बताइए। ये quantity one से nine के बीच होनी चाहिए।"),
+        },
+        "question": {
+            "en": ("Please confirm whether the address and contact person on our records are "
+                   "correct, and share your Work Order details including your weekly off, your "
+                   "preferred working time for our team's visit, and the paper roll quantity, "
+                   "between one and nine."),
+            "hi": ("कृपया बताइए कि हमारे records वाला address और contact person सही हैं या नहीं, "
+                   "और अपने Work Order की details, weekly off, preferred working time और paper "
+                   "rolls की quantity बताइए, जो one से nine के बीच हो।"),
+        },
+    },
+    "n_bat_visit": {
+        "both": {
+            "en": ("To arrange the field engineer's visit, I already have your Outlet Name, T-I-D "
+                   "and registered contact number. As per our records, your address is {address}, "
+                   "and the contact person is {contact_person}. If any of these details have "
+                   "changed, please tell me the correct ones. Please also confirm your weekly off "
+                   "and your preferred working time, so we can proceed with your service request."),
+            "hi": ("Field engineer की visit arrange करने के लिए, आपका Outlet Name, T-I-D और "
+                   "registered contact number मेरे पास पहले से है। हमारे records के अनुसार आपका "
+                   "address {address} है, और contact person {contact_person} हैं। अगर इनमें से "
+                   "कुछ बदल गया है, तो कृपया सही details बताइए। साथ ही कृपया अपना weekly off और "
+                   "preferred working time बताइए, ताकि हम आपकी service request आगे बढ़ा सकें।"),
+        },
+        "address_only": {
+            "en": ("To arrange the field engineer's visit, I already have your Outlet Name, T-I-D "
+                   "and registered contact number. As per our records, your address is {address}. "
+                   "If it has changed, please tell me the correct address. Please also share the "
+                   "contact person's name, your weekly off and your preferred working time, so we "
+                   "can proceed with your service request."),
+            "hi": ("Field engineer की visit arrange करने के लिए, आपका Outlet Name, T-I-D और "
+                   "registered contact number मेरे पास पहले से है। हमारे records के अनुसार आपका "
+                   "address {address} है। अगर address बदल गया है, तो कृपया सही address बताइए। "
+                   "साथ ही contact person का नाम, अपना weekly off और preferred working time "
+                   "बताइए, ताकि हम आपकी service request आगे बढ़ा सकें।"),
+        },
+        "question": {
+            "en": ("Please confirm whether the address and contact person on our records are "
+                   "correct, and share your weekly off and your preferred working time for the "
+                   "engineer's visit."),
+            "hi": ("कृपया बताइए कि हमारे records वाला address और contact person सही हैं या नहीं, "
+                   "और अपना weekly off और engineer की visit के लिए preferred working time बताइए।"),
+        },
+    },
+}
+VISIT_REJECT_PREFIX = {
+    "en": "Sorry Sir, the line may not have been clear. Let me ask again. ",
+    "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। ",
+}
+ADDRESS_VARIABLE = "address"
+PERSON_VARIABLE = "contact_person"
+# original ask → (gate condition id, record ask id, Studio label of the record ask)
+VISIT_STEPS = {
+    "n_raise": ("n_raise_has_record", "n_raise_record",
+                "Paper roll: we raise it — confirm address & contact person from records"),
+    "n_bat_visit": ("n_bat_visit_has_record", "n_bat_visit_record",
+                    "Battery: visit details — confirm address & contact person from records"),
 }
 
 
@@ -439,11 +561,113 @@ def upgrade_terminal_id_capture(definition: dict) -> tuple[dict, list[str]]:
     return upgraded, changes
 
 
+# ── step 3: record-aware visit-detail asks ──────────────────────────────────
+
+
+def is_visit_upgraded(definition: dict) -> bool:
+    ids = {n.get("id") for n in definition.get("nodes") or []}
+    present = [orig for orig in VISIT_STEPS if orig in ids]
+    return bool(present) and all(VISIT_STEPS[orig][1] in ids for orig in present)
+
+
+def _visit_readback(texts: dict) -> dict:
+    """Per-locale readback: one sentence group when both values exist, one
+    for an address without a contact person.  The gate guarantees the
+    address, so one of the two groups always applies."""
+    readback = {}
+    for lang in ("en", "hi"):
+        readback[lang] = {
+            "intro": "",
+            "groups": [
+                {"requires": [ADDRESS_VARIABLE, PERSON_VARIABLE],
+                 "template": texts["both"][lang]},
+                {"requires": [ADDRESS_VARIABLE], "absent": [PERSON_VARIABLE],
+                 "template": texts["address_only"][lang]},
+            ],
+            "fields": [],
+            "question": "",
+        }
+    return readback
+
+
+def _record_ask(original: dict, record_id: str, label: str) -> dict:
+    cfg = original.get("config") or {}
+    texts = VISIT_TEXT[original["id"]]
+    question = dict(texts["question"])
+    config = {
+        "question": question["en"],
+        "variable": cfg.get("variable"),
+        "entityType": cfg.get("entityType") or "text",
+        "responseMode": cfg.get("responseMode") or "fixed",
+        "textByLanguage": question,
+        "readback": _visit_readback(texts),
+        # "Can't hear you" re-ask: a static line (a re-ask cannot render the
+        # record values); the caller can ask for the address and the LLM
+        # answers from the verified record.
+        "rejectedAnswerReply": VISIT_REJECT_PREFIX["en"] + question["en"],
+        "rejectedAnswerReplyByLanguage": {
+            lang: VISIT_REJECT_PREFIX[lang] + question[lang] for lang in ("en", "hi")},
+    }
+    if cfg.get("rejectAnswerPatterns"):
+        config["rejectAnswerPatterns"] = copy.deepcopy(cfg["rejectAnswerPatterns"])
+    return _node(record_id, "ask", label, config,
+                 int(original.get("x", 0)) + 220, int(original.get("y", 0)) + 140)
+
+
+def upgrade_visit_details(definition: dict) -> tuple[dict, list[str]]:
+    """Step 3 (requires step 1): record-aware request / visit asks gated on
+    ``address exists``.  Idempotent; the original asks stay as the fallback."""
+    if not is_upgraded(definition):
+        raise UpgradeError("apply upgrade_workflow (the lookup wiring) first")
+    if is_visit_upgraded(definition):
+        return definition, ["already upgraded (record-aware visit asks present) — no change"]
+    present = {n.get("id") for n in definition.get("nodes") or []} & set(VISIT_STEPS)
+    if not present:
+        return definition, ["no request / visit-detail ask in this workflow — no change"]
+    nodes = copy.deepcopy(list(definition.get("nodes") or []))
+    edges = copy.deepcopy(list(definition.get("edges") or []))
+    by_id = {n["id"]: n for n in nodes}
+    changes: list[str] = []
+    for orig_id, (gate_id, record_id, label) in VISIT_STEPS.items():
+        original = by_id.get(orig_id)
+        if original is None:
+            changes.append(f"{orig_id} not in this workflow — skipped")
+            continue
+        if original.get("kind") != "ask":
+            raise UpgradeError(f"{orig_id} is a {original.get('kind')} node, expected an ask")
+        if record_id in by_id or gate_id in by_id:
+            raise UpgradeError(f"{gate_id}/{record_id} already exist partially — refusing to guess")
+        out = [e for e in edges if e.get("from") == orig_id]
+        if not out:
+            raise UpgradeError(f"{orig_id} has no outgoing edge")
+        redirected = [e for e in edges if e.get("to") == orig_id]
+        for edge in redirected:
+            edge["to"] = gate_id            # ids and labels kept (Studio history)
+        gate = _node(gate_id, "condition", f"{original.get('label') or orig_id}: address on record?",
+                     {"variable": ADDRESS_VARIABLE, "operator": "exists"},
+                     int(original.get("x", 0)), int(original.get("y", 0)) - 140)
+        record = _record_ask(original, record_id, label)
+        nodes.extend([gate, record])
+        edges.append(_edge(gate_id, record_id, "true"))
+        edges.append(_edge(gate_id, orig_id, "false"))
+        for edge in out:
+            new_edge = _edge(record_id, str(edge["to"]), edge.get("label") or None)
+            edges.append(new_edge)
+        changes.append(
+            f"{[e['from'] for e in redirected]} → {gate_id} (address exists) → "
+            f"true: {record_id} / false: {orig_id}; {record_id} → "
+            f"{[str(e['to']) for e in out]} (variable {record['config']['variable']!r})")
+    upgraded = {**definition, "nodes": nodes, "edges": edges}
+    _validate(upgraded)
+    return upgraded, changes
+
+
 def upgrade_all(definition: dict) -> tuple[dict, list[str]]:
-    """Both steps, each idempotent."""
+    """All steps, each idempotent."""
     step1, changes = upgrade_workflow(definition)
     step2, more = upgrade_terminal_id_capture(step1)
-    return step2, changes + more
+    step3, visit = upgrade_visit_details(step2)
+    return step3, changes + more + visit
 
 
 def _validate(definition: dict) -> None:

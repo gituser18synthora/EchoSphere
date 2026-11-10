@@ -1,8 +1,8 @@
 {
   "_meta": {
     "source": "Wordline.csv",
-    "schema_version": 1,
-    "generated_at": "2026-11-06T09:07:09+00:00",
+    "schema_version": 2,
+    "generated_at": "2026-11-10T14:14:17+00:00",
     "record_count": 42,
     "fields": [
       "terminal_id",
@@ -11,7 +11,9 @@
       "asset_type",
       "contact_number",
       "issue_type",
-      "issue_code"
+      "issue_code",
+      "address",
+      "contact_person"
     ],
     "lookup_keys": [
       "terminal_id (digit key)",
@@ -26,7 +28,9 @@
       "asset_type": "PAYTIVO-7210-2G+WIFI",
       "contact_number": "9303333356",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "AGARWAL PUBLIC SCHOOL\nBICHOLI MARDANA ROAD\nINDORE MP\nINDORE - 452016, MADHYA PRADESH\nNew ME Contact No.9303333356\nTerminal Line No.0",
+      "contact_person": "K C TIWARI"
     },
     {
       "terminal_id": "79260453",
@@ -35,7 +39,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9925805050",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "217 SUNSET RAW HOUSE OPP IDBI BANK GURUKUL ROAD DRIVE IN ROAD MEMNAGAR Ahmedabad Ahmedabad 380052",
+      "contact_person": "Kunal Patel"
     },
     {
       "terminal_id": "1231410A",
@@ -44,7 +50,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9892858883",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "SHOP NO AVON PLAZA THAKUR COMPLEX KANDIVALI EAST POISAR EAST",
+      "contact_person": "Dinesh Bhanushali"
     },
     {
       "terminal_id": "3137502A",
@@ -53,7 +61,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "8980818997",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "PARTH PLAZA MORBI GUJRAT",
+      "contact_person": "MAHENDRA SINGH"
     },
     {
       "terminal_id": "3318258A",
@@ -62,7 +72,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "7987261822",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "209 A 9 WESTEND RAJENDRA NAGAR\nHUKMAKHEDI A B ROAD INDORE MADHYA PRADESH",
+      "contact_person": "Mili Mandhan"
     },
     {
       "terminal_id": "2482073A",
@@ -71,7 +83,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9841453746",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "25 CORPORATION SHOPPING COMPLEX INDRANAGAR ADYAR CHENNAI LM NEAR INDRA NAGAR WATER TANK CITY CHENNAI TAMIL NADU",
+      "contact_person": "K MURUGAVELRAJ"
     },
     {
       "terminal_id": "3022650A",
@@ -80,7 +94,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "8788233654",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "CHENETHABHAVAN NAMPALLY HYDERABAD NAMPALLY 500001 HYDERABAD",
+      "contact_person": "TRIFED"
     },
     {
       "terminal_id": "65079917",
@@ -89,7 +105,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9899060710",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "A1 307,SAFDARJUNG ENCLAVE,NEW DELHI,NEW DELHI",
+      "contact_person": "Gaurav Gupta"
     },
     {
       "terminal_id": "1432421A",
@@ -98,7 +116,9 @@
       "asset_type": "LINURA 7220-Hand held GPRS",
       "contact_number": "8240510392",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "79 1 RADHA BALLAVE ROAD NAIHATI\nWEST BENGAL",
+      "contact_person": "MANOTOSH BOSE"
     },
     {
       "terminal_id": "0710141A",
@@ -107,7 +127,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9871250235",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "BUILDING NO 6 RING ROAD LAJPAT NAGAR 4 NEW DELHI",
+      "contact_person": "KABER BANERJEE"
     },
     {
       "terminal_id": "2537486A",
@@ -116,7 +138,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9845416500",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "INDIAN ARTISAN SHOP AT HOTEL DELHI",
+      "contact_person": "TAHIR AHMAD BAZAZ"
     },
     {
       "terminal_id": "1584709A",
@@ -125,7 +149,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9847064055",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "Peringottukara Thrissur KERALA",
+      "contact_person": "Prasanthan K. C"
     },
     {
       "terminal_id": "65019701",
@@ -134,7 +160,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9446239079",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "1/224 GAYATHRI COMPLEX,MAIN ROAD,KOLLENGODE, PALAKKAD-678506 KERALA",
+      "contact_person": "SHAJI KAMALUDHEEN"
     },
     {
       "terminal_id": "2894358A",
@@ -143,7 +171,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "8660656126",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "PROP SHRINIVAS M R NO 298 BY 2997TH CROSS 1ST STAGE DOMLUR KARNATAKA\nBANGALORE URBAN",
+      "contact_person": "SHRINIVAS M R"
     },
     {
       "terminal_id": "1317317A",
@@ -152,7 +182,9 @@
       "asset_type": "ANTERA A9210-Hand held GPRS",
       "contact_number": "7082208151",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "G 12 JOP PLAZA GROUND FLOOR SECTOR 18 NOIDA",
+      "contact_person": "ANJALI"
     },
     {
       "terminal_id": "2592724A",
@@ -161,7 +193,9 @@
       "asset_type": "LINURA 7220-Hand held GPRS",
       "contact_number": "9560887704",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "SUBROTO PARK NEW DELHI",
+      "contact_person": "R S SINGH"
     },
     {
       "terminal_id": "3011346A",
@@ -170,7 +204,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9565813441",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "DEORIA,MALVIYA ROAD Deoria,near jockey showroom UTTAR PRADESH",
+      "contact_person": "KESHAW PRASAD GUPTA"
     },
     {
       "terminal_id": "1964939A",
@@ -179,7 +215,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "8489122112",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "DOOR NO 61 INDIRA NAGAR ZONE 2 MADURAI 625020 TAMIL NADU",
+      "contact_person": "WYT HOSPITALITY SERVICES"
     },
     {
       "terminal_id": "3167106A",
@@ -188,7 +226,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9308048120",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "19TH FLOOR F WING LOTUS CORPORATE PARK JAY COACH JUNCTION\nOFF WESTERN EXPRESS HIGHWAY GOREGAON EAST",
+      "contact_person": "SPYKAR LIFESTYLES PRIVATE LIMITED"
     },
     {
       "terminal_id": "81970696",
@@ -197,7 +237,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9820541658",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "Ground floor shop no 16 A floor B block Cushrow Baug SBS Road Electric house MUMBAI",
+      "contact_person": "ANIL PARMAR"
     },
     {
       "terminal_id": "10964261",
@@ -206,7 +248,9 @@
       "asset_type": "ANTERA A9210-Hand held GPRS",
       "contact_number": "8495833333",
       "issue_type": "Paper Roll",
-      "issue_code": "paper_roll"
+      "issue_code": "paper_roll",
+      "address": "H NO 03 73/28 KHAJAGUDA SERILINGAMPALLY HYDERABAD",
+      "contact_person": "ARUTLA SHANTHAN KUMAR REDDY"
     },
     {
       "terminal_id": "32577872",
@@ -215,7 +259,9 @@
       "asset_type": "PAYTIVO-7210-2G+WIFI",
       "contact_number": "9730030993",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "HOUSE NO.14, WARD NO 1 GAJANAN NAGAR ARVI ROAD,\nGRAMPANCHAYAT PIPRI NEGHE WARDHA 442001\nWARDHA - 442001, MAHARASHTRA",
+      "contact_person": "TARUN LAXMANDAS BHATIA"
     },
     {
       "terminal_id": "2305073A",
@@ -224,7 +270,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "8340294140",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "WARD NO 12 SHOP NO 14 GOLA BAZAR SHERGHATI GAYA\nMerchant Pin Code - 824211 Merchant State - BIHAR",
+      "contact_person": "NITISH KUMAR"
     },
     {
       "terminal_id": "2544083A",
@@ -233,7 +281,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9880905195",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "M S SADHANA GANADHI QUARE\nMerchant Pin Code\n570001\nMerchant State\nKARNATAKA",
+      "contact_person": "DILIPLKUMAR JAIN"
     },
     {
       "terminal_id": "2957818A",
@@ -242,7 +292,9 @@
       "asset_type": "ANTERA A9210-Hand held GPRS",
       "contact_number": "6005037463",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "BAGA BEACH ROAD OPPOSITE PR ENTERPRISES BAGA BARDEZ\nMerchant Pin Code\n403516\nMerchant State\nGOA",
+      "contact_person": "ALTAF AHMED LATTU"
     },
     {
       "terminal_id": "1974857A",
@@ -251,7 +303,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9920125552",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "SHOP NO 17, SAIFEE PARK, 680\nDR. MASCARENHAS ROAD, MAZGAON , MUMBAI\nMerchant Pin Code\n400010\nMerchant State\nMAHARASHTRA",
+      "contact_person": "ALI H"
     },
     {
       "terminal_id": "1132986A",
@@ -260,7 +314,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "7276781631",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "SHOP NO 6 G/F TUSHAR RESIDENCY BLDG\nNO A2 MILKAT NO 1060302347 PIMPLE SOUDAGAR RD PIMPRIGAON PIMPRI PUNE\nMerchant Pin Code\n411027\nMerchant State\nMAHARASHTRA",
+      "contact_person": "KAMLESH SOLANKI"
     },
     {
       "terminal_id": "1372318A",
@@ -269,7 +325,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9372629211",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "PLOT NO 13 MOUZA WADGAON NAGPUR ROAD CHANDRAPUR\nMerchant Pin Code\n442401\nMerchant State\nMAHARASHTRA",
+      "contact_person": "SANGITA GOVINDWAR"
     },
     {
       "terminal_id": "A2129007",
@@ -278,7 +336,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9372204684",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "PROP Anand Shantaram Satam\nSHOP NO 3 VIMALABAI SHOPING CENTRE SHYAM NAGAR MUMBAI\nMerchant Pin Code\n400060\nMerchant State\nMAHARASHTRA",
+      "contact_person": "ANAND SHANTARAM SATAM"
     },
     {
       "terminal_id": "1257524A",
@@ -287,7 +347,9 @@
       "asset_type": "ANTERA A9210-Hand held GPRS",
       "contact_number": "9043439629",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "NO 380,NSK SALAI ARCOT ROAD KODAMBAKKAM,CHENNAI-600024\nMerchant Pin Code\n600024\nMerchant State\nTAMIL NADU",
+      "contact_person": "PELIKAN OFFICE AUTOMATION"
     },
     {
       "terminal_id": "3096651A",
@@ -296,7 +358,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9072891145",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "ELIYARACKAL,KONNI,PATHANAMTHITTA,\nMerchant Pin Code\n689691\nMerchant State\nKERALA",
+      "contact_person": "Thankappan Rajeev"
     },
     {
       "terminal_id": "3493433A",
@@ -305,7 +369,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "7094361803",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "Ground Floor No 48A Sri Ram\nHospital Pandian Nagar Byepass Road West Madurai Ma\nMerchant Pin Code\n625016\nMerchant State\nTAMIL NADU",
+      "contact_person": "Subbiah"
     },
     {
       "terminal_id": "65004683",
@@ -314,7 +380,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9746988599",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "MGP 2 598 B C AND D FIRST AND SECOND FLR,METRO PLAZA HIDAYATH NAGAR,UPPALA KASARAGOD KERALA,\nKASARGOD\nMerchant Pin Code\n671322\nMerchant State\nKERALA",
+      "contact_person": "ABDULLA A ARIKADY"
     },
     {
       "terminal_id": "2905862A",
@@ -323,7 +391,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9640084843",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "6 46 OLD BAZAR STREET CHOPPADANDI KARIMANGAR 505415\nMerchant Pin Code\n505415\nMerchant State\nTELANGANA",
+      "contact_person": "SHANKAR MEDICAL AND GENERAL STOR"
     },
     {
       "terminal_id": "3068540A",
@@ -332,7 +402,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9885484249",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "36 DECCAN CHRONICLE HOLDINGS LTD SAROJINI DEVI\nROAD SECUNDERABAD\nMerchant Pin Code\n500003\nMerchant State\nTELANGANA\nVENKATA SRINIVASA SESHA SAI VANG",
+      "contact_person": "VENKATA SRINIVASA SESHA SAI VANG"
     },
     {
       "terminal_id": "4166725M",
@@ -341,7 +413,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9841122211",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "NO 167 56\nBANU NAGAR MAIN ROAD\nMerchant Pin Code\n600053\nMerchant State\nTAMIL NADU",
+      "contact_person": "N GEETHA"
     },
     {
       "terminal_id": "3440498A",
@@ -350,7 +424,9 @@
       "asset_type": "LINURA 7220-Hand held GPRS",
       "contact_number": "9821336157",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "SHOP NO 2/3 SITLADEVI TRUST BLDG\nMerchant Pin Code\n400016\nMerchant State\nMAHARASHTRA",
+      "contact_person": "HARI GORI"
     },
     {
       "terminal_id": "3539060A",
@@ -359,7 +435,9 @@
       "asset_type": "LINURA 7220-Hand held GPRS",
       "contact_number": "9980692961",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "GRAND MAJESTIC MALL GANDHI NAGAR MAJESTIC BANGALORE\nGANDHI NAGAR MAJESTIC BANGALORE 560009\nMerchant Pin Code\n560009\nMerchant State\nKARNATAKA",
+      "contact_person": "USHA"
     },
     {
       "terminal_id": "3139511A",
@@ -368,7 +446,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "8800579867",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "15 AMAM VILLA BARAUT ROAD NEAR HP PETROL PUMP\nMerchant Pin Code\n250609\nMerchant State\nUTTAR PRADESH",
+      "contact_person": "YOGENDRA CHAUHAN"
     },
     {
       "terminal_id": "3351386A",
@@ -377,7 +457,9 @@
       "asset_type": "LINURA 7220-Hand held GPRS",
       "contact_number": "8004750009",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "SUPER SHOPING CENTRE FAIZABAD ROAD\nINDIRA NAGAR LUCKNOW FAIZABAD ROAD LUCKNOW\nMerchant Pin Code\n226016\nMerchant State\nUTTAR PRADESH",
+      "contact_person": "SIDDHANT GARG"
     },
     {
       "terminal_id": "76976654",
@@ -386,7 +468,9 @@
       "asset_type": "ANTERA AL9220U-Hand held GPRS",
       "contact_number": "9833890836",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "SHOP NO 4 SAMARAPAN CHS HINDU FRIENDS SOC ROAD\nISMAIL YUSUF COLLEGE GATE JOGESHWARI EAST\nMerchant Pin Code\n400060\nMerchant State\nMAHARASHTRA",
+      "contact_person": "GOPAL SINGH"
     },
     {
       "terminal_id": "73973908",
@@ -395,7 +479,9 @@
       "asset_type": "Paytivo 7210-Hand held GPRS",
       "contact_number": "9997907907",
       "issue_type": "Battery Issue",
-      "issue_code": "battery_issue"
+      "issue_code": "battery_issue",
+      "address": "46 EAST CANAL ROAD DEHRADUN\nMerchant Pin Code\n248001\nMerchant State\nUTTARAKHAND",
+      "contact_person": "RATIK AURORA"
     }
   ]
 }

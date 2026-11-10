@@ -27,7 +27,10 @@ Why these settings:
 * ``sensitiveMasks`` keep the contact number out of traces and events.
 * ``responseMapping`` targets are the slot names the read-back nodes speak;
   ``customer_verified`` makes the looked-up facts available to the LLM for
-  follow-up questions once the merchant is found.
+  follow-up questions once the merchant is found.  ``address`` and
+  ``contact_person`` (added 2026-11-10) feed the workflow's record-aware
+  request / visit steps; a source missing from the response (an API that
+  predates them) is simply not mapped, so the steps fall back to asking.
 """
 
 from __future__ import annotations
@@ -85,6 +88,10 @@ CONNECTION = {
         {"source": "bank_name", "target": "bank_name"},
         {"source": "asset_type", "target": "asset_type"},
         {"source": "contact_number", "target": "contact_number"},
+        # 2026-11-10 export: the visit / request-raising steps read these back
+        # (TTS-ready from the API).  A service without the fields maps nothing.
+        {"source": "address", "target": "address"},
+        {"source": "contact_person", "target": "contact_person"},
     ],
     "botId": BOT_ID,
 }

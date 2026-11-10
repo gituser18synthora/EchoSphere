@@ -4,15 +4,22 @@ The source file (``Wordline.csv``, tab-separated despite the name) is the
 field-team export of merchant terminals with an open paper-roll or battery
 ticket.  Columns map one-to-one onto the JSON records the tenant API serves:
 
-    ANCHORAPPTID → terminal_id      (alphanumeric, e.g. ``1231410A``)
-    MERCHANT     → outlet_name
-    Bank Name    → bank_name
-    ASSETMODEL   → asset_type       (terminal model)
-    Contact No   → contact_number   (10-digit Indian mobile, digits only)
-    Type         → issue_type       (+ ``issue_code``, a slug of it)
+    ANCHORAPPTID   → terminal_id      (alphanumeric, e.g. ``1231410A``)
+    MERCHANT       → outlet_name
+    Bank Name      → bank_name
+    ASSETMODEL     → asset_type       (terminal model)
+    Contact No     → contact_number   (10-digit Indian mobile, digits only)
+    Address        → address          (optional; multi-line, kept line by line)
+    Contact Person → contact_person   (optional)
+    Type           → issue_type       (+ ``issue_code``, a slug of it)
 
 No value is reshaped beyond whitespace trimming and the contact-number
 digit normalisation, so every record can be traced back to its CSV row.
+The TTS-friendly casing of names, models and addresses is applied by the
+API when it answers (``api/speech.py``), not here.  Header names are
+matched after trimming (the 2026-11-10 export has ``"Contact Person "``).
+``Address`` and ``Contact Person`` are optional: an older export without
+them, or an empty cell, converts with an empty value.
 The converter refuses files whose terminal ids, digit keys (what a caller
 dictates — see the API) or contact numbers collide, because the voice
 workflow resolves callers by exactly those keys.
@@ -40,7 +47,7 @@ TENANT_DIR = Path(__file__).resolve().parent.parent
 CSV_PATH = TENANT_DIR / "Wordline.csv"
 JSON_PATH = TENANT_DIR / "data" / "merchants.json"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 COLUMNS = {
     "ANCHORAPPTID": "terminal_id",
     "MERCHANT": "outlet_name",
@@ -49,7 +56,12 @@ COLUMNS = {
     "Contact No": "contact_number",
     "Type": "issue_type",
 }
-FIELDS = [*COLUMNS.values(), "issue_code"]
+# Added by the 2026-11-10 export; optional so older exports still convert.
+OPTIONAL_COLUMNS = {
+    "Address": "address",
+    "Contact Person": "contact_person",
+}
+FIELDS = [*COLUMNS.values(), "issue_code", *OPTIONAL_COLUMNS.values()]
 LOOKUP_KEYS = ["terminal_id (digit key)", "contact_number (last 10 digits)"]
 
 _TERMINAL_ID = re.compile(r"^[A-Z0-9]{4,12}$")
@@ -79,16 +91,30 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     text = path.read_text(encoding="utf-8-sig")
     delimiter = _sniff_dialect(text)
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-    missing = [c for c in COLUMNS if c not in (reader.fieldnames or [])]
+    # "Contact Person " (trailing space in the export) is "Contact Person".
+    reader.fieldnames = [" ".join((name or "").split()) for name in (reader.fieldnames or [])]
+    missing = [c for c in COLUMNS if c not in reader.fieldnames]
     if missing:
         raise ConversionError(
             f"{path.name}: missing column(s) {missing}; found {reader.fieldnames}")
     rows = []
-    for number, row in enumerate(reader, start=2):
-        if not any((v or "").strip() for v in row.values()):
+    for row in reader:
+        if not any((v or "").strip() for v in row.values() if isinstance(v, str)):
             continue  # blank line
-        rows.append({"_line": number, **{c: (row.get(c) or "").strip() for c in COLUMNS}})
+        rows.append({
+            # Quoted multi-line cells span several physical lines; report the
+            # line the record ends on (what an editor shows for the row).
+            "_line": reader.line_num,
+            **{c: (row.get(c) or "").strip() for c in COLUMNS},
+            **{c: clean_multiline(row.get(c)) for c in OPTIONAL_COLUMNS},
+        })
     return rows
+
+
+def clean_multiline(raw: str | None) -> str:
+    """Trim every line, drop empty ones, keep the line structure (addresses)."""
+    lines = [" ".join(line.split()) for line in (raw or "").splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def convert_rows(rows: list[dict[str, str]]) -> list[dict]:
@@ -127,6 +153,8 @@ def convert_rows(rows: list[dict[str, str]]) -> list[dict]:
             "issue_code": slug(row["Type"]),
         }
         empty = [k for k, v in record.items() if not v]
+        record["address"] = row.get("Address", "")
+        record["contact_person"] = " ".join(row.get("Contact Person", "").split())
         if empty:
             problems.append(f"line {line}: empty value(s) for {empty}")
             continue

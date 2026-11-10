@@ -1,0 +1,1876 @@
+{
+ "id": "wf_0a6550d061e6",
+ "name": "Paper roll and battery support",
+ "version": 17,
+ "status": "approved",
+ "_note": "DEMO wf_0a6550d061e6 v17 as saved by the Wordline team (2026-11-10), identical nodes/edges to LOCAL v14; offline fixture for step 3",
+ "nodes": [
+  {
+   "x": 40,
+   "y": 200,
+   "id": "n_start",
+   "kind": "start",
+   "label": "Call starts",
+   "config": {
+    "behavior": {
+     "max_node_steps": 40
+    }
+   }
+  },
+  {
+   "x": 240,
+   "y": 200,
+   "id": "n_ctx_customer_name",
+   "kind": "ask",
+   "label": "Read merchant name from call data (silent)",
+   "config": {
+    "variable": "ctx_customer_name",
+    "prefillOnly": true,
+    "prefillFromContext": "customer_name"
+   }
+  },
+  {
+   "x": 440,
+   "y": 200,
+   "id": "n_entry_gate",
+   "kind": "ask",
+   "label": "Opening line — paper roll request (silent)",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "synonymPatterns": {
+      "low80": [
+       "(?<![\\d.])(?:80|८०)(?![\\d.])",
+       "(?i)\\beighty\\b",
+       "(?i)\\bassi\\s+(?:percent|%|pratishat)",
+       "अस्सी",
+       "(?i)\\b(?:4|four|char|chaar)\\s*(?:ghante|ghanta|hours?|hrs?)\\b",
+       "(?:4|४|चार)\\s*घंटे",
+       "(?i)\\bfull\\s+charge\\s+nahi\\s+hu",
+       "पूरी\\s+चार्ज\\s+नहीं\\s+हु",
+       "(?i)\\bcharge\\s+nahi\\s+hu(?:i|a|yi)\\b",
+       "चार्ज\\s+नहीं\\s+हु(?:ई|आ)",
+       "(?i)\\babhi\\s+bhi\\s+(?:low|kam)\\b",
+       "अभी\\s+भी\\s+(?:लो|कम)\\b",
+       "(?i)\\bnot\\s+charging\\s+beyond\\b",
+       "(?i)\\bstill\\s+(?:below|under)\\b",
+       "(?i)\\b(?:full|poori|puri|pura|poora)\\s+charge\\s+(?:nahi|nahin|nhi)\\b",
+       "(?:पूरी|पूरा|फुल|फ़ुल)\\s+चार्ज\\s+(?:नहीं|नही)",
+       "(?i)\\b(?:not|never|doesn'?t|does\\s+not|won'?t|isn'?t|is\\s+not)\\s+(?:get(?:ting)?\\s+)?(?:charg\\w*\\s+fully|fully\\s+charg\\w*)",
+       "(?i)(?<![\\d.])[1-7]?\\d\\s*(?:%|percent|pratishat)\\b.{0,40}?(?:atak|ruk|stuck|aage\\s+nahi|upar\\s+nahi|se\\s+(?:zyada|jyada|aage|upar)\\s+nahi|tak\\s+hi|beyond|above|not\\s+(?:going|increasing|rising))",
+       "(?<![\\d.])[1-7]?\\d\\s*(?:%|परसेंट|प्रतिशत).{0,40}?(?:अटक|रुक|आगे\\s+नहीं|ऊपर\\s+नहीं|से\\s+(?:ज़्यादा|ज्यादा|आगे|ऊपर)\\s+नहीं|तक\\s+ही)",
+       "(?i)\\b(?:stuck|atak\\w*|ruk\\w*)\\b.{0,20}?(?<![\\d.])[1-7]?\\d\\s*(?:%|percent|pratishat)",
+       "(?:अटक|रुक).{0,20}?(?<![\\d.])[1-7]?\\d\\s*(?:%|परसेंट|प्रतिशत)",
+       "(?i)\\bcharg\\w*\\b.{0,40}?\\b(?:phir\\s+bhi|fir\\s+bhi|abhi\\s+bhi|tab\\s+bhi)\\b.{0,30}?\\b(?:kam|low|less)\\b",
+       "चार्ज.{0,40}?(?:फिर\\s+भी|अभी\\s+भी|तब\\s+भी).{0,30}?(?:कम|लो)",
+       "(?i)\\bstill\\s+(?:low|less)\\b.{0,30}?\\bafter\\s+(?:charg|\\d+\\s+hours?)",
+       "(?i)\\bafter\\s+charg\\w*\\b.{0,40}?\\bstill\\s+(?:low|less|below)\\b"
+      ],
+      "battery": [
+       "(?i)batter",
+       "बैटरी",
+       "(?i)\\b(?:power\\s+)?cell\\b",
+       "(?:^|\\s)सेल(?:\\s|$|[।.?,])",
+       "(?i)\\bbackup\\b",
+       "बैकअप",
+       "(?i)\\b(?:dis)?charging\\b",
+       "चार्जिंग",
+       "(?i)\\bswollen\\b"
+      ],
+      "paperroll": [
+       "(?i)\\bpaper|\\b(?:rolls?|role|kaa?ga[zj]|slip)\\b|\\breceipt|\\bprint",
+       "पेपर|रोल|कागज़|कागज|रसीद|पर्ची|प्रिंट"
+      ]
+     }
+    },
+    "question": "How may I assist you today?",
+    "variable": "request_type",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "How may I assist you today?",
+     "hi": "बताइए, मैं आज आपकी क्या help कर सकता हूँ?"
+    },
+    "responseDirective": "Silent step: reads the caller's opening line. A line about the battery staying below 80% after charging is 'low80', another battery line is 'battery', anything else is 'paperroll'. The question is spoken only if the workflow ever starts without a caller line.",
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. How may I assist you today?",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. How may I assist you today?",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। बताइए, मैं आज आपकी क्या help कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 640,
+   "y": 200,
+   "id": "n_ask_tid",
+   "kind": "ask",
+   "label": "Ask Terminal ID",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?<!\\d)(\\d(?:[\\s-]?\\d){6,7})(?!\\d)"
+    },
+    "question": "Sure Sir. I'll help you with your paper roll request. Before proceeding, I'd like to verify a few details. May I please have your Terminal id?",
+    "variable": "spoken_terminal_id",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sure Sir. I'll help you with your paper roll request. Before proceeding, I'd like to verify a few details. May I please have your Terminal id?",
+     "hi": "Sir, आगे बढ़ने से पहले, मुझे कुछ details verify करनी हैं। क्या आप please अपना Terminal id बता सकते हैं?"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. Sure Sir. I'll help you with your paper roll request. Before proceeding, I'd like to verify a few details. May I please have your Terminal id?",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. Sure Sir. I'll help you with your paper roll request. Before proceeding, I'd like to verify a few details. May I please have your Terminal id?",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। Sir, आगे बढ़ने से पहले, मुझे कुछ details verify करनी हैं। क्या आप please अपना Terminal id बता सकते हैं?"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": 200,
+   "id": "n_options",
+   "kind": "intent",
+   "label": "Verified — SMS, IVR, or we raise it?",
+   "config": {
+    "prompt": "Thank you, Sir. I have verified your terminal and merchant details. Now, I'll guide you through the available options for requesting paper rolls. Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you, Sir. I have verified your terminal and merchant details. Now, I'll guide you through the available options for requesting paper rolls. Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+     "hi": "धन्यवाद सर। मैंने आपके terminal और merchant details verify कर ली हैं। अब मैं आपको paper rolls request करने के available options बताता हूँ। सर, आप SMS या हमारी IVR service के जरिए paper rolls request कर सकते हैं। अगर आप चाहें, तो मैं आपकी तरफ से भी paper roll की request raise कर सकता हूँ। आप इनमें से किस option के बारे में जानना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1300,
+   "y": 40,
+   "id": "n_sms",
+   "kind": "intent",
+   "label": "SMS steps + anything else?",
+   "config": {
+    "prompt": "sir to request paper rolls, you need to send an SMS in the following format: Type R-O-L-L, followed by a space, your M-I-D number, another space, and the required quantity. Please make sure to add a zero before your M-I-D number. Then, send the SMS to 575758. Before sending, please double-check that you've entered the correct M-I-D number and required quantity. Sir is there anything else I can help you with today?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "sir to request paper rolls, you need to send an SMS in the following format: Type R-O-L-L, followed by a space, your M-I-D number, another space, and the required quantity. Please make sure to add a zero before your M-I-D number. Then, send the SMS to 575758. Before sending, please double-check that you've entered the correct M-I-D number and required quantity. Sir is there anything else I can help you with today?",
+     "hi": "sir paper rolls request करने के लिए आपको एक SMS भेजना होगा। SMS में पहले आर, ओ, एल, एल लिखें, फिर space देकर अपना M-I-D number और उसके बाद required quantity enter करें। ध्यान रखें, M-I-D number से पहले zero जरूर लगाएं। इसके बाद ये SMS 575758 पर भेज दें। SMS भेजने से पहले एक बार confirm कर लें कि आपने सही M-I-D number और required quantity enter की है। सर क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1300,
+   "y": 200,
+   "id": "n_ivr",
+   "kind": "intent",
+   "label": "IVR steps + anything else?",
+   "config": {
+    "prompt": "sir, you can place a paper roll request through our I-V-R service by following these steps. Step one. Call one eight six zero, two three three two, three three two. Or, call zero two two, four zero four two, six zero six zero. Step two. Select your preferred language. Step three. Enter your Terminal I-D. Step four. Press two to select the paper roll request option. Step five. Select the required quantity by pressing any number from one to nine. Step six. Enter any valid ten-digit mobile number and press the hash key. Once the process is completed, your paper roll request will be registered. The docket number will be sent to the mobile number you entered. Sir is there anything else I can help you with today?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "sir, you can place a paper roll request through our I-V-R service by following these steps. Step one. Call one eight six zero, two three three two, three three two. Or, call zero two two, four zero four two, six zero six zero. Step two. Select your preferred language. Step three. Enter your Terminal I-D. Step four. Press two to select the paper roll request option. Step five. Select the required quantity by pressing any number from one to nine. Step six. Enter any valid ten-digit mobile number and press the hash key. Once the process is completed, your paper roll request will be registered. The docket number will be sent to the mobile number you entered. Sir is there anything else I can help you with today?",
+     "hi": "आप paper roll की request हमारी I-V-R service के जरिए भी कर सकते हैं। इसके लिए ये steps follow कीजिए। Step one. One eight six zero, two three three two, three three two पर call कीजिए। या फिर zero two two, four zero four two, six zero six zero पर call कीजिए। Step two. अपनी preferred language select कीजिए। Step three. अपना Terminal I-D enter कीजिए। Step four. Paper roll request का option select करने के लिए two press कीजिए। Step five. जितने paper rolls चाहिए, उनकी quantity select करने के लिए one से nine के बीच कोई भी number press कीजिए। Step six. कोई भी valid ten-digit mobile number enter कीजिए और hash key press कीजिए। Process complete होने के बाद आपकी paper roll request register हो जाएगी। आपका docket number आपके दिए गए mobile number पर भेज दिया जाएगा। सर क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1300,
+   "y": 360,
+   "id": "n_raise",
+   "kind": "ask",
+   "label": "We raise it — the eight details needed",
+   "config": {
+    "question": "I understand, Sir or Ma'am. If you're unable to place the request through SMS or I-V-R, I can help you by raising the paper roll request on your behalf. To proceed, I'll need a few details from you. First, please share your Merchant or Outlet Name. Second, your T-I-D number. Third, your complete address. Fourth, your Work Order details, including your weekly off. Fifth, your preferred working time, when our team can visit. Sixth, a contact number. Seventh, the contact person's name. And finally, the required paper roll quantity, which should be between one and nine. Please share these details one by one, and I'll register your request right away.",
+    "variable": "request_details",
+    "entityType": "text",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "I understand, Sir or Ma'am. If you're unable to place the request through SMS or I-V-R, I can help you by raising the paper roll request on your behalf. To proceed, I'll need a few details from you. First, please share your Merchant or Outlet Name. Second, your T-I-D number. Third, your complete address. Fourth, your Work Order details, including your weekly off. Fifth, your preferred working time, when our team can visit. Sixth, a contact number. Seventh, the contact person's name. And finally, the required paper roll quantity, which should be between one and nine. Please share these details one by one, and I'll register your request right away.",
+     "hi": "जी सर या मैम, मैं आपकी बात समझ सकता हूँ। अगर आप SMS या I-V-R के जरिए request नहीं कर पा रहे हैं, तो मैं आपकी तरफ से paper roll की request raise करने में आपकी मदद कर सकता हूँ। इसके लिए मुझे आपसे कुछ details चाहिए होंगी। सबसे पहले, अपना Merchant या Outlet Name बताइए। दूसरा, अपना T-I-D number बताइए। तीसरा, अपना पूरा address बताइए। चौथा, अपने Work Order की details बताइए, जिसमें आपका weekly off भी शामिल हो। पाँचवाँ, अपना preferred working time बताइए, जिस समय हमारी team visit कर सके। छठा, अपना contact number बताइए। सातवाँ, contact person का नाम बताइए। और आखिर में, आपको कितने paper rolls चाहिए, उसकी quantity बताइए। ये quantity one से nine के बीच होनी चाहिए। कृपया ये सभी details मुझे एक-एक करके बताइए, ताकि मैं तुरंत आपकी request register कर सकूँ।"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. I understand, Sir or Ma'am. If you're unable to place the request through SMS or I-V-R, I can help you by raising the paper roll request on your behalf. To proceed, I'll need a few details from you. First, please share your Merchant or Outlet Name. Second, your T-I-D number. Third, your complete address. Fourth, your Work Order details, including your weekly off. Fifth, your preferred working time, when our team can visit. Sixth, a contact number. Seventh, the contact person's name. And finally, the required paper roll quantity, which should be between one and nine. Please share these details one by one, and I'll register your request right away.",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. I understand, Sir or Ma'am. If you're unable to place the request through SMS or I-V-R, I can help you by raising the paper roll request on your behalf. To proceed, I'll need a few details from you. First, please share your Merchant or Outlet Name. Second, your T-I-D number. Third, your complete address. Fourth, your Work Order details, including your weekly off. Fifth, your preferred working time, when our team can visit. Sixth, a contact number. Seventh, the contact person's name. And finally, the required paper roll quantity, which should be between one and nine. Please share these details one by one, and I'll register your request right away.",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। जी सर या मैम, मैं आपकी बात समझ सकता हूँ। अगर आप SMS या I-V-R के जरिए request नहीं कर पा रहे हैं, तो मैं आपकी तरफ से paper roll की request raise करने में आपकी मदद कर सकता हूँ। इसके लिए मुझे आपसे कुछ details चाहिए होंगी। सबसे पहले, अपना Merchant या Outlet Name बताइए। दूसरा, अपना T-I-D number बताइए। तीसरा, अपना पूरा address बताइए। चौथा, अपने Work Order की details बताइए, जिसमें आपका weekly off भी शामिल हो। पाँचवाँ, अपना preferred working time बताइए, जिस समय हमारी team visit कर सके। छठा, अपना contact number बताइए। सातवाँ, contact person का नाम बताइए। और आखिर में, आपको कितने paper rolls चाहिए, उसकी quantity बताइए। ये quantity one से nine के बीच होनी चाहिए। कृपया ये सभी details मुझे एक-एक करके बताइए, ताकि मैं तुरंत आपकी request register कर सकूँ।"
+    }
+   }
+  },
+  {
+   "x": 1540,
+   "y": 360,
+   "id": "n_anything_else",
+   "kind": "intent",
+   "label": "Anything else? (paper roll details / battery steps)",
+   "config": {
+    "prompt": "Sir is there anything else I can help you with today?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir is there anything else I can help you with today?",
+     "hi": "सर क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1780,
+   "y": 200,
+   "id": "n_end",
+   "kind": "end",
+   "label": "Thank you — end call",
+   "config": {
+    "text": "Thank you for confirming, Sir. I am glad I could assist you today. Thank you for contacting us. Have a nice day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for confirming, Sir. I am glad I could assist you today. Thank you for contacting us. Have a nice day.",
+     "hi": "Confirm करने के लिए आपका धन्यवाद सर। मुझे खुशी है कि मैं आज आपकी मदद कर सका। हमसे संपर्क करने के लिए आपका धन्यवाद। आपका दिन शुभ रहे।"
+    }
+   }
+  },
+  {
+   "x": 240,
+   "y": 360,
+   "id": "n_ctx_docket",
+   "kind": "ask",
+   "label": "Read docket number from call data (silent)",
+   "config": {
+    "variable": "ctx_docket_number",
+    "prefillOnly": true,
+    "prefillFromContext": "docket_number"
+   }
+  },
+  {
+   "x": 560,
+   "y": 360,
+   "id": "n_is_battery",
+   "kind": "condition",
+   "label": "Battery problem?",
+   "config": {
+    "value": "battery",
+    "operator": "equals",
+    "variable": "request_type"
+   }
+  },
+  {
+   "x": 760,
+   "y": 440,
+   "id": "n_bat_tid",
+   "kind": "ask",
+   "label": "Battery: ask Terminal ID",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?<!\\d)(\\d(?:[\\s-]?\\d){6,7})(?!\\d)"
+    },
+    "question": "Sure, Sir I will help you troubleshoot the issue. Before proceeding, I need to confirm a few details. Could you please confirm your T-I-D, that is, your Terminal Identification Number?",
+    "variable": "spoken_terminal_id",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sure, Sir I will help you troubleshoot the issue. Before proceeding, I need to confirm a few details. Could you please confirm your T-I-D, that is, your Terminal Identification Number?",
+     "hi": "Sir मैं आपकी problem troubleshoot करने में मदद करूँगा। आगे बढ़ने से पहले, मुझे आपसे कुछ details confirm करनी होंगी। सबसे पहले, क्या आप अपना T-I-D, यानी Terminal Identification Number confirm कर सकते हैं?"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. Sure, Sir I will help you troubleshoot the issue. Before proceeding, I need to confirm a few details. Could you please confirm your T-I-D, that is, your Terminal Identification Number?",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. Sure, Sir I will help you troubleshoot the issue. Before proceeding, I need to confirm a few details. Could you please confirm your T-I-D, that is, your Terminal Identification Number?",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। Sir मैं आपकी problem troubleshoot करने में मदद करूँगा। आगे बढ़ने से पहले, मुझे आपसे कुछ details confirm करनी होंगी। सबसे पहले, क्या आप अपना T-I-D, यानी Terminal Identification Number confirm कर सकते हैं?"
+    }
+   }
+  },
+  {
+   "x": 1000,
+   "y": 520,
+   "id": "n_bat_check",
+   "kind": "intent",
+   "label": "Open the back panel — battery normal, hot, swollen or damaged?",
+   "config": {
+    "prompt": "Now, kindly open the back panel of the terminal and check the battery condition. Please tell me, is the battery normal, or is it overheating, swollen, or showing any visible damage?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Now, kindly open the back panel of the terminal and check the battery condition. Please tell me, is the battery normal, or is it overheating, swollen, or showing any visible damage?",
+     "hi": "अब terminal का back panel खोलकर battery की condition check कीजिए। कृपया बताइए, battery normal है, या ज्यादा गर्म हो रही है, फूल गई है, या उसमें कोई visible damage दिख रहा है?"
+    }
+   }
+  },
+  {
+   "x": 1240,
+   "y": 440,
+   "id": "n_bat_clean",
+   "kind": "intent",
+   "label": "Battery fine: clean the contacts, reconnect, switch on — done?",
+   "config": {
+    "prompt": "Thank you for confirming. Please carefully remove the battery and gently clean the battery contacts using a dry, soft cloth. Once done, reconnect the battery properly and close the back panel. Now, kindly switch on the terminal and let me know once you've completed these steps.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for confirming. Please carefully remove the battery and gently clean the battery contacts using a dry, soft cloth. Once done, reconnect the battery properly and close the back panel. Now, kindly switch on the terminal and let me know once you've completed these steps.",
+     "hi": "Confirm करने के लिए धन्यवाद। कृपया battery को सावधानी से निकालें और उसके contacts को एक सूखे और मुलायम कपड़े से धीरे-धीरे साफ करें। इसके बाद, battery को सही तरीके से दोबारा connect करें और back panel बंद कर दें। अब terminal को switch on कीजिए। ये steps पूरे हो जाने पर कृपया मुझे बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1480,
+   "y": 440,
+   "id": "n_bat_charge",
+   "kind": "intent",
+   "label": "Charging steps (adapter, 4 hours, 80%)",
+   "config": {
+    "prompt": "Sir for the next step, please ensure that the charging adapter is properly connected to the power socket and the terminal. Kindly check whether the charging indicator is displayed on the terminal. If an alternate compatible adapter is available, you may also try using it to check whether the issue is related to the charging adapter. Please keep the terminal connected to the charger for at least 4 hours. After 4 hours, kindly check the battery percentage displayed on the terminal. If the battery percentage is 80% or above and the terminal is working normally, the issue should be resolved. However, if the battery percentage remains below 80% or the charging issue persists, please contact us again so that we can raise a service docket and arrange a visit from our Field Service Engineer (FSE) to inspect and resolve the issue.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir for the next step, please ensure that the charging adapter is properly connected to the power socket and the terminal. Kindly check whether the charging indicator is displayed on the terminal. If an alternate compatible adapter is available, you may also try using it to check whether the issue is related to the charging adapter. Please keep the terminal connected to the charger for at least 4 hours. After 4 hours, kindly check the battery percentage displayed on the terminal. If the battery percentage is 80% or above and the terminal is working normally, the issue should be resolved. However, if the battery percentage remains below 80% or the charging issue persists, please contact us again so that we can raise a service docket and arrange a visit from our Field Service Engineer (FSE) to inspect and resolve the issue.",
+     "hi": "सर, अगले step के लिए, कृपया ensure कीजिए कि charging adapter power socket और terminal, दोनों से ठीक से connected है। कृपया check कीजिए कि terminal पर charging indicator दिख रहा है या नहीं। अगर आपके पास कोई दूसरा compatible adapter है, तो उससे भी try कर सकते हैं, ताकि पता चले कि problem charging adapter में तो नहीं है। कृपया terminal को कम से कम 4 घंटे charger से connected रखिए। 4 घंटे के बाद, terminal पर दिख रहा battery percentage check कीजिए। अगर battery percentage 80% या उससे ज़्यादा है और terminal normal काम कर रहा है, तो issue resolve हो जाना चाहिए। लेकिन अगर battery percentage 80% से कम रहता है या charging की problem बनी रहती है, तो कृपया हमसे दोबारा contact कीजिए, ताकि हम service docket raise करके हमारे Field Service Engineer (FSE) की visit arrange कर सकें, जो issue inspect और resolve करेंगे।"
+    }
+   }
+  },
+  {
+   "x": 1240,
+   "y": 640,
+   "id": "n_bat_damaged",
+   "kind": "intent",
+   "label": "Battery damaged: safety advice + service ticket — may I proceed?",
+   "config": {
+    "prompt": "Sir, for your safety, please do not remove, reconnect, or charge the damaged battery. Also, please do not continue using the terminal. Kindly keep the terminal switched off. We will raise a service ticket and arrange an engineer visit for battery replacement. To schedule the field engineer's visit, I need to confirm a few details. May I proceed?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, for your safety, please do not remove, reconnect, or charge the damaged battery. Also, please do not continue using the terminal. Kindly keep the terminal switched off. We will raise a service ticket and arrange an engineer visit for battery replacement. To schedule the field engineer's visit, I need to confirm a few details. May I proceed?",
+     "hi": "सर, आपकी safety को ध्यान में रखते हुए, कृपया damaged battery को न निकालें, दोबारा connect न करें और न ही charge करें। साथ ही, terminal का इस्तेमाल भी न करें। कृपया terminal को switched off ही रखें। हम battery replacement के लिए एक service ticket raise करेंगे और engineer की visit arrange करेंगे। Field engineer की visit schedule करने के लिए मुझे आपसे कुछ details confirm करनी होंगी। क्या मैं आगे बढ़ूँ?"
+    }
+   }
+  },
+  {
+   "x": 1480,
+   "y": 640,
+   "id": "n_bat_visit",
+   "kind": "ask",
+   "label": "Visit details for the field engineer",
+   "config": {
+    "question": "To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+    "variable": "visit_details",
+    "entityType": "text",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+     "hi": "Field engineer की visit arrange करने के लिए, कृपया मुझे ये details बताइए। Merchant या Outlet Name। T-I-D। Complete Address। Weekly Off Details, कृपया अपना weekly off बताइए। Preferred Working Time। Contact Number। Contact Person का Name। कृपया ये सभी details share कीजिए, ताकि हम आपकी service request आगे बढ़ा सकें।"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। Field engineer की visit arrange करने के लिए, कृपया मुझे ये details बताइए। Merchant या Outlet Name। T-I-D। Complete Address। Weekly Off Details, कृपया अपना weekly off बताइए। Preferred Working Time। Contact Number। Contact Person का Name। कृपया ये सभी details share कीजिए, ताकि हम आपकी service request आगे बढ़ा सकें।"
+    }
+   }
+  },
+  {
+   "x": 1700,
+   "y": 640,
+   "id": "n_has_docket",
+   "kind": "condition",
+   "label": "Docket number in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "ctx_docket_number"
+   }
+  },
+  {
+   "x": 1920,
+   "y": 580,
+   "id": "n_bat_docket",
+   "kind": "intent",
+   "label": "Docket raised — docket number",
+   "config": {
+    "prompt": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully. Your docket number is {docket_number}. Kindly note it down for future reference. Our Field Service Engineer will visit as per the service arrangement and work order process to inspect and resolve the issue. Once the issue has been resolved, you will receive a Happy Code on your registered contact number. Kindly share this Happy Code with the engineer to confirm that the service has been completed.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully. Your docket number is {docket_number}. Kindly note it down for future reference. Our Field Service Engineer will visit as per the service arrangement and work order process to inspect and resolve the issue. Once the issue has been resolved, you will receive a Happy Code on your registered contact number. Kindly share this Happy Code with the engineer to confirm that the service has been completed.",
+     "hi": "Details provide करने के लिए आपका धन्यवाद। मैं terminal की problem inspect करने और resolve करने के लिए Field Service Engineer का service docket raise कर देता हूँ। आपका service docket successfully raise हो गया है। आपका docket number है {docket_number}। कृपया इसे future reference के लिए note कर लीजिए। हमारे Field Service Engineer service arrangement और work order process के अनुसार आपके पास visit करेंगे, ताकि terminal की problem को inspect करके resolve किया जा सके। Problem resolve होने के बाद, आपको अपने registered contact number पर एक Happy Code मिलेगा। Service complete होने की confirmation के लिए, कृपया ये Happy Code engineer के साथ share कर दीजिएगा।"
+    }
+   }
+  },
+  {
+   "x": 1920,
+   "y": 700,
+   "id": "n_bat_docket_nonum",
+   "kind": "intent",
+   "label": "Docket raised (no number in call data)",
+   "config": {
+    "prompt": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully.",
+     "hi": "Details provide करने के लिए आपका धन्यवाद। मैं terminal की problem inspect करने और resolve करने के लिए Field Service Engineer का service docket raise करूँगा। आपका service docket successfully raise हो गया है।"
+    }
+   }
+  },
+  {
+   "x": 1780,
+   "y": 520,
+   "id": "n_pr_again",
+   "kind": "intent",
+   "label": "Paper rolls after the battery steps — already verified, SMS or IVR?",
+   "config": {
+    "prompt": "Sir I have already verified your terminal and merchant details. Now, I'll guide you through the available options for requesting paper rolls. Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir I have already verified your terminal and merchant details. Now, I'll guide you through the available options for requesting paper rolls. Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+     "hi": "सर मैंने आपके terminal और merchant details already verify कर ली हैं। अब मैं आपको paper rolls request करने के available options बताता हूँ। सर, आप SMS या हमारी IVR service के जरिए paper rolls request कर सकते हैं। अगर आप चाहें, तो मैं आपकी तरफ से भी paper roll की request raise कर सकता हूँ। आप इनमें से किस option के बारे में जानना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 560,
+   "y": 240,
+   "id": "n_is_low80",
+   "kind": "condition",
+   "label": "Battery below 80% after charging?",
+   "config": {
+    "value": "low80",
+    "operator": "equals",
+    "variable": "request_type"
+   }
+  },
+  {
+   "x": 760,
+   "y": 120,
+   "id": "n_low_confirm",
+   "kind": "intent",
+   "label": "Below 80% after 4 hours — engineer visit, correct?",
+   "config": {
+    "prompt": "Sir, as you mentioned, even after charging the terminal for 4 hours, the battery level is still below 80%, and you would like to schedule an engineer visit. Am I understanding you correctly?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, as you mentioned, even after charging the terminal for 4 hours, the battery level is still below 80%, and you would like to schedule an engineer visit. Am I understanding you correctly?",
+     "hi": "सर, जैसा कि आपने बताया, 4 घंटे charge करने के बाद भी आपके terminal की battery 80% से कम है और अब आप engineer की visit schedule करवाना चाहते हैं। क्या मैं सही समझ रहा हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1000,
+   "y": 120,
+   "id": "n_low_visit",
+   "kind": "ask",
+   "label": "Below 80%: visit details for the field engineer",
+   "config": {
+    "question": "To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+    "variable": "low_visit_details",
+    "entityType": "text",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+     "hi": "Field engineer की visit arrange करने के लिए, कृपया मुझे ये details बताइए। Merchant या Outlet Name। T-I-D। Complete Address। Weekly Off Details, कृपया अपना weekly off बताइए। Preferred Working Time। Contact Number। Contact Person का Name। कृपया ये सभी details share कीजिए, ताकि हम आपकी service request आगे बढ़ा सकें।"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+    "rejectAnswerPatterns": [
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:आवाज़|आवाज|आवाझ).{0,25}?(?:नहीं|नही|ना)\\s*(?:आ\\s*रह|आई|आती|सुनाई)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?सुनाई\\s*(?:नहीं|नही)\\s*(?:दे|पड़|पड)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:नहीं|नही)\\s*सुनाई",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?कुछ\\s*समझ\\s*(?:में\\s*)?(?:नहीं|नही)\\s*आ",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?क्या\\s*बोल\\s*रहे",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?पूछा\\s*(?:भी\\s*)?(?:नहीं|नही)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?(?:awaa?z|aawaa?z|avaa?z|awaa?j|aawaa?j)\\b.{0,25}?\\b(?:nahi|nahin|nhi|na)\\s*(?:aa?\\s*r[ae]?h|aayi|aai|aati|sunai)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bsunai\\s*(?:nahi|nahin|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:nahi|nhi)\\s*sunai",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkuch\\s*samajh\\s*(?:me|mein|main)?\\s*(?:nahi|nhi)\\s*aa",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bkya\\s*bol\\s*rahe",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bpucha\\s*(?:bhi\\s*)?(?:nahi|nhi)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\b(?:can'?t|cannot|can not|not able to|unable to)\\s*hear",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bnot\\s*audible",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bvoice\\s*is\\s*(?:not\\s*clear|breaking)",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\byou\\s*are\\s*breaking",
+     "^(?!.*(?:\\d{4}|roll|रोल|batter|बैटर|बैट्र)).*?\\bwhat\\s*are\\s*you\\s*saying"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. To arrange the field engineer's visit, kindly provide the following details: Merchant or Outlet Name. T-I-D. Complete Address. Weekly Off Details, please confirm your weekly off. Preferred Working Time. Contact Number. Contact Person's Name. Please share these details so we can proceed with your service request.",
+     "hi": "माफ़ कीजिए Sir, शायद line पर आवाज़ साफ़ नहीं आई। मैं दोबारा पूछता हूँ। Field engineer की visit arrange करने के लिए, कृपया मुझे ये details बताइए। Merchant या Outlet Name। T-I-D। Complete Address। Weekly Off Details, कृपया अपना weekly off बताइए। Preferred Working Time। Contact Number। Contact Person का Name। कृपया ये सभी details share कीजिए, ताकि हम आपकी service request आगे बढ़ा सकें।"
+    }
+   }
+  },
+  {
+   "x": 1240,
+   "y": 120,
+   "id": "n_low_has_docket",
+   "kind": "condition",
+   "label": "Below 80%: docket number in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "ctx_docket_number"
+   }
+  },
+  {
+   "x": 1480,
+   "y": 60,
+   "id": "n_low_docket",
+   "kind": "intent",
+   "label": "Below 80%: docket raised — docket number",
+   "config": {
+    "prompt": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully. Your docket number is {docket_number}. Kindly note it down for future reference. Our Field Service Engineer will visit as per the service arrangement and work order process to inspect and resolve the issue. Once the issue has been resolved, you will receive a Happy Code on your registered contact number. Kindly share this Happy Code with the engineer to confirm that the service has been completed.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully. Your docket number is {docket_number}. Kindly note it down for future reference. Our Field Service Engineer will visit as per the service arrangement and work order process to inspect and resolve the issue. Once the issue has been resolved, you will receive a Happy Code on your registered contact number. Kindly share this Happy Code with the engineer to confirm that the service has been completed.",
+     "hi": "Details provide करने के लिए आपका धन्यवाद। मैं terminal की problem inspect करने और resolve करने के लिए Field Service Engineer का service docket raise कर देता हूँ। आपका service docket successfully raise हो गया है। आपका docket number है {docket_number}। कृपया इसे future reference के लिए note कर लीजिए। हमारे Field Service Engineer service arrangement और work order process के अनुसार आपके पास visit करेंगे, ताकि terminal की problem को inspect करके resolve किया जा सके। Problem resolve होने के बाद, आपको अपने registered contact number पर एक Happy Code मिलेगा। Service complete होने की confirmation के लिए, कृपया ये Happy Code engineer के साथ share कर दीजिएगा।"
+    }
+   }
+  },
+  {
+   "x": 1480,
+   "y": 180,
+   "id": "n_low_docket_nonum",
+   "kind": "intent",
+   "label": "Below 80%: docket raised (no number in call data)",
+   "config": {
+    "prompt": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for providing the details. I will raise a service docket for the Field Service Engineer to inspect and resolve the terminal issue. Your service docket has been raised successfully.",
+     "hi": "Details provide करने के लिए आपका धन्यवाद। मैं terminal की problem inspect करने और resolve करने के लिए Field Service Engineer का service docket raise करूँगा। आपका service docket successfully raise हो गया है।"
+    }
+   }
+  },
+  {
+   "x": 1720,
+   "y": 120,
+   "id": "n_low_anything_else",
+   "kind": "intent",
+   "label": "Below 80%: anything else?",
+   "config": {
+    "prompt": "Sir is there anything else I can help you with today?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir is there anything else I can help you with today?",
+     "hi": "सर क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1960,
+   "y": 120,
+   "id": "n_low_end",
+   "kind": "end",
+   "label": "Below 80%: thank you — end call",
+   "config": {
+    "text": "Thank you for confirming, Sir. I am glad I could assist you today. Thank you for contacting us. Have a nice day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for confirming, Sir. I am glad I could assist you today. Thank you for contacting us. Have a nice day.",
+     "hi": "Confirm करने के लिए आपका धन्यवाद सर। मुझे खुशी है कि मैं आज आपकी मदद कर सका। हमसे संपर्क करने के लिए आपका धन्यवाद। आपका दिन शुभ रहे।"
+    }
+   }
+  },
+  {
+   "x": 1300,
+   "y": 520,
+   "id": "n_both",
+   "kind": "intent",
+   "label": "Both: SMS steps + IVR steps + anything else?",
+   "config": {
+    "prompt": "sir to request paper rolls, you need to send an SMS in the following format: Type R-O-L-L, followed by a space, your M-I-D number, another space, and the required quantity. Please make sure to add a zero before your M-I-D number. Then, send the SMS to 575758. Before sending, please double-check that you've entered the correct M-I-D number and required quantity. sir, for I-V-R service by follow these steps. Step one. Call one eight six zero, two three three two, three three two. Or, call zero two two, four zero four two, six zero six zero. Step two. Select your preferred language. Step three. Enter your Terminal I-D. Step four. Press two to select the paper roll request option. Step five. Select the required quantity by pressing any number from one to nine. Step six. Enter any valid ten-digit mobile number and press the hash key. Once the process is completed, your paper roll request will be registered. The docket number will be sent to the mobile number you entered. Sir is there anything else I can help you with today?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "sir to request paper rolls, you need to send an SMS in the following format: Type R-O-L-L, followed by a space, your M-I-D number, another space, and the required quantity. Please make sure to add a zero before your M-I-D number. Then, send the SMS to 575758. Before sending, please double-check that you've entered the correct M-I-D number and required quantity. sir, for I-V-R service by follow these steps. Step one. Call one eight six zero, two three three two, three three two. Or, call zero two two, four zero four two, six zero six zero. Step two. Select your preferred language. Step three. Enter your Terminal I-D. Step four. Press two to select the paper roll request option. Step five. Select the required quantity by pressing any number from one to nine. Step six. Enter any valid ten-digit mobile number and press the hash key. Once the process is completed, your paper roll request will be registered. The docket number will be sent to the mobile number you entered. Sir is there anything else I can help you with today?",
+     "hi": "sir paper rolls request करने के लिए आपको एक SMS भेजना होगा। SMS में पहले आर, ओ, एल, एल लिखें, फिर space देकर अपना M-I-D number और उसके बाद required quantity enter करें। ध्यान रखें, M-I-D number से पहले zero जरूर लगाएं। इसके बाद ये SMS 575758 पर भेज दें। SMS भेजने से पहले एक बार confirm कर लें कि आपने सही M-I-D number और required quantity enter की है। सर हमारी I-V-R service के लिए ये steps follow कीजिए। Step one. One eight six zero, two three three two, three three two पर call कीजिए। या फिर zero two two, four zero four two, six zero six zero पर call कीजिए। Step two. अपनी preferred language select कीजिए। Step three. अपना Terminal I-D enter कीजिए। Step four. Paper roll request का option select करने के लिए two press कीजिए। Step five. जितने paper rolls चाहिए, उनकी quantity select करने के लिए one से nine के बीच कोई भी number press कीजिए। Step six. कोई भी valid ten-digit mobile number enter कीजिए और hash key press कीजिए। Process complete होने के बाद आपकी paper roll request register हो जाएगी। आपका docket number आपके दिए गए mobile number पर भेज दिया जाएगा। सर क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": -120,
+   "id": "n_not_verified",
+   "kind": "end",
+   "label": "Details not verified — disconnect",
+   "config": {
+    "text": "Sir, since I'm unable to verify your details, I'll have to disconnect this call. Thank you for your time. Have a nice day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, since I'm unable to verify your details, I'll have to disconnect this call. Thank you for your time. Have a nice day.",
+     "hi": "सर, मैं आपकी details verify नहीं कर पा रहा हूँ, इसलिए मुझे ये call disconnect करनी होगी। अपना समय देने के लिए आपका धन्यवाद। आपका दिन शुभ रहे।"
+    }
+   }
+  },
+  {
+   "x": 840,
+   "y": 40,
+   "id": "n_has_ask_merchant",
+   "kind": "condition",
+   "label": "Outlet name in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "outlet_name"
+   }
+  },
+  {
+   "x": 840,
+   "y": 200,
+   "id": "n_ask_merchant",
+   "kind": "intent",
+   "label": "Confirm outlet name from call data — correct?",
+   "config": {
+    "prompt": "Sir, as per our records, your Outlet Name is {outlet_name}. Could you please confirm if this is correct?",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Sir, as per our records, your Outlet Name is {value}.",
+        "variable": "outlet_name"
+       }
+      ],
+      "question": "Could you please confirm if this is correct?"
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "सर, हमारे records के अनुसार, आपके outlet का नाम {value} है।",
+        "variable": "outlet_name"
+       }
+      ],
+      "question": "क्या आप confirm कर सकते हैं कि ये सही है या नहीं?"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, as per our records, your Outlet Name is {outlet_name}. Could you please confirm if this is correct?",
+     "hi": "सर, हमारे records के अनुसार, आपके outlet का नाम {outlet_name} है। क्या आप confirm कर सकते हैं कि ये सही है या नहीं?"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": 40,
+   "id": "n_has_pr_bank",
+   "kind": "condition",
+   "label": "Bank name in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "bank_name"
+   }
+  },
+  {
+   "x": 1060,
+   "y": 120,
+   "id": "n_pr_bank",
+   "kind": "intent",
+   "label": "Confirm bank name from call data — correct?",
+   "config": {
+    "prompt": "Is your bank name {bank_name}? Please answer yes or no.",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Is your bank name {value}?",
+        "variable": "bank_name"
+       }
+      ],
+      "question": "Please answer yes or no."
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "क्या आपके bank का नाम {value} है?",
+        "variable": "bank_name"
+       }
+      ],
+      "question": "कृपया हाँ या ना में बताइए।"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Is your bank name {bank_name}? Please answer yes or no.",
+     "hi": "क्या आपके bank का नाम {bank_name} है? कृपया हाँ या ना में बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1280,
+   "y": 40,
+   "id": "n_has_pr_asset",
+   "kind": "condition",
+   "label": "Asset type in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "asset_type"
+   }
+  },
+  {
+   "x": 1280,
+   "y": 120,
+   "id": "n_pr_asset",
+   "kind": "intent",
+   "label": "Confirm asset type from call data — correct?",
+   "config": {
+    "prompt": "Is your terminal model {asset_model}? Please answer yes or no.",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Is your terminal model {value}?",
+        "variable": "asset_type"
+       }
+      ],
+      "question": "Please answer yes or no."
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "क्या आपके terminal का model {value} है?",
+        "variable": "asset_type"
+       }
+      ],
+      "question": "कृपया हाँ या ना में बताइए।"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Is your terminal model {asset_model}? Please answer yes or no.",
+     "hi": "क्या आपके terminal का model {asset_model} है? कृपया हाँ या ना में बताइए।"
+    }
+   }
+  },
+  {
+   "x": 760,
+   "y": 680,
+   "id": "n_has_bat_details",
+   "kind": "condition",
+   "label": "Outlet name in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "outlet_name"
+   }
+  },
+  {
+   "x": 760,
+   "y": 600,
+   "id": "n_bat_details",
+   "kind": "intent",
+   "label": "Confirm outlet name from call data — correct?",
+   "config": {
+    "prompt": "Sir, as per our records, your Outlet Name is {outlet_name}. Could you please confirm if this is correct?",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Sir, as per our records, your Outlet Name is {value}.",
+        "variable": "outlet_name"
+       }
+      ],
+      "question": "Could you please confirm if this is correct?"
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "सर, हमारे records के अनुसार, आपके outlet का नाम {value} है।",
+        "variable": "outlet_name"
+       }
+      ],
+      "question": "क्या आप confirm कर सकते हैं कि ये सही है या नहीं?"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, as per our records, your Outlet Name is {outlet_name}. Could you please confirm if this is correct?",
+     "hi": "सर, हमारे records के अनुसार, आपके outlet का नाम {outlet_name} है। क्या आप confirm कर सकते हैं कि ये सही है या नहीं?"
+    }
+   }
+  },
+  {
+   "x": 980,
+   "y": 680,
+   "id": "n_has_bat_bank",
+   "kind": "condition",
+   "label": "Bank name in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "bank_name"
+   }
+  },
+  {
+   "x": 980,
+   "y": 760,
+   "id": "n_bat_bank",
+   "kind": "intent",
+   "label": "Confirm bank name from call data — correct?",
+   "config": {
+    "prompt": "Is your bank name {bank_name}? Please answer yes or no.",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Is your bank name {value}?",
+        "variable": "bank_name"
+       }
+      ],
+      "question": "Please answer yes or no."
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "क्या आपके bank का नाम {value} है?",
+        "variable": "bank_name"
+       }
+      ],
+      "question": "कृपया हाँ या ना में बताइए।"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Is your bank name {bank_name}? Please answer yes or no.",
+     "hi": "क्या आपके bank का नाम {bank_name} है? कृपया हाँ या ना में बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1200,
+   "y": 680,
+   "id": "n_has_bat_asset",
+   "kind": "condition",
+   "label": "Asset type in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "asset_type"
+   }
+  },
+  {
+   "x": 1200,
+   "y": 760,
+   "id": "n_bat_asset",
+   "kind": "intent",
+   "label": "Confirm asset type from call data — correct?",
+   "config": {
+    "prompt": "Is your terminal model {asset_model}? Please answer yes or no.",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Is your terminal model {value}?",
+        "variable": "asset_type"
+       }
+      ],
+      "question": "Please answer yes or no."
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "क्या आपके terminal का model {value} है?",
+        "variable": "asset_type"
+       }
+      ],
+      "question": "कृपया हाँ या ना में बताइए।"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Is your terminal model {asset_model}? Please answer yes or no.",
+     "hi": "क्या आपके terminal का model {asset_model} है? कृपया हाँ या ना में बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1420,
+   "y": 680,
+   "id": "n_has_bat_contact",
+   "kind": "condition",
+   "label": "Contact number in call data?",
+   "config": {
+    "operator": "exists",
+    "variable": "contact_number"
+   }
+  },
+  {
+   "x": 1420,
+   "y": 760,
+   "id": "n_bat_contact",
+   "kind": "intent",
+   "label": "Confirm contact number from call data — correct?",
+   "config": {
+    "prompt": "Is your registered contact number {contact_number}? Please answer yes or no.",
+    "readback": {
+     "en": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "Is your registered contact number {value}?",
+        "variable": "contact_number"
+       }
+      ],
+      "question": "Please answer yes or no."
+     },
+     "hi": {
+      "intro": "",
+      "fields": [
+       {
+        "template": "क्या आपका registered contact number {value} है?",
+        "variable": "contact_number"
+       }
+      ],
+      "question": "कृपया हाँ या ना में बताइए।"
+     }
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Is your registered contact number {contact_number}? Please answer yes or no.",
+     "hi": "क्या आपका registered contact number {contact_number} है? कृपया हाँ या ना में बताइए।"
+    }
+   }
+  },
+  {
+   "x": 740,
+   "y": 560,
+   "id": "n_api_lookup",
+   "kind": "api",
+   "label": "Paper roll: merchant lookup API",
+   "config": {
+    "name": "Wordline Merchant Lookup",
+    "onFailure": "skip",
+    "connection": "Wordline Merchant Lookup"
+   }
+  },
+  {
+   "x": 900,
+   "y": 560,
+   "id": "n_lookup_found",
+   "kind": "condition",
+   "label": "Paper roll: merchant found?",
+   "config": {
+    "value": "true",
+    "operator": "equals",
+    "variable": "merchant_found"
+   }
+  },
+  {
+   "x": 900,
+   "y": 680,
+   "id": "n_tid_retry",
+   "kind": "ask",
+   "label": "Paper roll: Terminal ID not found — ask again",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?<!\\d)(\\d(?:[\\s-]?\\d){6,7})(?!\\d)"
+    },
+    "question": "Sorry Sir, I could not find a terminal with that Terminal ID. Please repeat your Terminal ID slowly, one digit at a time.",
+    "variable": "spoken_terminal_id_retry",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I could not find a terminal with that Terminal ID. Please repeat your Terminal ID slowly, one digit at a time.",
+     "hi": "माफ़ कीजिए Sir, इस Terminal ID से कोई terminal नहीं मिला। कृपया अपनी Terminal ID धीरे-धीरे, एक-एक digit करके दोबारा बताइए।"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. Please repeat your Terminal ID slowly, one digit at a time.",
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. Please repeat your Terminal ID slowly, one digit at a time.",
+     "hi": "माफ़ कीजिए Sir, शायद line साफ़ नहीं थी। मैं फिर से पूछता हूँ। कृपया अपनी Terminal ID धीरे-धीरे, एक-एक digit करके बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": 680,
+   "id": "n_api_lookup_retry",
+   "kind": "api",
+   "label": "Paper roll: merchant lookup API (retry)",
+   "config": {
+    "name": "Wordline Merchant Lookup",
+    "onFailure": "skip",
+    "connection": "Wordline Merchant Lookup"
+   }
+  },
+  {
+   "x": 1220,
+   "y": 680,
+   "id": "n_lookup_found_retry",
+   "kind": "condition",
+   "label": "Paper roll: merchant found (retry)?",
+   "config": {
+    "value": "true",
+    "operator": "equals",
+    "variable": "merchant_found"
+   }
+  },
+  {
+   "x": 1220,
+   "y": 800,
+   "id": "n_lookup_unverified",
+   "kind": "message",
+   "label": "Paper roll: still not found — continue unverified",
+   "config": {
+    "text": "Sorry Sir, I am unable to locate the terminal details with that Terminal ID. I can still help you with your paper roll request.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I am unable to locate the terminal details with that Terminal ID. I can still help you with your paper roll request.",
+     "hi": "माफ़ कीजिए Sir, इस Terminal ID से terminal details नहीं मिल पाईं। फिर भी मैं आपकी paper roll request में मदद कर सकता हूँ।"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": 800,
+   "id": "n_lookup_unavailable",
+   "kind": "message",
+   "label": "Paper roll: lookup unavailable — continue unverified",
+   "config": {
+    "text": "Sorry Sir, I am unable to verify the terminal details right now. I can still help you with your paper roll request.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I am unable to verify the terminal details right now. I can still help you with your paper roll request.",
+     "hi": "माफ़ कीजिए Sir, अभी terminal details verify नहीं हो पा रही हैं। फिर भी मैं आपकी paper roll request में मदद कर सकता हूँ।"
+    }
+   }
+  },
+  {
+   "x": 1060,
+   "y": 560,
+   "id": "n_options_unverified",
+   "kind": "intent",
+   "label": "Unverified — SMS, IVR, or we raise it?",
+   "config": {
+    "prompt": "Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sir, you can request paper rolls either through SMS or our IVR service. If you prefer, I can also raise the paper roll request on your behalf. Which option would you like to know more about?",
+     "hi": "Sir, आप paper roll की request SMS या हमारी IVR service से कर सकते हैं। अगर आप चाहें, तो मैं आपकी तरफ से भी paper roll की request raise कर सकता हूँ। आप किस option के बारे में जानना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 860,
+   "y": 840,
+   "id": "n_bat_api_lookup",
+   "kind": "api",
+   "label": "Battery: merchant lookup API",
+   "config": {
+    "name": "Wordline Merchant Lookup",
+    "onFailure": "skip",
+    "connection": "Wordline Merchant Lookup"
+   }
+  },
+  {
+   "x": 1020,
+   "y": 840,
+   "id": "n_bat_lookup_found",
+   "kind": "condition",
+   "label": "Battery: merchant found?",
+   "config": {
+    "value": "true",
+    "operator": "equals",
+    "variable": "merchant_found"
+   }
+  },
+  {
+   "x": 1020,
+   "y": 960,
+   "id": "n_bat_tid_retry",
+   "kind": "ask",
+   "label": "Battery: Terminal ID not found — ask again",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?<!\\d)(\\d(?:[\\s-]?\\d){6,7})(?!\\d)"
+    },
+    "question": "Sorry Sir, I could not find a terminal with that Terminal ID. Please repeat your Terminal ID slowly, one digit at a time.",
+    "variable": "spoken_terminal_id_retry",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I could not find a terminal with that Terminal ID. Please repeat your Terminal ID slowly, one digit at a time.",
+     "hi": "माफ़ कीजिए Sir, इस Terminal ID से कोई terminal नहीं मिला। कृपया अपनी Terminal ID धीरे-धीरे, एक-एक digit करके दोबारा बताइए।"
+    },
+    "rejectedAnswerReply": "Sorry Sir, the line may not have been clear. Let me ask again. Please repeat your Terminal ID slowly, one digit at a time.",
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sorry Sir, the line may not have been clear. Let me ask again. Please repeat your Terminal ID slowly, one digit at a time.",
+     "hi": "माफ़ कीजिए Sir, शायद line साफ़ नहीं थी। मैं फिर से पूछता हूँ। कृपया अपनी Terminal ID धीरे-धीरे, एक-एक digit करके बताइए।"
+    }
+   }
+  },
+  {
+   "x": 1180,
+   "y": 960,
+   "id": "n_bat_api_lookup_retry",
+   "kind": "api",
+   "label": "Battery: merchant lookup API (retry)",
+   "config": {
+    "name": "Wordline Merchant Lookup",
+    "onFailure": "skip",
+    "connection": "Wordline Merchant Lookup"
+   }
+  },
+  {
+   "x": 1340,
+   "y": 960,
+   "id": "n_bat_lookup_found_retry",
+   "kind": "condition",
+   "label": "Battery: merchant found (retry)?",
+   "config": {
+    "value": "true",
+    "operator": "equals",
+    "variable": "merchant_found"
+   }
+  },
+  {
+   "x": 1340,
+   "y": 1080,
+   "id": "n_bat_lookup_unverified",
+   "kind": "message",
+   "label": "Battery: still not found — continue unverified",
+   "config": {
+    "text": "Sorry Sir, I am unable to locate the terminal details with that Terminal ID. I can still help you troubleshoot the battery issue.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I am unable to locate the terminal details with that Terminal ID. I can still help you troubleshoot the battery issue.",
+     "hi": "माफ़ कीजिए Sir, इस Terminal ID से terminal details नहीं मिल पाईं। फिर भी मैं battery की problem troubleshoot करने में आपकी मदद कर सकता हूँ।"
+    }
+   }
+  },
+  {
+   "x": 1180,
+   "y": 1080,
+   "id": "n_bat_lookup_unavailable",
+   "kind": "message",
+   "label": "Battery: lookup unavailable — continue unverified",
+   "config": {
+    "text": "Sorry Sir, I am unable to verify the terminal details right now. I can still help you troubleshoot the battery issue.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sorry Sir, I am unable to verify the terminal details right now. I can still help you troubleshoot the battery issue.",
+     "hi": "माफ़ कीजिए Sir, अभी terminal details verify नहीं हो पा रही हैं। फिर भी मैं battery की problem troubleshoot करने में आपकी मदद कर सकता हूँ।"
+    }
+   }
+  },
+  {
+   "x": 880,
+   "y": 660,
+   "id": "n_bat_switch_off",
+   "kind": "intent",
+   "label": "Switch the terminal off — done?",
+   "config": {
+    "prompt": "First I request you to please switch off the terminal. Once you've done that, please let me know.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "First I request you to please switch off the terminal. Once you've done that, please let me know.",
+     "hi": "सबसे पहले आपसे request है कि कृपया terminal को switch off कर दीजिए। ये हो जाए तो कृपया मुझे बताइए।"
+    }
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_n_start__n_ctx_customer_name",
+   "to": "n_ctx_customer_name",
+   "from": "n_start"
+  },
+  {
+   "id": "e_n_options__n_sms__sms_wala_sms_wala_batao_",
+   "to": "n_sms",
+   "from": "n_options",
+   "label": "SMS wala/SMS wala batao/SMS wala chahiye/SMS se karna hai/SMS wala option chahiye/SMS ke through karna hai/Mujhe SMS wala process batao/SMS wala jana hai/SMS par bhej do/SMS se request karni hai/SMS wala method batao/SMS ka option select karna hai/SMS se order karna hai/SMS ke baare mein batao/Mujhe SMS ke through karna hai/SMS wala process samjha do/SMS se hi karna hai/SMS option chahiye mujhe/SMS wala procedure bata dijiye/एसएमएस वाला/एसएमएस वाला बताइए/एसएमएस वाला चाहिए/एसएमएस से करना है/एसएमएस का विकल्प चाहिए/मुझे एसएमएस वाला तरीका बताइए/एसएमएस के जरिए करना है/एसएमएस वाला प्रोसेस बताइए/एसएमएस से रिक्वेस्ट करनी है/एसएमएस वाला ऑप्शन चुनना है/एसएमएस के माध्यम से करना है/मुझे एसएमएस की जानकारी चाहिए/एसएमएस वाला तरीका समझा दीजिए/एसएमएस से ही करना है/SMS option/SMS method/SMS process/SMS one, please/I want the SMS option/Tell me about SMS/I want to go with SMS/Please explain the SMS process/I prefer SMS/I want to do it through SMS/How does the SMS process work/I would like to select SMS/Please guide me through SMS/I want to request it via SMS/Let's go with the SMS option/Send it through SMS/sms/s m s/एसएमएस/एस एम एस/message wala/मैसेज वाला/मैसेज से"
+  },
+  {
+   "id": "e_n_options__n_ivr__ivr_ivr_wala_ivr_wala_ba",
+   "to": "n_ivr",
+   "from": "n_options",
+   "label": "IVR/IVR wala/IVR wala batao/IVR wala chahiye/IVR se karna hai/IVR wala option chahiye/Phone wala/Phone wala batao/Phone wala chahiye/Phone se karna hai/Phone option chahiye/Phone par karna hai/Call wala/Call wala option chahiye/Call ke through karna hai/Telephone wala/Phone se request karni hai/Mujhe IVR wala process batao/Arey IVR wala/IVR wala jana hai/IVR option select karna hai/Phone wala process samjhao/Phone se hi karna hai/IVR ke through request karni hai/Call karke karna hai/आईवीआर वाला/आईवीआर वाला बताइए/आईवीआर वाला चाहिए/आईवीआर से करना है/आईवीआर का विकल्प चाहिए/फोन वाला/फोन वाला बताइए/फोन से करना है/फोन का विकल्प चाहिए/फोन पर करना है/कॉल वाला विकल्प चाहिए/कॉल के जरिए करना है/टेलीफोन वाला तरीका बताइए/फोन से रिक्वेस्ट करनी है/मुझे आईवीआर का तरीका बताइए/आईवीआर वाला प्रोसेस समझाइए/फोन से ही करना है/कॉल करके करना है/आईवीआर के माध्यम से करना है/IVR option/IVR method/IVR process/I want the IVR option/Tell me about IVR/IVR one, please/I want to go with IVR/Let's use IVR/Phone option/Phone method/Phone process/Phone call option/I want the phone option/Tell me about the phone process/I want to do it over the phone/Through a phone call/Call option/Telephone option/Please explain the IVR process/I prefer the IVR option/Can I do it over the phone/i v r/आईवीआर/आई वी आर/phone/फोन/फ़ोन/call/कॉल"
+  },
+  {
+   "id": "e_n_options__n_raise__tum_request_raise_kar_do",
+   "to": "n_raise",
+   "from": "n_options",
+   "label": "Tum request raise kar do/Tum kar do/Request raise kar do/Aap request raise kar do/Mujhe nahi aata, tum kar do/Tum karo, mujhe nahi pata, tum kar do/Mere liye request raise kar do/Mujhe request karni nahi aati/Aap hi kar dijiye/Tum hi kar do/Mujhe process nahi pata/Aap request submit kar do/Meri taraf se request raise kar do/Tum hi request daal do/Mujhe samajh nahi aa raha, tum kar do/Request tum hi raise karna/Mujhe nahi pata kaise karna hai/Aap hi process complete kar do/Mere liye kar do/Please tum hi kar do/Main nahi kar paunga, tum kar do/Mujhe help chahiye, aap kar do/Aap hi request register kar dijiye/Mujhe nahi karna aata, aap kar do/आप रिक्वेस्ट दर्ज कर दीजिए/तुम रिक्वेस्ट कर दो/आप ही कर दीजिए/मेरे लिए रिक्वेस्ट दर्ज कर दीजिए/मुझे नहीं आता, आप कर दीजिए/मुझे तरीका नहीं पता, आप कर दीजिए/मेरी तरफ से रिक्वेस्ट डाल दीजिए/आप ही रिक्वेस्ट सबमिट कर दीजिए/मुझे समझ नहीं आ रहा, आप कर दीजिए/आप ही पूरी प्रक्रिया कर दीजिए/मेरे लिए कर दीजिए/मुझे नहीं पता कैसे करना है/आप रिक्वेस्ट उठा दीजिए/आप ही रिक्वेस्ट रजिस्टर कर दीजिए/मैं नहीं कर पाऊंगा, आप कर दीजिए/मुझे इसकी जानकारी नहीं है, आप कर दीजिए/आप ही आवेदन कर दीजिए/मेरी रिक्वेस्ट आप दर्ज कर दीजिए/Please raise the request for me/You can do it/Please do it for me/Raise the request, please/I don't know how to do it, please do it for me/I am not familiar with the process/Please submit the request on my behalf/Can you raise the request for me/You handle it, please/Please take care of the request/I don't know how to submit it/Please complete the process for me/Kindly register my request/You do it, I don't know how/Please initiate the request on my behalf/I need you to do it for me/Can you handle this request/Please go ahead and submit it/I am unable to do it myself/You raise it, please/Aap kar do/Request kar do/Raise kar do/Submit kar do/Aap hi karo/Tum hi karo/Mujhe nahi aata/Kar dijiye/Please do it/You do it/Do it for me/Raise request/Submit request/आप कर दो/तुम कर दो/कर दीजिए/मुझे नहीं आता/raise/on my behalf/रिक्वेस्ट दर्ज/रिक्वेस्ट डाल/आप कर/Aap raise kar do/Aap hi raise kar do/Aap hi raise kar dijiye/Aap raise kar dijiye/Aap meri taraf se kar do/Meri taraf se kar do/Meri taraf se kar dijiye/Behalf pe kar do/Mere behalf pe kar do/Aap mere behalf pe kar do/Teesra wala/Teesra option/Teesra wala option/Third option/The third one/The third option/You raise it for me/Raise it on my behalf/Please raise it on my behalf/आप मेरी तरफ से कर दीजिए/मेरी तरफ से कर दीजिए/आप ही रेज़ कर दीजिए/आप रेज़ कर दीजिए/तीसरा वाला/तीसरा विकल्प/तीसरा ऑप्शन"
+  },
+  {
+   "id": "e_n_sms__n_end__no_no_thanks_nope_no_tha",
+   "to": "n_end",
+   "from": "n_sms",
+   "label": "no/no thanks/Nope/No, thank you/No ji/No, it's okay/No, that's fine/Not required/Not needed/I'm good/I'm fine/It's fine/It's okay/Fine/That's fine/That's okay/All good/Never mind/Leave it/No need/Not interested/No, I'm not interested/No, that's not required/Nahi/Nahin/Nahi ji/Nahi theek hai/Nahi chahiye/Nahi karna/Abhi nahi/Nahi rehne do/Nahi, koi baat nahi/Theek hai, nahi chahiye/Thik hai, rehne do/Accha nahi chahiye/Koi zarurat nahi hai/Mujhe nahi chahiye/Filhaal nahi chahiye/Nahi, sab theek hai/Bas theek hai/Chalo koi baat nahi/Fine hai/Mere liye theek hai/It's fine ji/No thanks ji/नहीं/नहीं जी/जी नहीं/नहीं चाहिए/नहीं, ठीक है/नहीं रहने दीजिए/अभी नहीं/कोई जरूरत नहीं है/मुझे नहीं चाहिए/ठीक है, नहीं चाहिए/अच्छा रहने दीजिए/सब ठीक है/कोई बात नहीं/ठीक है/ठीक है जी/मेरे लिए ठीक है/कोई दिक्कत नहीं/जैसा ठीक समझें"
+  },
+  {
+   "id": "e_n_ivr__n_end__no_no_thanks_nope_no_tha",
+   "to": "n_end",
+   "from": "n_ivr",
+   "label": "no/no thanks/Nope/No, thank you/No ji/No, it's okay/No, that's fine/Not required/Not needed/I'm good/I'm fine/It's fine/It's okay/Fine/That's fine/That's okay/All good/Never mind/Leave it/No need/Not interested/No, I'm not interested/No, that's not required/Nahi/Nahin/Nahi ji/Nahi theek hai/Nahi chahiye/Nahi karna/Abhi nahi/Nahi rehne do/Nahi, koi baat nahi/Theek hai, nahi chahiye/Thik hai, rehne do/Accha nahi chahiye/Koi zarurat nahi hai/Mujhe nahi chahiye/Filhaal nahi chahiye/Nahi, sab theek hai/Bas theek hai/Chalo koi baat nahi/Fine hai/Mere liye theek hai/It's fine ji/No thanks ji/नहीं/नहीं जी/जी नहीं/नहीं चाहिए/नहीं, ठीक है/नहीं रहने दीजिए/अभी नहीं/कोई जरूरत नहीं है/मुझे नहीं चाहिए/ठीक है, नहीं चाहिए/अच्छा रहने दीजिए/सब ठीक है/कोई बात नहीं/ठीक है/ठीक है जी/मेरे लिए ठीक है/कोई दिक्कत नहीं/जैसा ठीक समझें"
+  },
+  {
+   "id": "e_n_raise__n_anything_else",
+   "to": "n_anything_else",
+   "from": "n_raise"
+  },
+  {
+   "id": "e_n_anything_else__n_end__no_no_thanks_nope_no_tha",
+   "to": "n_end",
+   "from": "n_anything_else",
+   "label": "no/no thanks/Nope/No, thank you/No ji/No, it's okay/No, that's fine/Not required/Not needed/I'm good/I'm fine/It's fine/It's okay/Fine/That's fine/That's okay/All good/Never mind/Leave it/No need/Not interested/No, I'm not interested/No, that's not required/Nahi/Nahin/Nahi ji/Nahi theek hai/Nahi chahiye/Nahi karna/Abhi nahi/Nahi rehne do/Nahi, koi baat nahi/Theek hai, nahi chahiye/Thik hai, rehne do/Accha nahi chahiye/Koi zarurat nahi hai/Mujhe nahi chahiye/Filhaal nahi chahiye/Nahi, sab theek hai/Bas theek hai/Chalo koi baat nahi/Fine hai/Mere liye theek hai/It's fine ji/No thanks ji/नहीं/नहीं जी/जी नहीं/नहीं चाहिए/नहीं, ठीक है/नहीं रहने दीजिए/अभी नहीं/कोई जरूरत नहीं है/मुझे नहीं चाहिए/ठीक है, नहीं चाहिए/अच्छा रहने दीजिए/सब ठीक है/कोई बात नहीं/ठीक है/ठीक है जी/मेरे लिए ठीक है/कोई दिक्कत नहीं/जैसा ठीक समझें"
+  },
+  {
+   "id": "e_n_ctx_customer_name__n_ctx_docket",
+   "to": "n_ctx_docket",
+   "from": "n_ctx_customer_name"
+  },
+  {
+   "id": "e_n_ctx_docket__n_entry_gate",
+   "to": "n_entry_gate",
+   "from": "n_ctx_docket"
+  },
+  {
+   "id": "e_n_is_battery__n_bat_tid__true",
+   "to": "n_bat_tid",
+   "from": "n_is_battery",
+   "label": "true"
+  },
+  {
+   "id": "e_n_is_battery__n_ask_tid__false",
+   "to": "n_ask_tid",
+   "from": "n_is_battery",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_check__n_bat_damaged__battery_bahut_zyada_gara",
+   "to": "n_bat_damaged",
+   "from": "n_bat_check",
+   "label": "Battery bahut zyada garam ho rahi hai/Battery normal se zyada heat ho rahi hai/Battery overheat kar rahi hai/Battery touch karne par bahut garam lagti hai/Battery charge karte waqt garam ho jaati hai/Battery use karte waqt heat hoti hai/Battery phool gayi hai/Battery swell ho gayi hai/Battery ka size badh gaya hai/Battery bahar ki taraf ubhar gayi hai/Battery ki surface phool gayi hai/Battery ka cover upar uth gaya hai/Battery mein swelling aa gayi hai/Battery se liquid leak ho raha hai/Battery se ajeeb smell aa rahi hai/Battery se smoke nikal raha hai/Battery ka outer cover damage ho gaya hai/Battery par crack aa gaya hai/Battery toot gayi hai/Battery par scratches aur damage dikh raha hai/Battery se kuch liquid nikal raha hai/Battery ke edges bahar nikle hue hain/Battery mein visible damage hai/Battery ki body deform ho gayi hai/Battery se unusual sound aa rahi hai/Battery ke aas paas burn marks hain/Battery ka casing khul gaya hai/Battery mein koi physical damage dikh raha hai/बैटरी बहुत ज्यादा गर्म हो रही है/बैटरी सामान्य से ज्यादा गर्म हो रही है/बैटरी छूने पर बहुत गर्म लगती है/बैटरी चार्ज करते समय गर्म हो जाती है/बैटरी इस्तेमाल करने पर गर्म होती है/बैटरी फूल गई है/बैटरी में सूजन आ गई है/बैटरी का आकार बढ़ गया है/बैटरी बाहर की तरफ उभर गई है/बैटरी का कवर ऊपर उठ गया है/बैटरी की सतह फूल गई है/बैटरी से लिक्विड निकल रहा है/बैटरी से अजीब गंध आ रही है/बैटरी से धुआं निकल रहा है/बैटरी का बाहरी कवर खराब हो गया है/बैटरी में दरार आ गई है/बैटरी टूट गई है/बैटरी पर नुकसान दिखाई दे रहा है/बैटरी की बॉडी मुड़ गई है/बैटरी के किनारे बाहर निकले हुए हैं/बैटरी में कोई शारीरिक नुकसान दिखाई दे रहा है/बैटरी के आसपास जलने के निशान हैं/बैटरी का कवर खुल गया है/बैटरी से कुछ पदार्थ बाहर निकल रहा है/The battery is getting too hot/The battery is overheating/The battery gets very hot while charging/The battery feels unusually hot to touch/The battery heats up during usage/The battery has swollen up/The battery is bulging out/The battery looks puffed up/The battery size has increased/The battery casing is bulging/The battery cover has lifted up/There is swelling in the battery/The battery is leaking/The battery is releasing some liquid/There is a strange smell coming from the battery/The battery is emitting smoke/The battery casing is damaged/The battery has visible cracks/The battery is physically damaged/There are visible signs of damage on the battery/The battery looks deformed/The battery edges are coming out/There are burn marks around the battery/The battery cover is broken/The battery appears to be damaged from outside/Battery garam hai/Battery heat ho rahi hai/Battery overheat/Battery phool gayi/Battery swollen hai/Battery leak hai/Battery damage hai/Battery toot gayi/Battery crack hai/Battery se smell aa rahi hai/Battery se smoke aa raha hai/Battery cover utha hua hai/बहुत गर्म है/फूल गई है/लीक हो रही है/टूटी हुई है/डैमेज है/गर्म हो रही है/धुआं निकल रहा है/बदबू आ रही है/Swollen/Overheating/Leaking/Damaged/Cracked/Garam/Garam ho rahi hai/Battery garam/Bahut garam/Heat/Heating/Overheat/Phul/Phool gayi hai/Swell/Size badh gaya/Size increase ho gaya/Battery ka size badh gaya/Bulging/Ubhar gayi hai/Smoke/Dhuaan/Smoke nikal raha hai/Leak/Leakage/Liquid nikal raha hai/Damage/Deform/Deformed/Toot gayi hai/Crack/Cover uth gaya/Battery phat gayi/Burning smell/Jalne ki smell/Badbu aa rahi hai/गर्म/गरम/बहुत गर्म/बैटरी गर्म है/फूल/सूजन आ गई है/आकार बढ़ गया है/साइज बढ़ गया है/बाहर उभर गई है/धुआं/रिसाव/लिक्विड निकल रहा है/खराब/डैमेज/टूट गई है/दरार आ गई है/आवरण खराब हो गया है/बैटरी का कवर उठ गया है/जलने की गंध/बैटरी फट गई है/बैटरी गरम हो रही है।/Hot/Getting hot/Swelling/Puffed up/Expanded/Size increased/Increase in size/Smoking/Liquid discharge/Deformation/Broken/Burnt/Unusual smell/Physical damage/Size/Increase/टूटी/लीक/दरार/सूजन"
+  },
+  {
+   "id": "e_n_bat_check__n_bat_clean__battery_theek_hai_sab_th",
+   "to": "n_bat_clean",
+   "from": "n_bat_check",
+   "label": "Battery theek hai/Sab theek hai/Battery sahi hai/Battery bilkul sahi hai/Battery mein koi problem nahi hai/Battery normal hai/Battery okay hai/Battery mein koi dikkat nahi hai/Battery working hai/Battery properly kaam kar rahi hai/Battery mein koi damage nahi hai/Battery garam nahi ho rahi hai/Battery phooli nahi hai/Battery mein koi swelling nahi hai/Battery mein koi leakage nahi hai/Battery ki condition achhi hai/Battery bilkul normal hai/Koi issue nahi hai/Koi problem nahi hai/Sab kuch normal hai/All good hai/Perfectly fine hai/Abhi tak sab sahi hai/Meri battery theek chal rahi hai/Battery toh bilkul sahi hai/Ekdam sahi battery hai/Battery ekdum perfect hai/Battery mein sab kuch sahi hai/Battery ki condition ekdum achhi hai/Battery mein koi issue nahi hai/Battery ekdum theek chal rahi hai/Meri battery bilkul theek hai/Battery toh badhiya hai/Battery mast chal rahi hai/Battery ekdum okay hai/Battery mein koi fault nahi hai/Battery kaafi achhi condition mein hai/Battery mein koi problem nahi aa rahi/Battery bilkul bhi garam nahi ho rahi/Battery ekdum fit hai/Battery ki condition sahi hai/Battery mein koi kharabi nahi hai/Battery bilkul normal condition mein hai/Battery toh sahi salamat hai/Battery mein koi complaint nahi hai/Battery perfect condition mein hai/Battery abhi tak bilkul sahi hai/Battery ko lekar koi issue nahi hai/बैटरी ठीक है/सब ठीक है/बैटरी सही है/बैटरी बिल्कुल सही है/बैटरी में कोई समस्या नहीं है/बैटरी सामान्य है/बैटरी ठीक से काम कर रही है/बैटरी में कोई दिक्कत नहीं है/बैटरी खराब नहीं है/बैटरी में कोई नुकसान नहीं है/बैटरी गर्म नहीं हो रही है/बैटरी फूली हुई नहीं है/बैटरी में सूजन नहीं है/बैटरी से कोई लिक्विड नहीं निकल रहा है/बैटरी की हालत अच्छी है/बैटरी बिल्कुल सामान्य है/कोई परेशानी नहीं है/कोई समस्या नहीं है/सब कुछ सही है/मेरी बैटरी ठीक चल रही है/बैटरी में कोई खराबी नहीं दिख रही है/बैटरी की स्थिति बिल्कुल ठीक है/बैटरी तो बिल्कुल सही है/एकदम सही बैटरी है/बैटरी एकदम बढ़िया है/बैटरी में सब कुछ सही है/बैटरी की हालत बहुत अच्छी है/बैटरी एकदम ठीक चल रही है/मेरी बैटरी बिल्कुल ठीक है/बैटरी बहुत अच्छी चल रही है/बैटरी में कोई खराबी नहीं है/बैटरी अच्छी स्थिति में है/बैटरी में कोई परेशानी नहीं आ रही है/बैटरी सही तरीके से काम कर रही है/बैटरी में कोई सूजन नहीं है/बैटरी एकदम फिट है/बैटरी की स्थिति बिल्कुल सही है/बैटरी सही सलामत है/बैटरी को लेकर कोई शिकायत नहीं है/बैटरी बिल्कुल सही हालत में है/बैटरी में सब नॉर्मल है/बैटरी में कोई फॉल्ट नहीं है/The battery is absolutely fine/The battery is perfectly fine/The battery is in perfect condition/My battery is completely fine/The battery is working perfectly fine/The battery is absolutely okay/The battery is in excellent condition/There is nothing wrong with the battery/The battery is functioning properly/The battery is perfectly normal/The battery has no issues at all/The battery is in good shape/The battery is working smoothly/The battery is completely normal/The battery is perfectly alright/The battery is in proper working condition/Everything is fine with the battery/The battery is as good as new/The battery is not causing any problems/The battery condition is excellent/The battery is totally fine/There are no faults in the battery/The battery is perfectly healthy/The battery is fine/Everything is fine/It's okay/All good/It's alright/Fine/Perfectly fine/The battery is working fine/My battery is perfectly fine/The battery is in good condition/There is no issue with the battery/There is no problem with it/The battery is working properly/The battery looks normal/The battery is not overheating/The battery is not swollen/There is no swelling in the battery/There is no leakage/The battery is not damaged/No visible damage on the battery/The battery condition is good/Everything looks normal/No issues at all/It's working perfectly/Everything is alright/sab proper hai/Koi dikkat nahi hai/Sab sahi chal raha hai/Sab badhiya hai/Everything is perfect/Everything is working properly/No problem/It's all fine/Everything looks good/सब सही है/कोई दिक्कत नहीं है/सब कुछ ठीक चल रहा है/सब बढ़िया है/सब कुछ सामान्य है/सब सही सलामत है/मुझे कोई समस्या नहीं है/सब बिल्कुल ठीक है/Proper/Proper hai/Bilkul proper hai/Ekdam proper hai/Sab kuch proper hai/Everything is proper/All proper/No issue/Properly working/Sab sahi hai/सब प्रॉपर है/एकदम सही है/सही तरीके से काम कर रहा है/प्रॉपर/प्रॉपर है/damage nahi/damage nahin/damage nhi/damage to nahi/damage toh nahi/damaged nahi/damaged nahin/damaged nhi/damaged to nahi/damaged toh nahi/leak nahi/leak nahin/leak nhi/leak to nahi/leak toh nahi/leakage nahi/leakage nahin/leakage nhi/leakage to nahi/leakage toh nahi/swelling nahi/swelling nahin/swelling nhi/swelling to nahi/swelling toh nahi/swell nahi/swell nahin/swell nhi/swell to nahi/swell toh nahi/swollen nahi/swollen nahin/swollen nhi/swollen to nahi/swollen toh nahi/crack nahi/crack nahin/crack nhi/crack to nahi/crack toh nahi/smoke nahi/smoke nahin/smoke nhi/smoke to nahi/smoke toh nahi/smell nahi/smell nahin/smell nhi/smell to nahi/smell toh nahi/heat nahi/heat nahin/heat nhi/heat to nahi/heat toh nahi/heating nahi/heating nahin/heating nhi/heating to nahi/heating toh nahi/overheat nahi/overheat nahin/overheat nhi/overheat to nahi/overheat toh nahi/overheating nahi/overheating nahin/overheating nhi/overheating to nahi/overheating toh nahi/garam nahi/garam nahin/garam nhi/garam to nahi/garam toh nahi/garmi nahi/garmi nahin/garmi nhi/garmi to nahi/garmi toh nahi/phooli nahi/phooli nahin/phooli nhi/phooli to nahi/phooli toh nahi/phuli nahi/phuli nahin/phuli nhi/phuli to nahi/phuli toh nahi/phool nahi/phool nahin/phool nhi/phool to nahi/phool toh nahi/kharab nahi/kharab nahin/kharab nhi/kharab to nahi/kharab toh nahi/toot nahi/toot nahin/toot nhi/toot to nahi/toot toh nahi/tooti nahi/tooti nahin/tooti nhi/tooti to nahi/tooti toh nahi/tuti nahi/tuti nahin/tuti nhi/tuti to nahi/tuti toh nahi/dhuaan nahi/dhuaan nahin/dhuaan nhi/dhuaan to nahi/dhuaan toh nahi/dhuan nahi/dhuan nahin/dhuan nhi/dhuan to nahi/dhuan toh nahi/badbu nahi/badbu nahin/badbu nhi/badbu to nahi/badbu toh nahi/bulging nahi/bulging nahin/bulging nhi/bulging to nahi/bulging toh nahi/deform nahi/deform nahin/deform nhi/deform to nahi/deform toh nahi/डैमेज नहीं/डैमेज नही/डैमेज तो नहीं/लीक नहीं/लीक नही/लीक तो नहीं/लीकेज नहीं/लीकेज नही/लीकेज तो नहीं/गर्म नहीं/गर्म नही/गर्म तो नहीं/गरम नहीं/गरम नही/गरम तो नहीं/फूली नहीं/फूली नही/फूली तो नहीं/फूल नहीं/फूल नही/फूल तो नहीं/सूजन नहीं/सूजन नही/सूजन तो नहीं/दरार नहीं/दरार नही/दरार तो नहीं/धुआं नहीं/धुआं नही/धुआं तो नहीं/धुआँ नहीं/धुआँ नही/धुआँ तो नहीं/बदबू नहीं/बदबू नही/बदबू तो नहीं/खराब नहीं/खराब नही/खराब तो नहीं/टूटी नहीं/टूटी नही/टूटी तो नहीं/टूट नहीं/टूट नही/टूट तो नहीं/स्मोक नहीं/स्मोक नही/स्मोक तो नहीं/क्रैक नहीं/क्रैक नही/क्रैक तो नहीं/नुकसान नहीं/नुकसान नही/नुकसान तो नहीं/हीट नहीं/हीट नही/हीट तो नहीं/No damage/Not damaged/No leak/No leakage/Not leaking/No swelling/Not swollen/No crack/No cracks/Not cracked/No smoke/No smell/Not hot/Not heating/Not overheating/No heating/No bulging/Not bulging/Not broken/No burn marks/No physical damage/No visible damage/Not deformed/Isn't damaged/Isn't swollen/Isn't leaking/Isn't hot/Normal hai/Bilkul normal hai/नॉर्मल है/नार्मल है/बिल्कुल नॉर्मल है/बैटरी नॉर्मल है/It is normal/It's normal"
+  },
+  {
+   "id": "e_n_bat_clean__n_bat_charge__ho_gaya_ho_chuka_hai_haa",
+   "to": "n_bat_charge",
+   "from": "n_bat_clean",
+   "label": "Ho gaya/Ho chuka hai/Haan ho gaya/Ha ji ho gaya/Step ho gaya/Ye step ho gaya/Step complete ho gaya/Kar diya/Kar diya hai/Haan kar diya/De diya/De diya hai/Check kar liya/Check ho gaya/Complete ho gaya/Done ho gaya/Already done/Ab ho gaya/Kaam ho gaya/Process ho gaya/Maine kar diya/Maine kar liya/Haan, sab ho gaya/Haan, kar diya hai/Ho gaya ji/Ho gaya sir/Ho gaya madam/Successfully ho gaya/Ye bhi ho gaya/Ab complete hai/हो गया/हो चुका है/हाँ हो गया/जी हो गया/स्टेप हो गया/यह स्टेप पूरा हो गया/काम हो गया/कर दिया/कर दिया है/हाँ कर दिया/दे दिया/दे दिया है/चेक कर लिया/चेक हो गया/पूरा हो गया/सब हो गया/मैंने कर दिया/मैंने कर लिया/प्रक्रिया पूरी हो गई/अब हो गया/यह भी हो गया/जी, कर दिया है/सफलतापूर्वक हो गया/Done/It's done/Yes, done/It's completed/Step completed/This step is done/I've done it/I've completed it/Done with that/All done/Task completed/It's finished/Completed successfully/I've already done it/Yes, I've completed it/That is done/Everything is done/I've taken care of it/It's been completed/Done ji/Complete/Completed/Finished/Yes/Ha/Haan ji/Okay done/पूरा/समाप्त/जी हाँ"
+  },
+  {
+   "id": "e_n_bat_charge__n_anything_else__okay_ok_okay_sir_ok_sir_",
+   "to": "n_anything_else",
+   "from": "n_bat_charge",
+   "label": "okay/ok/okay sir/ok sir/okay ji/ok ji/theek hai/thik hai/theek hai ji/thik hai ji/theek hai sir/accha/achha/accha theek hai/achha theek hai/haan/haan ji/ha ji/ji/ji sir/fine/fine hai/alright/all right/sure/got it/noted/okay noted/note kar liya/likh liya/maine note kar liya/samajh gaya/samajh gaya sir/samajh gayi/thank you/thanks/okay thank you/theek hai, thank you/dhanyavaad/main kar lunga/main try karta hoon/I will do that/I'll try that/I understand/understood/sounds good/perfect/great/ठीक है/ठीक है जी/ठीक है सर/जी/जी हाँ/हाँ/हाँ जी/अच्छा/अच्छा ठीक है/ओके/ओके सर/समझ गया/समझ गई/नोट कर लिया/लिख लिया/धन्यवाद/शुक्रिया/मैं कर लूंगा/बढ़िया"
+  },
+  {
+   "id": "e_n_bat_damaged__n_bat_visit__okay_theek_hai_thik_hai_",
+   "to": "n_bat_visit",
+   "from": "n_bat_damaged",
+   "label": "Okay/Theek hai/Thik hai/Haan/Ha ji/Yes/Haan ji/Accha/Theek hai, aage badho/Aage badho/Haan aage badho/Haan ji, aage badhiye/Agla step karo/Next step karo/Aage proceed karo/Proceed karo/Continue karo/Chalo aage badho/Haan, kar sakte ho/Haan, shuru karo/Ab aage badho/Please aage badho/Aage continue karo/Meri taraf se okay hai/Haan, bilkul/Go ahead kar do/Aap aage badhiye/Ab proceed karo/ठीक है/जी ठीक है/हाँ/हाँ जी/अच्छा/आगे बढ़िए/हाँ, आगे बढ़िए/जी, आगे बढ़िए/आगे बढ़ो/अगला कदम उठाइए/अगला स्टेप कीजिए/आगे की प्रक्रिया शुरू कीजिए/आप आगे बढ़ सकते हैं/आगे जारी रखिए/जी हाँ, कर दीजिए/मेरी तरफ से मंजूरी है/अब आगे बढ़िए/आगे कीजिए/चलिए शुरू कीजिए/हाँ, बिल्कुल/आप जारी रखिए/Ok/Yes, please/Alright/Sure/Go ahead/Please go ahead/Proceed/Please proceed/You may proceed/Let's proceed/Continue/Please continue/Move ahead/Let's move forward/Carry on/Go on/That's fine/That's okay/Sounds good/Absolutely/Yes, continue/Please move ahead/You can proceed/I'm ready/Let's go ahead/Feel free to proceed/Ha/Fine/Next/Aage/Chalo/बिल्कुल/जी/ठीक/आगे/चलिए/जारी रखिए"
+  },
+  {
+   "id": "e_n_bat_visit__n_has_docket",
+   "to": "n_has_docket",
+   "from": "n_bat_visit"
+  },
+  {
+   "id": "e_n_has_docket__n_bat_docket__true",
+   "to": "n_bat_docket",
+   "from": "n_has_docket",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_docket__n_bat_docket_nonum__false",
+   "to": "n_bat_docket_nonum",
+   "from": "n_has_docket",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_docket__n_anything_else__okay_ok_okay_sir_ok_sir_",
+   "to": "n_anything_else",
+   "from": "n_bat_docket",
+   "label": "okay/ok/okay sir/ok sir/okay ji/ok ji/theek hai/thik hai/theek hai ji/thik hai ji/theek hai sir/accha/achha/accha theek hai/achha theek hai/haan/haan ji/ha ji/ji/ji sir/fine/fine hai/alright/all right/sure/got it/noted/okay noted/note kar liya/likh liya/maine note kar liya/samajh gaya/samajh gaya sir/samajh gayi/thank you/thanks/okay thank you/theek hai, thank you/dhanyavaad/main kar lunga/main try karta hoon/I will do that/I'll try that/I understand/understood/sounds good/perfect/great/ठीक है/ठीक है जी/ठीक है सर/जी/जी हाँ/हाँ/हाँ जी/अच्छा/अच्छा ठीक है/ओके/ओके सर/समझ गया/समझ गई/नोट कर लिया/लिख लिया/धन्यवाद/शुक्रिया/मैं कर लूंगा/बढ़िया"
+  },
+  {
+   "id": "e_n_bat_docket_nonum__n_anything_else__okay_ok_okay_sir_ok_sir_",
+   "to": "n_anything_else",
+   "from": "n_bat_docket_nonum",
+   "label": "okay/ok/okay sir/ok sir/okay ji/ok ji/theek hai/thik hai/theek hai ji/thik hai ji/theek hai sir/accha/achha/accha theek hai/achha theek hai/haan/haan ji/ha ji/ji/ji sir/fine/fine hai/alright/all right/sure/got it/noted/okay noted/note kar liya/likh liya/maine note kar liya/samajh gaya/samajh gaya sir/samajh gayi/thank you/thanks/okay thank you/theek hai, thank you/dhanyavaad/main kar lunga/main try karta hoon/I will do that/I'll try that/I understand/understood/sounds good/perfect/great/ठीक है/ठीक है जी/ठीक है सर/जी/जी हाँ/हाँ/हाँ जी/अच्छा/अच्छा ठीक है/ओके/ओके सर/समझ गया/समझ गई/नोट कर लिया/लिख लिया/धन्यवाद/शुक्रिया/मैं कर लूंगा/बढ़िया"
+  },
+  {
+   "id": "e_n_sms__n_bat_check__battery_battery_issue_ba",
+   "to": "n_bat_switch_off",
+   "from": "n_sms",
+   "label": "Battery/Battery issue/Battery problem/Battery drain ho rahi hai/Battery jaldi drain ho rahi hai/Battery bahut jaldi khatam ho jaati hai/Battery tik nahi rahi hai/Battery backup nahi de rahi/Battery backup kam ho gaya hai/Battery charge nahi ho rahi hai/Battery charging nahi le rahi/Battery charge jaldi khatam ho raha hai/Battery discharge ho rahi hai/Battery dead ho gayi hai/Battery kharab ho gayi hai/Battery swell ho gayi hai/Battery phool gayi hai/Battery swollen ho gayi hai/Battery se smell aa rahi hai/Battery garam ho rahi hai/Battery overheat ho rahi hai/Battery heat kar rahi hai/Battery leak ho rahi hai/Battery se liquid nikal raha hai/Battery damage ho gayi hai/Battery toot gayi hai/Battery loose ho gayi hai/Battery connection loose hai/Battery connect nahi ho rahi/Battery detect nahi ho rahi/Battery ka issue hai/Battery change karwani hai/Battery replace karwani hai/New battery chahiye/Battery backup improve karna hai/Battery baar baar down ho jaati hai/Battery ekdum se band ho jaati hai/Battery charge hold nahi kar rahi/Battery jaldi discharge ho jaati hai/Battery full charge nahi hoti/Battery 100 percent charge nahi ho rahi/Battery ka percentage gir raha hai/Battery backup bahut kam hai/Battery kaam nahi kar rahi hai/Battery mein fault hai/Battery ki life khatam ho gayi hai/Battery ki capacity kam ho gayi hai/Battery nikal gayi hai/Battery fit nahi ho rahi hai/Battery ka cover swell ho gaya hai/Battery mein problem aa rahi hai/बैटरी/बैटरी की समस्या/बैटरी खराब हो गई है/बैटरी जल्दी खत्म हो रही है/बैटरी जल्दी डिस्चार्ज हो रही है/बैटरी चार्ज नहीं हो रही है/बैटरी चार्ज नहीं पकड़ रही है/बैटरी का बैकअप कम हो गया है/बैटरी बिल्कुल नहीं चल रही है/बैटरी फूल गई है/बैटरी फूलकर बड़ी हो गई है/बैटरी में सूजन आ गई है/बैटरी बहुत गर्म हो रही है/बैटरी से बदबू आ रही है/बैटरी से लिक्विड निकल रहा है/बैटरी लीक हो रही है/बैटरी खराब हो चुकी है/बैटरी काम नहीं कर रही है/बैटरी बार-बार बंद हो जाती है/बैटरी अचानक डिस्चार्ज हो जाती है/बैटरी पूरी चार्ज नहीं होती/बैटरी जल्दी डाउन हो जाती है/बैटरी का चार्ज टिकता नहीं है/बैटरी की क्षमता कम हो गई है/बैटरी बदलवानी है/नई बैटरी चाहिए/बैटरी रिप्लेस करवानी है/बैटरी में खराबी आ गई है/बैटरी का कनेक्शन ढीला है/बैटरी डिटेक्ट नहीं हो रही है/बैटरी की लाइफ खत्म हो गई है/बैटरी का बैकअप बहुत कम है/बैटरी में चार्जिंग की समस्या है/बैटरी से आवाज आ रही है/बैटरी डैमेज हो गई है/My battery is draining/The battery is draining quickly/Battery drains too fast/Battery is not holding charge/Battery backup is very low/Battery is not charging/Battery is not getting charged/Battery is swollen/My battery has swollen up/The battery is bulging/Battery is overheating/Battery is getting very hot/Battery is leaking/Battery is damaged/Battery is dead/Battery is not working/Battery keeps shutting down/Battery discharges suddenly/Battery drains overnight/Battery percentage is dropping quickly/Battery doesn't last long/Battery is not fully charging/Battery won't charge/Battery is losing capacity/Battery life has reduced/Battery needs replacement/I want to replace the battery/I need a new battery/Battery connection is loose/Battery is not detected/Battery has a charging issue/Battery is faulty/Battery backup has decreased/Battery is getting discharged repeatedly/Battery is heating up while charging/Battery is physically damaged/Battery is bulging out/Battery has stopped working/Battery needs to be checked/Battery ji/Cell/Power cell/Backup/Charging/Discharging/Dead battery/Swollen battery/Low battery/Battery down/Battery kharab/Battery phool gayi/सेल/चार्जिंग/बैकअप/बैटरी खराब/बैटरी डाउन/बैटरी फूल गई/बैटरी खत्म/बैटरी बदलनी है/बैटरी नहीं चल रही/battery ka/battery ki/battery ke/battery mein/battery me/battery se/battery nahi/battery jaldi/battery backup/battery khatam/battery charge/my battery/the battery/terminal battery/machine ki battery/बैटरी का/बैटरी की/बैटरी के/बैटरी में/बैटरी से/बैटरी नहीं/बैटरी जल्दी/बैटरी चार्ज"
+  },
+  {
+   "id": "e_n_ivr__n_bat_check__battery_battery_issue_ba",
+   "to": "n_bat_switch_off",
+   "from": "n_ivr",
+   "label": "Battery/Battery issue/Battery problem/Battery drain ho rahi hai/Battery jaldi drain ho rahi hai/Battery bahut jaldi khatam ho jaati hai/Battery tik nahi rahi hai/Battery backup nahi de rahi/Battery backup kam ho gaya hai/Battery charge nahi ho rahi hai/Battery charging nahi le rahi/Battery charge jaldi khatam ho raha hai/Battery discharge ho rahi hai/Battery dead ho gayi hai/Battery kharab ho gayi hai/Battery swell ho gayi hai/Battery phool gayi hai/Battery swollen ho gayi hai/Battery se smell aa rahi hai/Battery garam ho rahi hai/Battery overheat ho rahi hai/Battery heat kar rahi hai/Battery leak ho rahi hai/Battery se liquid nikal raha hai/Battery damage ho gayi hai/Battery toot gayi hai/Battery loose ho gayi hai/Battery connection loose hai/Battery connect nahi ho rahi/Battery detect nahi ho rahi/Battery ka issue hai/Battery change karwani hai/Battery replace karwani hai/New battery chahiye/Battery backup improve karna hai/Battery baar baar down ho jaati hai/Battery ekdum se band ho jaati hai/Battery charge hold nahi kar rahi/Battery jaldi discharge ho jaati hai/Battery full charge nahi hoti/Battery 100 percent charge nahi ho rahi/Battery ka percentage gir raha hai/Battery backup bahut kam hai/Battery kaam nahi kar rahi hai/Battery mein fault hai/Battery ki life khatam ho gayi hai/Battery ki capacity kam ho gayi hai/Battery nikal gayi hai/Battery fit nahi ho rahi hai/Battery ka cover swell ho gaya hai/Battery mein problem aa rahi hai/बैटरी/बैटरी की समस्या/बैटरी खराब हो गई है/बैटरी जल्दी खत्म हो रही है/बैटरी जल्दी डिस्चार्ज हो रही है/बैटरी चार्ज नहीं हो रही है/बैटरी चार्ज नहीं पकड़ रही है/बैटरी का बैकअप कम हो गया है/बैटरी बिल्कुल नहीं चल रही है/बैटरी फूल गई है/बैटरी फूलकर बड़ी हो गई है/बैटरी में सूजन आ गई है/बैटरी बहुत गर्म हो रही है/बैटरी से बदबू आ रही है/बैटरी से लिक्विड निकल रहा है/बैटरी लीक हो रही है/बैटरी खराब हो चुकी है/बैटरी काम नहीं कर रही है/बैटरी बार-बार बंद हो जाती है/बैटरी अचानक डिस्चार्ज हो जाती है/बैटरी पूरी चार्ज नहीं होती/बैटरी जल्दी डाउन हो जाती है/बैटरी का चार्ज टिकता नहीं है/बैटरी की क्षमता कम हो गई है/बैटरी बदलवानी है/नई बैटरी चाहिए/बैटरी रिप्लेस करवानी है/बैटरी में खराबी आ गई है/बैटरी का कनेक्शन ढीला है/बैटरी डिटेक्ट नहीं हो रही है/बैटरी की लाइफ खत्म हो गई है/बैटरी का बैकअप बहुत कम है/बैटरी में चार्जिंग की समस्या है/बैटरी से आवाज आ रही है/बैटरी डैमेज हो गई है/My battery is draining/The battery is draining quickly/Battery drains too fast/Battery is not holding charge/Battery backup is very low/Battery is not charging/Battery is not getting charged/Battery is swollen/My battery has swollen up/The battery is bulging/Battery is overheating/Battery is getting very hot/Battery is leaking/Battery is damaged/Battery is dead/Battery is not working/Battery keeps shutting down/Battery discharges suddenly/Battery drains overnight/Battery percentage is dropping quickly/Battery doesn't last long/Battery is not fully charging/Battery won't charge/Battery is losing capacity/Battery life has reduced/Battery needs replacement/I want to replace the battery/I need a new battery/Battery connection is loose/Battery is not detected/Battery has a charging issue/Battery is faulty/Battery backup has decreased/Battery is getting discharged repeatedly/Battery is heating up while charging/Battery is physically damaged/Battery is bulging out/Battery has stopped working/Battery needs to be checked/Battery ji/Cell/Power cell/Backup/Charging/Discharging/Dead battery/Swollen battery/Low battery/Battery down/Battery kharab/Battery phool gayi/सेल/चार्जिंग/बैकअप/बैटरी खराब/बैटरी डाउन/बैटरी फूल गई/बैटरी खत्म/बैटरी बदलनी है/बैटरी नहीं चल रही/battery ka/battery ki/battery ke/battery mein/battery me/battery se/battery nahi/battery jaldi/battery backup/battery khatam/battery charge/my battery/the battery/terminal battery/machine ki battery/बैटरी का/बैटरी की/बैटरी के/बैटरी में/बैटरी से/बैटरी नहीं/बैटरी जल्दी/बैटरी चार्ज"
+  },
+  {
+   "id": "e_n_anything_else__n_bat_check__battery_battery_issue_ba",
+   "to": "n_bat_switch_off",
+   "from": "n_anything_else",
+   "label": "Battery/Battery issue/Battery problem/Battery drain ho rahi hai/Battery jaldi drain ho rahi hai/Battery bahut jaldi khatam ho jaati hai/Battery tik nahi rahi hai/Battery backup nahi de rahi/Battery backup kam ho gaya hai/Battery charge nahi ho rahi hai/Battery charging nahi le rahi/Battery charge jaldi khatam ho raha hai/Battery discharge ho rahi hai/Battery dead ho gayi hai/Battery kharab ho gayi hai/Battery swell ho gayi hai/Battery phool gayi hai/Battery swollen ho gayi hai/Battery se smell aa rahi hai/Battery garam ho rahi hai/Battery overheat ho rahi hai/Battery heat kar rahi hai/Battery leak ho rahi hai/Battery se liquid nikal raha hai/Battery damage ho gayi hai/Battery toot gayi hai/Battery loose ho gayi hai/Battery connection loose hai/Battery connect nahi ho rahi/Battery detect nahi ho rahi/Battery ka issue hai/Battery change karwani hai/Battery replace karwani hai/New battery chahiye/Battery backup improve karna hai/Battery baar baar down ho jaati hai/Battery ekdum se band ho jaati hai/Battery charge hold nahi kar rahi/Battery jaldi discharge ho jaati hai/Battery full charge nahi hoti/Battery 100 percent charge nahi ho rahi/Battery ka percentage gir raha hai/Battery backup bahut kam hai/Battery kaam nahi kar rahi hai/Battery mein fault hai/Battery ki life khatam ho gayi hai/Battery ki capacity kam ho gayi hai/Battery nikal gayi hai/Battery fit nahi ho rahi hai/Battery ka cover swell ho gaya hai/Battery mein problem aa rahi hai/बैटरी/बैटरी की समस्या/बैटरी खराब हो गई है/बैटरी जल्दी खत्म हो रही है/बैटरी जल्दी डिस्चार्ज हो रही है/बैटरी चार्ज नहीं हो रही है/बैटरी चार्ज नहीं पकड़ रही है/बैटरी का बैकअप कम हो गया है/बैटरी बिल्कुल नहीं चल रही है/बैटरी फूल गई है/बैटरी फूलकर बड़ी हो गई है/बैटरी में सूजन आ गई है/बैटरी बहुत गर्म हो रही है/बैटरी से बदबू आ रही है/बैटरी से लिक्विड निकल रहा है/बैटरी लीक हो रही है/बैटरी खराब हो चुकी है/बैटरी काम नहीं कर रही है/बैटरी बार-बार बंद हो जाती है/बैटरी अचानक डिस्चार्ज हो जाती है/बैटरी पूरी चार्ज नहीं होती/बैटरी जल्दी डाउन हो जाती है/बैटरी का चार्ज टिकता नहीं है/बैटरी की क्षमता कम हो गई है/बैटरी बदलवानी है/नई बैटरी चाहिए/बैटरी रिप्लेस करवानी है/बैटरी में खराबी आ गई है/बैटरी का कनेक्शन ढीला है/बैटरी डिटेक्ट नहीं हो रही है/बैटरी की लाइफ खत्म हो गई है/बैटरी का बैकअप बहुत कम है/बैटरी में चार्जिंग की समस्या है/बैटरी से आवाज आ रही है/बैटरी डैमेज हो गई है/My battery is draining/The battery is draining quickly/Battery drains too fast/Battery is not holding charge/Battery backup is very low/Battery is not charging/Battery is not getting charged/Battery is swollen/My battery has swollen up/The battery is bulging/Battery is overheating/Battery is getting very hot/Battery is leaking/Battery is damaged/Battery is dead/Battery is not working/Battery keeps shutting down/Battery discharges suddenly/Battery drains overnight/Battery percentage is dropping quickly/Battery doesn't last long/Battery is not fully charging/Battery won't charge/Battery is losing capacity/Battery life has reduced/Battery needs replacement/I want to replace the battery/I need a new battery/Battery connection is loose/Battery is not detected/Battery has a charging issue/Battery is faulty/Battery backup has decreased/Battery is getting discharged repeatedly/Battery is heating up while charging/Battery is physically damaged/Battery is bulging out/Battery has stopped working/Battery needs to be checked/Battery ji/Cell/Power cell/Backup/Charging/Discharging/Dead battery/Swollen battery/Low battery/Battery down/Battery kharab/Battery phool gayi/सेल/चार्जिंग/बैकअप/बैटरी खराब/बैटरी डाउन/बैटरी फूल गई/बैटरी खत्म/बैटरी बदलनी है/बैटरी नहीं चल रही/battery ka/battery ki/battery ke/battery mein/battery me/battery se/battery nahi/battery jaldi/battery backup/battery khatam/battery charge/my battery/the battery/terminal battery/machine ki battery/बैटरी का/बैटरी की/बैटरी के/बैटरी में/बैटरी से/बैटरी नहीं/बैटरी जल्दी/बैटरी चार्ज"
+  },
+  {
+   "id": "e_n_anything_else__n_pr_again__paper_roll_chahiye_paper",
+   "to": "n_pr_again",
+   "from": "n_anything_else",
+   "label": "Paper roll chahiye/Paper roll purchase karna hai/Paper roll kharidna hai/Mujhe paper roll chahiye/Paper roll mangwana hai/Paper roll order karna hai/Paper roll ki requirement hai/Paper roll khatam ho gaya hai/Paper roll chahiye mujhe/Paper roll bhej dijiye/Paper roll ki zarurat hai/Paper roll lena hai/Paper roll available karwa do/Paper roll supply karwa do/Paper roll book karna hai/Paper roll ki demand hai/Paper roll ka order place karna hai/Mujhe naye paper rolls chahiye/Paper roll refill karwana hai/Paper roll stock mein nahi hai/Paper roll kharidne hain/Paper roll chahiye tha/Paper roll arrange karwa dijiye/Paper roll ki delivery chahiye/पेपर रोल चाहिए/मुझे पेपर रोल खरीदना है/पेपर रोल मंगवाना है/मुझे पेपर रोल की जरूरत है/पेपर रोल का ऑर्डर करना है/पेपर रोल खत्म हो गया है/पेपर रोल भेज दीजिए/पेपर रोल उपलब्ध करवा दीजिए/पेपर रोल लेना है/पेपर रोल की आवश्यकता है/पेपर रोल खरीदने हैं/पेपर रोल की सप्लाई चाहिए/मुझे नए पेपर रोल चाहिए/पेपर रोल का ऑर्डर देना है/पेपर रोल मंगवाने हैं/पेपर रोल का स्टॉक खत्म हो गया है/पेपर रोल की डिलीवरी चाहिए/पेपर रोल की व्यवस्था कर दीजिए/पेपर रोल चाहिए था/पेपर रोल उपलब्ध हैं क्या/पेपर रोल की बुकिंग करनी है/I need paper rolls/I want to purchase paper rolls/I want to buy paper rolls/Please provide paper rolls/I need some paper rolls/I want to order paper rolls/Please send me paper rolls/I would like to buy paper rolls/We need paper rolls/Paper rolls are required/I want to place an order for paper rolls/Please arrange paper rolls/I need a paper roll supply/My paper rolls are finished/I need a paper roll refill/Paper rolls are out of stock/Can I order paper rolls/I want to purchase a new stock of paper rolls/Please arrange the delivery of paper rolls/I need paper rolls for my terminal/We require additional paper rolls/How can I purchase paper rolls/I want to request paper rolls/paper roll/paper rolls/paperroll/paper role/roll chahiye/rolls chahiye/पेपर रोल/पेपर रोल्स/रोल चाहिए/पेपर रोल की"
+  },
+  {
+   "id": "e_n_pr_again__n_sms__sms_wala_sms_wala_batao_",
+   "to": "n_sms",
+   "from": "n_pr_again",
+   "label": "SMS wala/SMS wala batao/SMS wala chahiye/SMS se karna hai/SMS wala option chahiye/SMS ke through karna hai/Mujhe SMS wala process batao/SMS wala jana hai/SMS par bhej do/SMS se request karni hai/SMS wala method batao/SMS ka option select karna hai/SMS se order karna hai/SMS ke baare mein batao/Mujhe SMS ke through karna hai/SMS wala process samjha do/SMS se hi karna hai/SMS option chahiye mujhe/SMS wala procedure bata dijiye/एसएमएस वाला/एसएमएस वाला बताइए/एसएमएस वाला चाहिए/एसएमएस से करना है/एसएमएस का विकल्प चाहिए/मुझे एसएमएस वाला तरीका बताइए/एसएमएस के जरिए करना है/एसएमएस वाला प्रोसेस बताइए/एसएमएस से रिक्वेस्ट करनी है/एसएमएस वाला ऑप्शन चुनना है/एसएमएस के माध्यम से करना है/मुझे एसएमएस की जानकारी चाहिए/एसएमएस वाला तरीका समझा दीजिए/एसएमएस से ही करना है/SMS option/SMS method/SMS process/SMS one, please/I want the SMS option/Tell me about SMS/I want to go with SMS/Please explain the SMS process/I prefer SMS/I want to do it through SMS/How does the SMS process work/I would like to select SMS/Please guide me through SMS/I want to request it via SMS/Let's go with the SMS option/Send it through SMS/sms/s m s/एसएमएस/एस एम एस/message wala/मैसेज वाला/मैसेज से"
+  },
+  {
+   "id": "e_n_pr_again__n_ivr__ivr_ivr_wala_ivr_wala_ba",
+   "to": "n_ivr",
+   "from": "n_pr_again",
+   "label": "IVR/IVR wala/IVR wala batao/IVR wala chahiye/IVR se karna hai/IVR wala option chahiye/Phone wala/Phone wala batao/Phone wala chahiye/Phone se karna hai/Phone option chahiye/Phone par karna hai/Call wala/Call wala option chahiye/Call ke through karna hai/Telephone wala/Phone se request karni hai/Mujhe IVR wala process batao/Arey IVR wala/IVR wala jana hai/IVR option select karna hai/Phone wala process samjhao/Phone se hi karna hai/IVR ke through request karni hai/Call karke karna hai/आईवीआर वाला/आईवीआर वाला बताइए/आईवीआर वाला चाहिए/आईवीआर से करना है/आईवीआर का विकल्प चाहिए/फोन वाला/फोन वाला बताइए/फोन से करना है/फोन का विकल्प चाहिए/फोन पर करना है/कॉल वाला विकल्प चाहिए/कॉल के जरिए करना है/टेलीफोन वाला तरीका बताइए/फोन से रिक्वेस्ट करनी है/मुझे आईवीआर का तरीका बताइए/आईवीआर वाला प्रोसेस समझाइए/फोन से ही करना है/कॉल करके करना है/आईवीआर के माध्यम से करना है/IVR option/IVR method/IVR process/I want the IVR option/Tell me about IVR/IVR one, please/I want to go with IVR/Let's use IVR/Phone option/Phone method/Phone process/Phone call option/I want the phone option/Tell me about the phone process/I want to do it over the phone/Through a phone call/Call option/Telephone option/Please explain the IVR process/I prefer the IVR option/Can I do it over the phone/i v r/आईवीआर/आई वी आर/phone/फोन/फ़ोन/call/कॉल"
+  },
+  {
+   "id": "e_n_pr_again__n_raise__tum_request_raise_kar_do",
+   "to": "n_raise",
+   "from": "n_pr_again",
+   "label": "Tum request raise kar do/Tum kar do/Request raise kar do/Aap request raise kar do/Mujhe nahi aata, tum kar do/Tum karo, mujhe nahi pata, tum kar do/Mere liye request raise kar do/Mujhe request karni nahi aati/Aap hi kar dijiye/Tum hi kar do/Mujhe process nahi pata/Aap request submit kar do/Meri taraf se request raise kar do/Tum hi request daal do/Mujhe samajh nahi aa raha, tum kar do/Request tum hi raise karna/Mujhe nahi pata kaise karna hai/Aap hi process complete kar do/Mere liye kar do/Please tum hi kar do/Main nahi kar paunga, tum kar do/Mujhe help chahiye, aap kar do/Aap hi request register kar dijiye/Mujhe nahi karna aata, aap kar do/आप रिक्वेस्ट दर्ज कर दीजिए/तुम रिक्वेस्ट कर दो/आप ही कर दीजिए/मेरे लिए रिक्वेस्ट दर्ज कर दीजिए/मुझे नहीं आता, आप कर दीजिए/मुझे तरीका नहीं पता, आप कर दीजिए/मेरी तरफ से रिक्वेस्ट डाल दीजिए/आप ही रिक्वेस्ट सबमिट कर दीजिए/मुझे समझ नहीं आ रहा, आप कर दीजिए/आप ही पूरी प्रक्रिया कर दीजिए/मेरे लिए कर दीजिए/मुझे नहीं पता कैसे करना है/आप रिक्वेस्ट उठा दीजिए/आप ही रिक्वेस्ट रजिस्टर कर दीजिए/मैं नहीं कर पाऊंगा, आप कर दीजिए/मुझे इसकी जानकारी नहीं है, आप कर दीजिए/आप ही आवेदन कर दीजिए/मेरी रिक्वेस्ट आप दर्ज कर दीजिए/Please raise the request for me/You can do it/Please do it for me/Raise the request, please/I don't know how to do it, please do it for me/I am not familiar with the process/Please submit the request on my behalf/Can you raise the request for me/You handle it, please/Please take care of the request/I don't know how to submit it/Please complete the process for me/Kindly register my request/You do it, I don't know how/Please initiate the request on my behalf/I need you to do it for me/Can you handle this request/Please go ahead and submit it/I am unable to do it myself/You raise it, please/Aap kar do/Request kar do/Raise kar do/Submit kar do/Aap hi karo/Tum hi karo/Mujhe nahi aata/Kar dijiye/Please do it/You do it/Do it for me/Raise request/Submit request/आप कर दो/तुम कर दो/कर दीजिए/मुझे नहीं आता/raise/on my behalf/रिक्वेस्ट दर्ज/रिक्वेस्ट डाल/आप कर/Aap raise kar do/Aap hi raise kar do/Aap hi raise kar dijiye/Aap raise kar dijiye/Aap meri taraf se kar do/Meri taraf se kar do/Meri taraf se kar dijiye/Behalf pe kar do/Mere behalf pe kar do/Aap mere behalf pe kar do/Teesra wala/Teesra option/Teesra wala option/Third option/The third one/The third option/You raise it for me/Raise it on my behalf/Please raise it on my behalf/आप मेरी तरफ से कर दीजिए/मेरी तरफ से कर दीजिए/आप ही रेज़ कर दीजिए/आप रेज़ कर दीजिए/तीसरा वाला/तीसरा विकल्प/तीसरा ऑप्शन"
+  },
+  {
+   "id": "e_n_entry_gate__n_is_low80",
+   "to": "n_is_low80",
+   "from": "n_entry_gate"
+  },
+  {
+   "id": "e_n_is_low80__n_low_confirm__true",
+   "to": "n_low_confirm",
+   "from": "n_is_low80",
+   "label": "true"
+  },
+  {
+   "id": "e_n_is_low80__n_is_battery__false",
+   "to": "n_is_battery",
+   "from": "n_is_low80",
+   "label": "false"
+  },
+  {
+   "id": "e_n_low_confirm__n_low_visit__yes_haan_ha_ji_sahi_samj",
+   "to": "n_low_visit",
+   "from": "n_low_confirm",
+   "label": "Yes/Haan/Ha ji/Sahi samjhe/Bilkul sahi/Haan, engineer ki visit chahiye/Haan, engineer bhej do/Engineer chahiye/Engineer ki zarurat hai/Engineer visit karwa do/Engineer ko bhej dijiye/Technician bhej do/Technician ki visit chahiye/Visit chahiye/Home visit chahiye/Field engineer chahiye/Engineer ko ghar bhej do/Service engineer chahiye/Engineer appointment book kar do/Haan, visit schedule kar do/Engineer se check karwana hai/Engineer ko bula lo/Haan, engineer ki requirement hai/Yes, engineer visit chahiye/हाँ/जी हाँ/हाँ जी/आपने सही समझा/बिल्कुल सही/हाँ, इंजीनियर की विजिट चाहिए/इंजीनियर भेज दीजिए/मुझे इंजीनियर चाहिए/इंजीनियर की जरूरत है/इंजीनियर को घर भेज दीजिए/टेक्नीशियन भेज दीजिए/टेक्नीशियन की विजिट चाहिए/मुझे विजिट चाहिए/घर पर विजिट चाहिए/फील्ड इंजीनियर चाहिए/सर्विस इंजीनियर भेज दीजिए/इंजीनियर की अपॉइंटमेंट बुक कर दीजिए/इंजीनियर की विजिट शेड्यूल कर दीजिए/इंजीनियर से चेक करवाना है/जी, इंजीनियर बुला लीजिए/Yes, that's correct/You understood correctly/Absolutely/Yes, I need an engineer visit/I need an engineer/Please send an engineer/An engineer is required/I need a technician visit/Please arrange a technician visit/I want a home visit/Please schedule an engineer visit/Send a field engineer/Book an engineer appointment/I need a service engineer/Please arrange a service visit/I want someone to inspect the device/Yes, please send someone/Engineer visit required/Sahi/Correct/Engineer/Technician/Visit/Home visit/Service visit/Engineer bhejo/Engineer bhej do/इंजीनियर/विजिट/सही/इंजीनियर चाहिए/विजिट चाहिए/टेक्नीशियन चाहिए"
+  },
+  {
+   "id": "e_n_low_visit__n_low_has_docket",
+   "to": "n_low_has_docket",
+   "from": "n_low_visit"
+  },
+  {
+   "id": "e_n_low_has_docket__n_low_docket__true",
+   "to": "n_low_docket",
+   "from": "n_low_has_docket",
+   "label": "true"
+  },
+  {
+   "id": "e_n_low_has_docket__n_low_docket_nonum__false",
+   "to": "n_low_docket_nonum",
+   "from": "n_low_has_docket",
+   "label": "false"
+  },
+  {
+   "id": "e_n_low_docket__n_low_anything_else__okay_ok_okay_sir_ok_sir_",
+   "to": "n_low_anything_else",
+   "from": "n_low_docket",
+   "label": "okay/ok/okay sir/ok sir/okay ji/ok ji/theek hai/thik hai/theek hai ji/thik hai ji/theek hai sir/accha/achha/accha theek hai/achha theek hai/haan/haan ji/ha ji/ji/ji sir/fine/fine hai/alright/all right/sure/got it/noted/okay noted/note kar liya/likh liya/maine note kar liya/samajh gaya/samajh gaya sir/samajh gayi/thank you/thanks/okay thank you/theek hai, thank you/dhanyavaad/main kar lunga/main try karta hoon/I will do that/I'll try that/I understand/understood/sounds good/perfect/great/ठीक है/ठीक है जी/ठीक है सर/जी/जी हाँ/हाँ/हाँ जी/अच्छा/अच्छा ठीक है/ओके/ओके सर/समझ गया/समझ गई/नोट कर लिया/लिख लिया/धन्यवाद/शुक्रिया/मैं कर लूंगा/बढ़िया"
+  },
+  {
+   "id": "e_n_low_docket_nonum__n_low_anything_else__okay_ok_okay_sir_ok_sir_",
+   "to": "n_low_anything_else",
+   "from": "n_low_docket_nonum",
+   "label": "okay/ok/okay sir/ok sir/okay ji/ok ji/theek hai/thik hai/theek hai ji/thik hai ji/theek hai sir/accha/achha/accha theek hai/achha theek hai/haan/haan ji/ha ji/ji/ji sir/fine/fine hai/alright/all right/sure/got it/noted/okay noted/note kar liya/likh liya/maine note kar liya/samajh gaya/samajh gaya sir/samajh gayi/thank you/thanks/okay thank you/theek hai, thank you/dhanyavaad/main kar lunga/main try karta hoon/I will do that/I'll try that/I understand/understood/sounds good/perfect/great/ठीक है/ठीक है जी/ठीक है सर/जी/जी हाँ/हाँ/हाँ जी/अच्छा/अच्छा ठीक है/ओके/ओके सर/समझ गया/समझ गई/नोट कर लिया/लिख लिया/धन्यवाद/शुक्रिया/मैं कर लूंगा/बढ़िया"
+  },
+  {
+   "id": "e_n_low_anything_else__n_low_end__no_no_thanks_nope_no_tha",
+   "to": "n_low_end",
+   "from": "n_low_anything_else",
+   "label": "no/no thanks/Nope/No, thank you/No ji/No, it's okay/No, that's fine/Not required/Not needed/I'm good/I'm fine/It's fine/It's okay/Fine/That's fine/That's okay/All good/Never mind/Leave it/No need/Not interested/No, I'm not interested/No, that's not required/Nahi/Nahin/Nahi ji/Nahi theek hai/Nahi chahiye/Nahi karna/Abhi nahi/Nahi rehne do/Nahi, koi baat nahi/Theek hai, nahi chahiye/Thik hai, rehne do/Accha nahi chahiye/Koi zarurat nahi hai/Mujhe nahi chahiye/Filhaal nahi chahiye/Nahi, sab theek hai/Bas theek hai/Chalo koi baat nahi/Fine hai/Mere liye theek hai/It's fine ji/No thanks ji/नहीं/नहीं जी/जी नहीं/नहीं चाहिए/नहीं, ठीक है/नहीं रहने दीजिए/अभी नहीं/कोई जरूरत नहीं है/मुझे नहीं चाहिए/ठीक है, नहीं चाहिए/अच्छा रहने दीजिए/सब ठीक है/कोई बात नहीं/ठीक है/ठीक है जी/मेरे लिए ठीक है/कोई दिक्कत नहीं/जैसा ठीक समझें"
+  },
+  {
+   "id": "e_n_options__n_both__dono_batao_dono_options_",
+   "to": "n_both",
+   "from": "n_options",
+   "label": "Dono batao/Dono options batao/Dono chahiye/Dono ke baare mein batao/Dono tarike batao/Dono ways batao/SMS aur IVR dono/SMS aur IVR dono batao/SMS aur IVR dono chahiye/SMS ya IVR dono/IVR aur SMS dono/IVR aur SMS dono batao/Dono option available hain kya/Mujhe dono options chahiye/Dono ka process samjhao/Dono kaise kaam karte hain/Dono methods bata do/Dono ke baare mein samjha do/SMS and IVR dono batao/Dono ways se batao/दोनों बताइए/दोनों विकल्प बताइए/मुझे दोनों चाहिए/दोनों के बारे में बताइए/दोनों तरीके बताइए/एसएमएस और आईवीआर दोनों/एसएमएस और आईवीआर दोनों बताइए/आईवीआर और एसएमएस दोनों चाहिए/दोनों का तरीका समझाइए/दोनों विकल्प उपलब्ध हैं क्या/दोनों कैसे काम करते हैं/दोनों की जानकारी दीजिए/मुझे दोनों तरीके जानने हैं/दोनों का प्रोसेस बताइए/दोनों के बारे में समझा दीजिए/Tell me both/Both options, please/I want both/Both ways/Both methods/Tell me both ways/Explain both options/Let me know both options/I would like to know both/SMS and IVR both/Both SMS and IVR/IVR and SMS/Both options are fine/Can you explain both/I need information about both/What are both options/Tell me about SMS and IVR/Explain the SMS and IVR process/I want to know both methods/Dono/Both/Both options/SMS and IVR/SMS or IVR/IVR or SMS/Dono hi/दोनों/दोनों ही/दोनों तरीके/दोनों विकल्प/एसएमएस और आईवीआर/आईवीआर और एसएमएस/Dono bata dijiye/Dono methods batao/Dono ki information do/Dono available hain kya/Mujhe dono batao/IVR aur SMS dono samjhao/Both batao/Both ways tell me/Please tell me both/Both methods explain karo/दोनों बताओ/दोनों बता दीजिए/दोनों तरीके समझाइए/मुझे दोनों जानने हैं"
+  },
+  {
+   "id": "e_n_both__n_end__no_no_thanks_nope_no_tha",
+   "to": "n_end",
+   "from": "n_both",
+   "label": "no/no thanks/Nope/No, thank you/No ji/No, it's okay/No, that's fine/Not required/Not needed/I'm good/I'm fine/It's fine/It's okay/Fine/That's fine/That's okay/All good/Never mind/Leave it/No need/Not interested/No, I'm not interested/No, that's not required/Nahi/Nahin/Nahi ji/Nahi theek hai/Nahi chahiye/Nahi karna/Abhi nahi/Nahi rehne do/Nahi, koi baat nahi/Theek hai, nahi chahiye/Thik hai, rehne do/Accha nahi chahiye/Koi zarurat nahi hai/Mujhe nahi chahiye/Filhaal nahi chahiye/Nahi, sab theek hai/Bas theek hai/Chalo koi baat nahi/Fine hai/Mere liye theek hai/It's fine ji/No thanks ji/नहीं/नहीं जी/जी नहीं/नहीं चाहिए/नहीं, ठीक है/नहीं रहने दीजिए/अभी नहीं/कोई जरूरत नहीं है/मुझे नहीं चाहिए/ठीक है, नहीं चाहिए/अच्छा रहने दीजिए/सब ठीक है/कोई बात नहीं/ठीक है/ठीक है जी/मेरे लिए ठीक है/कोई दिक्कत नहीं/जैसा ठीक समझें"
+  },
+  {
+   "id": "e_n_both__n_bat_check__battery_battery_issue_ba",
+   "to": "n_bat_switch_off",
+   "from": "n_both",
+   "label": "Battery/Battery issue/Battery problem/Battery drain ho rahi hai/Battery jaldi drain ho rahi hai/Battery bahut jaldi khatam ho jaati hai/Battery tik nahi rahi hai/Battery backup nahi de rahi/Battery backup kam ho gaya hai/Battery charge nahi ho rahi hai/Battery charging nahi le rahi/Battery charge jaldi khatam ho raha hai/Battery discharge ho rahi hai/Battery dead ho gayi hai/Battery kharab ho gayi hai/Battery swell ho gayi hai/Battery phool gayi hai/Battery swollen ho gayi hai/Battery se smell aa rahi hai/Battery garam ho rahi hai/Battery overheat ho rahi hai/Battery heat kar rahi hai/Battery leak ho rahi hai/Battery se liquid nikal raha hai/Battery damage ho gayi hai/Battery toot gayi hai/Battery loose ho gayi hai/Battery connection loose hai/Battery connect nahi ho rahi/Battery detect nahi ho rahi/Battery ka issue hai/Battery change karwani hai/Battery replace karwani hai/New battery chahiye/Battery backup improve karna hai/Battery baar baar down ho jaati hai/Battery ekdum se band ho jaati hai/Battery charge hold nahi kar rahi/Battery jaldi discharge ho jaati hai/Battery full charge nahi hoti/Battery 100 percent charge nahi ho rahi/Battery ka percentage gir raha hai/Battery backup bahut kam hai/Battery kaam nahi kar rahi hai/Battery mein fault hai/Battery ki life khatam ho gayi hai/Battery ki capacity kam ho gayi hai/Battery nikal gayi hai/Battery fit nahi ho rahi hai/Battery ka cover swell ho gaya hai/Battery mein problem aa rahi hai/बैटरी/बैटरी की समस्या/बैटरी खराब हो गई है/बैटरी जल्दी खत्म हो रही है/बैटरी जल्दी डिस्चार्ज हो रही है/बैटरी चार्ज नहीं हो रही है/बैटरी चार्ज नहीं पकड़ रही है/बैटरी का बैकअप कम हो गया है/बैटरी बिल्कुल नहीं चल रही है/बैटरी फूल गई है/बैटरी फूलकर बड़ी हो गई है/बैटरी में सूजन आ गई है/बैटरी बहुत गर्म हो रही है/बैटरी से बदबू आ रही है/बैटरी से लिक्विड निकल रहा है/बैटरी लीक हो रही है/बैटरी खराब हो चुकी है/बैटरी काम नहीं कर रही है/बैटरी बार-बार बंद हो जाती है/बैटरी अचानक डिस्चार्ज हो जाती है/बैटरी पूरी चार्ज नहीं होती/बैटरी जल्दी डाउन हो जाती है/बैटरी का चार्ज टिकता नहीं है/बैटरी की क्षमता कम हो गई है/बैटरी बदलवानी है/नई बैटरी चाहिए/बैटरी रिप्लेस करवानी है/बैटरी में खराबी आ गई है/बैटरी का कनेक्शन ढीला है/बैटरी डिटेक्ट नहीं हो रही है/बैटरी की लाइफ खत्म हो गई है/बैटरी का बैकअप बहुत कम है/बैटरी में चार्जिंग की समस्या है/बैटरी से आवाज आ रही है/बैटरी डैमेज हो गई है/My battery is draining/The battery is draining quickly/Battery drains too fast/Battery is not holding charge/Battery backup is very low/Battery is not charging/Battery is not getting charged/Battery is swollen/My battery has swollen up/The battery is bulging/Battery is overheating/Battery is getting very hot/Battery is leaking/Battery is damaged/Battery is dead/Battery is not working/Battery keeps shutting down/Battery discharges suddenly/Battery drains overnight/Battery percentage is dropping quickly/Battery doesn't last long/Battery is not fully charging/Battery won't charge/Battery is losing capacity/Battery life has reduced/Battery needs replacement/I want to replace the battery/I need a new battery/Battery connection is loose/Battery is not detected/Battery has a charging issue/Battery is faulty/Battery backup has decreased/Battery is getting discharged repeatedly/Battery is heating up while charging/Battery is physically damaged/Battery is bulging out/Battery has stopped working/Battery needs to be checked/Battery ji/Cell/Power cell/Backup/Charging/Discharging/Dead battery/Swollen battery/Low battery/Battery down/Battery kharab/Battery phool gayi/सेल/चार्जिंग/बैकअप/बैटरी खराब/बैटरी डाउन/बैटरी फूल गई/बैटरी खत्म/बैटरी बदलनी है/बैटरी नहीं चल रही/battery ka/battery ki/battery ke/battery mein/battery me/battery se/battery nahi/battery jaldi/battery backup/battery khatam/battery charge/my battery/the battery/terminal battery/machine ki battery/बैटरी का/बैटरी की/बैटरी के/बैटरी में/बैटरी से/बैटरी नहीं/बैटरी जल्दी/बैटरी चार्ज"
+  },
+  {
+   "id": "e_n_pr_again__n_both__dono_batao_dono_options_",
+   "to": "n_both",
+   "from": "n_pr_again",
+   "label": "Dono batao/Dono options batao/Dono chahiye/Dono ke baare mein batao/Dono tarike batao/Dono ways batao/SMS aur IVR dono/SMS aur IVR dono batao/SMS aur IVR dono chahiye/SMS ya IVR dono/IVR aur SMS dono/IVR aur SMS dono batao/Dono option available hain kya/Mujhe dono options chahiye/Dono ka process samjhao/Dono kaise kaam karte hain/Dono methods bata do/Dono ke baare mein samjha do/SMS and IVR dono batao/Dono ways se batao/दोनों बताइए/दोनों विकल्प बताइए/मुझे दोनों चाहिए/दोनों के बारे में बताइए/दोनों तरीके बताइए/एसएमएस और आईवीआर दोनों/एसएमएस और आईवीआर दोनों बताइए/आईवीआर और एसएमएस दोनों चाहिए/दोनों का तरीका समझाइए/दोनों विकल्प उपलब्ध हैं क्या/दोनों कैसे काम करते हैं/दोनों की जानकारी दीजिए/मुझे दोनों तरीके जानने हैं/दोनों का प्रोसेस बताइए/दोनों के बारे में समझा दीजिए/Tell me both/Both options, please/I want both/Both ways/Both methods/Tell me both ways/Explain both options/Let me know both options/I would like to know both/SMS and IVR both/Both SMS and IVR/IVR and SMS/Both options are fine/Can you explain both/I need information about both/What are both options/Tell me about SMS and IVR/Explain the SMS and IVR process/I want to know both methods/Dono/Both/Both options/SMS and IVR/SMS or IVR/IVR or SMS/Dono hi/दोनों/दोनों ही/दोनों तरीके/दोनों विकल्प/एसएमएस और आईवीआर/आईवीआर और एसएमएस/Dono bata dijiye/Dono methods batao/Dono ki information do/Dono available hain kya/Mujhe dono batao/IVR aur SMS dono samjhao/Both batao/Both ways tell me/Please tell me both/Both methods explain karo/दोनों बताओ/दोनों बता दीजिए/दोनों तरीके समझाइए/मुझे दोनों जानने हैं"
+  },
+  {
+   "id": "e_n_has_ask_merchant__n_ask_merchant__true",
+   "to": "n_ask_merchant",
+   "from": "n_has_ask_merchant",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_ask_merchant__n_has_pr_bank__false",
+   "to": "n_has_pr_bank",
+   "from": "n_has_ask_merchant",
+   "label": "false"
+  },
+  {
+   "id": "e_n_ask_merchant__n_has_pr_bank__haan_theek_hai_haan_ji_t",
+   "to": "n_has_pr_bank",
+   "from": "n_ask_merchant",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_ask_merchant__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_ask_merchant",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_ask_merchant__n_ask_merchant___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_ask_merchant",
+   "from": "n_ask_merchant",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_pr_bank__n_pr_bank__true",
+   "to": "n_pr_bank",
+   "from": "n_has_pr_bank",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_pr_bank__n_has_pr_asset__false",
+   "to": "n_has_pr_asset",
+   "from": "n_has_pr_bank",
+   "label": "false"
+  },
+  {
+   "id": "e_n_pr_bank__n_has_pr_asset__haan_theek_hai_haan_ji_t",
+   "to": "n_has_pr_asset",
+   "from": "n_pr_bank",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_pr_bank__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_pr_bank",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_pr_bank__n_pr_bank___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_pr_bank",
+   "from": "n_pr_bank",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_pr_asset__n_pr_asset__true",
+   "to": "n_pr_asset",
+   "from": "n_has_pr_asset",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_pr_asset__n_options__false",
+   "to": "n_options",
+   "from": "n_has_pr_asset",
+   "label": "false"
+  },
+  {
+   "id": "e_n_pr_asset__n_options__haan_theek_hai_haan_ji_t",
+   "to": "n_options",
+   "from": "n_pr_asset",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_pr_asset__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_pr_asset",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_pr_asset__n_pr_asset___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_pr_asset",
+   "from": "n_pr_asset",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_bat_details__n_bat_details__true",
+   "to": "n_bat_details",
+   "from": "n_has_bat_details",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_bat_details__n_has_bat_bank__false",
+   "to": "n_has_bat_bank",
+   "from": "n_has_bat_details",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_details__n_has_bat_bank__haan_theek_hai_haan_ji_t",
+   "to": "n_has_bat_bank",
+   "from": "n_bat_details",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_bat_details__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_bat_details",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_bat_details__n_bat_details___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_bat_details",
+   "from": "n_bat_details",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_bat_bank__n_bat_bank__true",
+   "to": "n_bat_bank",
+   "from": "n_has_bat_bank",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_bat_bank__n_has_bat_asset__false",
+   "to": "n_has_bat_asset",
+   "from": "n_has_bat_bank",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_bank__n_has_bat_asset__haan_theek_hai_haan_ji_t",
+   "to": "n_has_bat_asset",
+   "from": "n_bat_bank",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_bat_bank__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_bat_bank",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_bat_bank__n_bat_bank___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_bat_bank",
+   "from": "n_bat_bank",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_bat_asset__n_bat_asset__true",
+   "to": "n_bat_asset",
+   "from": "n_has_bat_asset",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_bat_asset__n_has_bat_contact__false",
+   "to": "n_has_bat_contact",
+   "from": "n_has_bat_asset",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_asset__n_has_bat_contact__haan_theek_hai_haan_ji_t",
+   "to": "n_has_bat_contact",
+   "from": "n_bat_asset",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_bat_asset__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_bat_asset",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_bat_asset__n_bat_asset___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_bat_asset",
+   "from": "n_bat_asset",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_has_bat_contact__n_bat_contact__true",
+   "to": "n_bat_contact",
+   "from": "n_has_bat_contact",
+   "label": "true"
+  },
+  {
+   "id": "e_n_has_bat_contact__n_bat_check__false",
+   "to": "n_bat_switch_off",
+   "from": "n_has_bat_contact",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_contact__n_bat_check__haan_theek_hai_haan_ji_t",
+   "to": "n_bat_switch_off",
+   "from": "n_bat_contact",
+   "label": "Haan theek hai/Haan ji theek hai/Ha bilkul/Yes, it's correct/Yes, correct/It's correct/Correct hai/Sahi hai/Bilkul sahi hai/Ekdum sahi hai/Sahi samjhe/Bilkul correct/100% correct/Haan, sahi hai/Haan, bilkul sahi/Haan, yehi sahi hai/Perfect hai/Absolutely correct/Yes, that's right/That's correct/Right hai/Baat sahi hai/Exactly/Sahi pakde hain/Ha, confirm hai/Yes, confirmed/हाँ, ठीक है/हाँ जी, ठीक है/जी हाँ/बिल्कुल सही है/एकदम सही है/सही है/जी, सही है/आपने सही समझा/हाँ, यह सही है/बिल्कुल ठीक है/जी, बिल्कुल सही/हाँ, यही सही है/आपकी बात सही है/सही कहा आपने/हाँ, कन्फर्म है/यह बिल्कुल सही है/जी, ऐसा ही है/Correct/You're right/That's right/Yes, absolutely/Perfectly correct/Yes, I agree/That's exactly right/Everything is correct/You got it right/Spot on/Absolutely right/That's perfectly fine/Haan/Ha ji/Yes/Right/Sahi/Bilkul/Ekdum/Absolutely/Confirmed/Perfect/Okay/बिल्कुल/हाँ/ठीक है/एकदम सही/Haan ji/Haan sir/Haa ji/Ji haan/Ji ha/Ji sir haan/Yes sir/Yes ji/Yeah/Yep/Theek hai/Thik hai/Theek hai ji/Thik hai ji/Sahi hain/Haan sahi hai/Ha sahi hai/Haan ji sahi hai/Ji sahi hai/Bilkul sahi/Ekdam sahi hai/Sab sahi hai/Sab theek hai/Sab details sahi hain/Details sahi hain/Details sahi hai/Details theek hain/Details correct hain/Haan correct hai/Sahi bola aapne/Aapne sahi bataya/Haan confirm hai/Confirm hai/Ok/Okay sir/Haan bilkul/Haan, aage badho/हां/हाँ जी/हां जी/जी हां/हाँ सर/ठीक है जी/सही हैं/हाँ सही है/हां सही है/जी सही है/बिल्कुल सही/सब सही है/सब ठीक है/सारी डिटेल्स सही हैं/डिटेल्स सही हैं/डिटेल सही है/हाँ बिल्कुल/कन्फर्म है/हाँ कन्फर्म है/ओके/यस/Yes, that's correct/Yes, that is correct/That is correct/That is right/All correct/All details are correct/The details are correct/Details are correct/Yes correct/Yes, all correct/I confirm/हा/हाँ हाँ/हां हां/हाँ है/हां है/जी हाँ है/Haa/Haan haan/Haan hai/Ha hai/Yes it is/Yes, it is"
+  },
+  {
+   "id": "e_n_bat_contact__n_not_verified__nahi_galat_hai_nahi_ye_s",
+   "to": "n_not_verified",
+   "from": "n_bat_contact",
+   "label": "Nahi galat hai/Nahi, ye sahi nahi hai/Galat hai/Sahi nahi hai/Sahi nahi/Nahi, aisa nahi hai/Aapne galat samjha/Ye galat hai/Bilkul galat hai/Ekdum galat hai/Correct nahi hai/Ye correct nahi hai/Meri information galat hai/Ye answer galat hai/Nahi, aap galat hain/Thik nahi hai/Ye theek nahi hai/Aisa nahi hona chahiye/Nahi, ye wrong hai/Wrong hai/Galat bata rahe ho/Ye sahi nahi lag raha/Nahi, dobara check karo/Isme galti hai/नहीं, गलत है/गलत है/यह सही नहीं है/सही नहीं है/बिल्कुल गलत है/एकदम गलत है/आपने गलत समझा/आप गलत बता रहे हैं/यह जवाब गलत है/यह ठीक नहीं है/ऐसा नहीं है/यह सही जानकारी नहीं है/इसमें गलती है/नहीं, यह सही नहीं है/आपकी बात गलत है/यह गलत जानकारी है/दोबारा चेक कीजिए/यह सही नहीं लग रहा है/नहीं, ऐसा नहीं है/No/No, that's wrong/That's incorrect/Not correct/It's not correct/That's not right/Wrong/Absolutely wrong/Completely incorrect/This is incorrect/You're wrong/That's not what I meant/You got it wrong/This information is incorrect/That's not accurate/Not right at all/Please check again/That's a mistake/Incorrect answer/No, that's not true/Nope/Incorrect/Not right/Galat/Nahi/Bilkul galat/गलत/नहीं/सही नहीं/बिल्कुल गलत/ठीक नहीं/Nhi/Nhi hai/Nahin/Nahi hai/Ye nahi hai/Ye mera nahi hai/Alag hai/Dusra hai/Badal gaya hai/Change ho gaya hai/Purana hai/Naam galat hai/Number galat hai/Nahi, sahi nahi hai/Nahi, bank galat hai/Bank ka naam galat hai/Outlet name galat hai/Ji nahi/Bilkul nahi/नही/नहीं है/जी नहीं/अलग है/बदल गया है/पुराना है/नहीं, बैंक का नाम गलत है/No, that's not correct/That is not right/Not mine/That's not mine/It's different/It has changed/ना/ना ना/ना जी/जी ना/ना है/Na/Naa/Na na/Na ji/Ji na/No it is not/No, it's not/It is not/It's not"
+  },
+  {
+   "id": "e_n_bat_contact__n_bat_contact___awaaz_nahi_aa_rahi_awaa",
+   "to": "n_bat_contact",
+   "from": "n_bat_contact",
+   "label": "आवाज़ नहीं आ रही/आवाज़ नहीं आ रहा/आवाज़ ठीक से नहीं/आवाज़ साफ़ नहीं/आवाज नहीं आ रही/आवाज नहीं आ रहा/आवाज ठीक से नहीं/आवाज साफ नहीं/आवाज़ कट/आवाज कट/सुनाई नहीं दे/सुनाई नहीं दिया/कुछ सुनाई नहीं/समझ नहीं आया/समझ में नहीं आया/कुछ समझ नहीं/क्या बोल रहे/क्या बोला/फिर से बोलिए/दोबारा बोलिए/Awaaz nahi aa rahi/Awaaz nahi aa raha/Awaaz theek se nahi/Awaaz saaf nahi/Awaz nahi aa rahi/Awaz nahi aa raha/Awaz theek se nahi/Aawaz nahi aa rahi/Aawaz nahi aa raha/Awaaz nhi aa rahi/Awaaz cut/Awaz cut/Sunai nahi de/Sunai nahi diya/Kuch sunai nahi/Samajh nahi aaya/Samjh nahi aaya/Kuch samajh nahi/Kya bol rahe/Kya bola/Phir se boliye/Dobara boliye/Line clear nahi/Line saaf nahi/I can't hear you/I cannot hear you/Can't hear you/Not audible/Voice is not clear/Voice is breaking/You are breaking/Please repeat/Come again/What did you say/Didn't get you/I didn't understand"
+  },
+  {
+   "id": "e_n_ask_tid__n_api_lookup",
+   "to": "n_api_lookup",
+   "from": "n_ask_tid"
+  },
+  {
+   "id": "e_n_api_lookup__n_lookup_found__success",
+   "to": "n_lookup_found",
+   "from": "n_api_lookup",
+   "label": "success"
+  },
+  {
+   "id": "e_n_api_lookup__n_lookup_unavailable__failure",
+   "to": "n_lookup_unavailable",
+   "from": "n_api_lookup",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_lookup_found__n_has_ask_merchant__true",
+   "to": "n_has_ask_merchant",
+   "from": "n_lookup_found",
+   "label": "true"
+  },
+  {
+   "id": "e_n_lookup_found__n_tid_retry__false",
+   "to": "n_tid_retry",
+   "from": "n_lookup_found",
+   "label": "false"
+  },
+  {
+   "id": "e_n_tid_retry__n_api_lookup_retry",
+   "to": "n_api_lookup_retry",
+   "from": "n_tid_retry"
+  },
+  {
+   "id": "e_n_api_lookup_retry__n_lookup_found_retry__success",
+   "to": "n_lookup_found_retry",
+   "from": "n_api_lookup_retry",
+   "label": "success"
+  },
+  {
+   "id": "e_n_api_lookup_retry__n_lookup_unavailable__failure",
+   "to": "n_lookup_unavailable",
+   "from": "n_api_lookup_retry",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_lookup_found_retry__n_has_ask_merchant__true",
+   "to": "n_has_ask_merchant",
+   "from": "n_lookup_found_retry",
+   "label": "true"
+  },
+  {
+   "id": "e_n_lookup_found_retry__n_lookup_unverified__false",
+   "to": "n_lookup_unverified",
+   "from": "n_lookup_found_retry",
+   "label": "false"
+  },
+  {
+   "id": "e_n_lookup_unverified__n_options_unverified",
+   "to": "n_options_unverified",
+   "from": "n_lookup_unverified"
+  },
+  {
+   "id": "e_n_lookup_unavailable__n_options_unverified",
+   "to": "n_options_unverified",
+   "from": "n_lookup_unavailable"
+  },
+  {
+   "id": "e_n_options__n_sms__sms_wala_sms_wala_batao___unverified",
+   "to": "n_sms",
+   "from": "n_options_unverified",
+   "label": "SMS wala/SMS wala batao/SMS wala chahiye/SMS se karna hai/SMS wala option chahiye/SMS ke through karna hai/Mujhe SMS wala process batao/SMS wala jana hai/SMS par bhej do/SMS se request karni hai/SMS wala method batao/SMS ka option select karna hai/SMS se order karna hai/SMS ke baare mein batao/Mujhe SMS ke through karna hai/SMS wala process samjha do/SMS se hi karna hai/SMS option chahiye mujhe/SMS wala procedure bata dijiye/एसएमएस वाला/एसएमएस वाला बताइए/एसएमएस वाला चाहिए/एसएमएस से करना है/एसएमएस का विकल्प चाहिए/मुझे एसएमएस वाला तरीका बताइए/एसएमएस के जरिए करना है/एसएमएस वाला प्रोसेस बताइए/एसएमएस से रिक्वेस्ट करनी है/एसएमएस वाला ऑप्शन चुनना है/एसएमएस के माध्यम से करना है/मुझे एसएमएस की जानकारी चाहिए/एसएमएस वाला तरीका समझा दीजिए/एसएमएस से ही करना है/SMS option/SMS method/SMS process/SMS one, please/I want the SMS option/Tell me about SMS/I want to go with SMS/Please explain the SMS process/I prefer SMS/I want to do it through SMS/How does the SMS process work/I would like to select SMS/Please guide me through SMS/I want to request it via SMS/Let's go with the SMS option/Send it through SMS/sms/s m s/एसएमएस/एस एम एस/message wala/मैसेज वाला/मैसेज से"
+  },
+  {
+   "id": "e_n_options__n_ivr__ivr_ivr_wala_ivr_wala_ba__unverified",
+   "to": "n_ivr",
+   "from": "n_options_unverified",
+   "label": "IVR/IVR wala/IVR wala batao/IVR wala chahiye/IVR se karna hai/IVR wala option chahiye/Phone wala/Phone wala batao/Phone wala chahiye/Phone se karna hai/Phone option chahiye/Phone par karna hai/Call wala/Call wala option chahiye/Call ke through karna hai/Telephone wala/Phone se request karni hai/Mujhe IVR wala process batao/Arey IVR wala/IVR wala jana hai/IVR option select karna hai/Phone wala process samjhao/Phone se hi karna hai/IVR ke through request karni hai/Call karke karna hai/आईवीआर वाला/आईवीआर वाला बताइए/आईवीआर वाला चाहिए/आईवीआर से करना है/आईवीआर का विकल्प चाहिए/फोन वाला/फोन वाला बताइए/फोन से करना है/फोन का विकल्प चाहिए/फोन पर करना है/कॉल वाला विकल्प चाहिए/कॉल के जरिए करना है/टेलीफोन वाला तरीका बताइए/फोन से रिक्वेस्ट करनी है/मुझे आईवीआर का तरीका बताइए/आईवीआर वाला प्रोसेस समझाइए/फोन से ही करना है/कॉल करके करना है/आईवीआर के माध्यम से करना है/IVR option/IVR method/IVR process/I want the IVR option/Tell me about IVR/IVR one, please/I want to go with IVR/Let's use IVR/Phone option/Phone method/Phone process/Phone call option/I want the phone option/Tell me about the phone process/I want to do it over the phone/Through a phone call/Call option/Telephone option/Please explain the IVR process/I prefer the IVR option/Can I do it over the phone/i v r/आईवीआर/आई वी आर/phone/फोन/फ़ोन/call/कॉल"
+  },
+  {
+   "id": "e_n_options__n_raise__tum_request_raise_kar_do__unverified",
+   "to": "n_raise",
+   "from": "n_options_unverified",
+   "label": "Tum request raise kar do/Tum kar do/Request raise kar do/Aap request raise kar do/Mujhe nahi aata, tum kar do/Tum karo, mujhe nahi pata, tum kar do/Mere liye request raise kar do/Mujhe request karni nahi aati/Aap hi kar dijiye/Tum hi kar do/Mujhe process nahi pata/Aap request submit kar do/Meri taraf se request raise kar do/Tum hi request daal do/Mujhe samajh nahi aa raha, tum kar do/Request tum hi raise karna/Mujhe nahi pata kaise karna hai/Aap hi process complete kar do/Mere liye kar do/Please tum hi kar do/Main nahi kar paunga, tum kar do/Mujhe help chahiye, aap kar do/Aap hi request register kar dijiye/Mujhe nahi karna aata, aap kar do/आप रिक्वेस्ट दर्ज कर दीजिए/तुम रिक्वेस्ट कर दो/आप ही कर दीजिए/मेरे लिए रिक्वेस्ट दर्ज कर दीजिए/मुझे नहीं आता, आप कर दीजिए/मुझे तरीका नहीं पता, आप कर दीजिए/मेरी तरफ से रिक्वेस्ट डाल दीजिए/आप ही रिक्वेस्ट सबमिट कर दीजिए/मुझे समझ नहीं आ रहा, आप कर दीजिए/आप ही पूरी प्रक्रिया कर दीजिए/मेरे लिए कर दीजिए/मुझे नहीं पता कैसे करना है/आप रिक्वेस्ट उठा दीजिए/आप ही रिक्वेस्ट रजिस्टर कर दीजिए/मैं नहीं कर पाऊंगा, आप कर दीजिए/मुझे इसकी जानकारी नहीं है, आप कर दीजिए/आप ही आवेदन कर दीजिए/मेरी रिक्वेस्ट आप दर्ज कर दीजिए/Please raise the request for me/You can do it/Please do it for me/Raise the request, please/I don't know how to do it, please do it for me/I am not familiar with the process/Please submit the request on my behalf/Can you raise the request for me/You handle it, please/Please take care of the request/I don't know how to submit it/Please complete the process for me/Kindly register my request/You do it, I don't know how/Please initiate the request on my behalf/I need you to do it for me/Can you handle this request/Please go ahead and submit it/I am unable to do it myself/You raise it, please/Aap kar do/Request kar do/Raise kar do/Submit kar do/Aap hi karo/Tum hi karo/Mujhe nahi aata/Kar dijiye/Please do it/You do it/Do it for me/Raise request/Submit request/आप कर दो/तुम कर दो/कर दीजिए/मुझे नहीं आता/raise/on my behalf/रिक्वेस्ट दर्ज/रिक्वेस्ट डाल/आप कर/Aap raise kar do/Aap hi raise kar do/Aap hi raise kar dijiye/Aap raise kar dijiye/Aap meri taraf se kar do/Meri taraf se kar do/Meri taraf se kar dijiye/Behalf pe kar do/Mere behalf pe kar do/Aap mere behalf pe kar do/Teesra wala/Teesra option/Teesra wala option/Third option/The third one/The third option/You raise it for me/Raise it on my behalf/Please raise it on my behalf/आप मेरी तरफ से कर दीजिए/मेरी तरफ से कर दीजिए/आप ही रेज़ कर दीजिए/आप रेज़ कर दीजिए/तीसरा वाला/तीसरा विकल्प/तीसरा ऑप्शन"
+  },
+  {
+   "id": "e_n_options__n_both__dono_batao_dono_options___unverified",
+   "to": "n_both",
+   "from": "n_options_unverified",
+   "label": "Dono batao/Dono options batao/Dono chahiye/Dono ke baare mein batao/Dono tarike batao/Dono ways batao/SMS aur IVR dono/SMS aur IVR dono batao/SMS aur IVR dono chahiye/SMS ya IVR dono/IVR aur SMS dono/IVR aur SMS dono batao/Dono option available hain kya/Mujhe dono options chahiye/Dono ka process samjhao/Dono kaise kaam karte hain/Dono methods bata do/Dono ke baare mein samjha do/SMS and IVR dono batao/Dono ways se batao/दोनों बताइए/दोनों विकल्प बताइए/मुझे दोनों चाहिए/दोनों के बारे में बताइए/दोनों तरीके बताइए/एसएमएस और आईवीआर दोनों/एसएमएस और आईवीआर दोनों बताइए/आईवीआर और एसएमएस दोनों चाहिए/दोनों का तरीका समझाइए/दोनों विकल्प उपलब्ध हैं क्या/दोनों कैसे काम करते हैं/दोनों की जानकारी दीजिए/मुझे दोनों तरीके जानने हैं/दोनों का प्रोसेस बताइए/दोनों के बारे में समझा दीजिए/Tell me both/Both options, please/I want both/Both ways/Both methods/Tell me both ways/Explain both options/Let me know both options/I would like to know both/SMS and IVR both/Both SMS and IVR/IVR and SMS/Both options are fine/Can you explain both/I need information about both/What are both options/Tell me about SMS and IVR/Explain the SMS and IVR process/I want to know both methods/Dono/Both/Both options/SMS and IVR/SMS or IVR/IVR or SMS/Dono hi/दोनों/दोनों ही/दोनों तरीके/दोनों विकल्प/एसएमएस और आईवीआर/आईवीआर और एसएमएस/Dono bata dijiye/Dono methods batao/Dono ki information do/Dono available hain kya/Mujhe dono batao/IVR aur SMS dono samjhao/Both batao/Both ways tell me/Please tell me both/Both methods explain karo/दोनों बताओ/दोनों बता दीजिए/दोनों तरीके समझाइए/मुझे दोनों जानने हैं"
+  },
+  {
+   "id": "e_n_bat_tid__n_bat_api_lookup",
+   "to": "n_bat_api_lookup",
+   "from": "n_bat_tid"
+  },
+  {
+   "id": "e_n_bat_api_lookup__n_bat_lookup_found__success",
+   "to": "n_bat_lookup_found",
+   "from": "n_bat_api_lookup",
+   "label": "success"
+  },
+  {
+   "id": "e_n_bat_api_lookup__n_bat_lookup_unavailable__failure",
+   "to": "n_bat_lookup_unavailable",
+   "from": "n_bat_api_lookup",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_bat_lookup_found__n_has_bat_details__true",
+   "to": "n_has_bat_details",
+   "from": "n_bat_lookup_found",
+   "label": "true"
+  },
+  {
+   "id": "e_n_bat_lookup_found__n_bat_tid_retry__false",
+   "to": "n_bat_tid_retry",
+   "from": "n_bat_lookup_found",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_tid_retry__n_bat_api_lookup_retry",
+   "to": "n_bat_api_lookup_retry",
+   "from": "n_bat_tid_retry"
+  },
+  {
+   "id": "e_n_bat_api_lookup_retry__n_bat_lookup_found_retry__success",
+   "to": "n_bat_lookup_found_retry",
+   "from": "n_bat_api_lookup_retry",
+   "label": "success"
+  },
+  {
+   "id": "e_n_bat_api_lookup_retry__n_bat_lookup_unavailable__failure",
+   "to": "n_bat_lookup_unavailable",
+   "from": "n_bat_api_lookup_retry",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_bat_lookup_found_retry__n_has_bat_details__true",
+   "to": "n_has_bat_details",
+   "from": "n_bat_lookup_found_retry",
+   "label": "true"
+  },
+  {
+   "id": "e_n_bat_lookup_found_retry__n_bat_lookup_unverified__false",
+   "to": "n_bat_lookup_unverified",
+   "from": "n_bat_lookup_found_retry",
+   "label": "false"
+  },
+  {
+   "id": "e_n_bat_lookup_unverified__n_bat_check",
+   "to": "n_bat_switch_off",
+   "from": "n_bat_lookup_unverified"
+  },
+  {
+   "id": "e_n_bat_lookup_unavailable__n_bat_check",
+   "to": "n_bat_switch_off",
+   "from": "n_bat_lookup_unavailable"
+  },
+  {
+   "id": "e_n_bat_switch_off__n_bat_check__done",
+   "to": "n_bat_check",
+   "from": "n_bat_switch_off",
+   "label": "Haan ho gaya/Ho gaya/Done/Okay/Completed/Haan/Haa/Ha ji/Switch off/Switch off ho gaya/Switch off kar diya/Switch off hai/Device switch off kar diya/Terminal switch off ho gaya/Terminal band kar diya/Band ho gaya/Band kar diya/Haan switch off ho gaya/Switch off kar chuka hoon/Switch off kar diya hai/Ab switch off hai/Successfully switch off ho gaya/Power off kar diya/Device band ho gaya/Terminal band hai/Haan ji ho gaya/Ab ho chuka hai/Kar diya hai/हाँ हो गया/हो गया/जी हो गया/कर दिया/कर दिया है/स्विच ऑफ हो गया/स्विच ऑफ कर दिया/डिवाइस बंद कर दिया/टर्मिनल बंद हो गया/टर्मिनल बंद कर दिया/बंद हो गया/बंद कर दिया है/हाँ बंद हो गया/अब स्विच ऑफ है/पावर बंद कर दी है/डिवाइस बंद है/जी हाँ कर दिया/काम हो गया/पूरा हो गया/Yes done/It's done/It's completed/Yes it's done/Switched off/It's switched off/I've switched it off/Switched it off already/The device is switched off/The terminal is switched off/Power is off/It's powered off/Device turned off/Terminal turned off/I've turned it off/Yes switched off/Successfully switched off/It's off now/Power turned off/Ha/Yes/Off/Power off/Band/Kar diya/बंद/स्विच ऑफ/हाँ/जी हाँ/पूरा"
+  }
+ ]
+}

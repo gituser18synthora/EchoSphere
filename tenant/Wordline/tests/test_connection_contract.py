@@ -63,7 +63,10 @@ def test_hit_takes_success_edge_with_mapped_fields(client, connection):
     ok, mapped = decide(connection, r.status_code, r.json())
     assert (r.status_code, ok) == (200, True)
     assert mapped["merchant_found"] is True and mapped["customer_verified"] is True
-    assert mapped["outlet_name"] == "AGARWAL PUBLIC SCHOOL" and mapped["bank_name"] == "AXIS Bank"
+    assert mapped["outlet_name"] == "Agarwal Public School" and mapped["bank_name"] == "AXIS Bank"
+    assert mapped["asset_type"] == "Paytivo 7210 2G plus WiFi"
+    assert mapped["address"] == "Agarwal Public School, Bicholi Mardana Road, Indore, Madhya Pradesh 452016"
+    assert mapped["contact_person"] == "K C Tiwari"
 
 
 def test_miss_takes_success_edge_with_nothing_mapped(client, connection):
@@ -117,3 +120,19 @@ def test_unconfigured_service_takes_failure_edge(client, connection, monkeypatch
 ])
 def test_other_outcomes_take_failure_edge(connection, status, body, error):
     assert decide(connection, status, body, error) == (False, {})
+
+
+def test_new_mapping_against_a_service_without_the_new_fields(connection):
+    """DEMO runs the previous service until its code is deployed: the new
+    address / contact_person mappings must then map nothing (the workflow's
+    ``address exists`` gate stays false and the steps keep asking)."""
+    old_hit = {"lookup_status": "found", "found": True, "verified": True,
+               "matched_by": "terminal_id", "terminal_id": "91379784",
+               "outlet_name": "AGARWAL PUBLIC SCHOOL", "bank_name": "AXIS Bank",
+               "asset_type": "PAYTIVO-7210-2G+WIFI", "contact_number": "9303333356",
+               "contact_number_masked": "XXXXXX3356", "issue_type": "Paper Roll",
+               "issue_code": "paper_roll"}
+    ok, mapped = decide(connection, 200, old_hit)
+    assert ok and mapped["outlet_name"] == "AGARWAL PUBLIC SCHOOL"
+    assert "address" not in mapped and "contact_person" not in mapped
+    assert {m["target"] for m in connection["response_mapping"]} >= {"address", "contact_person"}

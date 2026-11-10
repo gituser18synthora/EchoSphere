@@ -9,12 +9,12 @@ customer system — an `api_connections` row executed by workflow `api` nodes.
 | Thing | Value |
 | --- | --- |
 | Tenant / bot | `tn_ccc488c2c47d` / `bot_a9d4caca70dc` "Customer Support" (published) |
-| Workflow | `wf_0a6550d061e6` "Paper roll and battery support" — LOCAL **v13** = DEMO v12 (per-field confirmations) + lookup wiring + pinned Terminal ID capture (61 nodes / 106 edges, approved); snapshots of v10 and DEMO v12 in `data/` |
+| Workflow | `wf_0a6550d061e6` "Paper roll and battery support" — 2026-11-10: LOCAL **v15** / DEMO **v18** = the Wordline team's v14 / v17 + step 3 (record-aware request / visit asks; 66 nodes / 113 edges). Earlier: LOCAL v13 = DEMO v12 (per-field confirmations) + lookup wiring + pinned Terminal ID capture; snapshots of v10, DEMO v12 and DEMO v17 in `data/` |
 | Connection | `Wordline Merchant Lookup` (bot-scoped, `api_f34882c461bb` on LOCAL) → `POST http://127.0.0.1:9023/api/v1/merchants/lookup`, `X-API-Key` from `secret://wordline-merchant-api-key` |
-| Prompt | `pr_b88a6bbadb2a` system prompt **v4** (CALLER DATA section: terminal details come from the lookup) |
+| Prompt | `pr_b88a6bbadb2a` system prompt — LOCAL **v6** / DEMO **v7** (2026-11-10: address + contact person, say the speech-shaped values as written); v4 introduced the CALLER DATA section |
 | Runtime context | `rcs_0512ea793f71` "Merchant terminal data" — fixtures reduced to `customer_name`, `docket_number`, `customer_verified: false` |
 | Merchant API | loopback **:9023**, systemd `wordline-api.service` (DEMO: system unit, key in `/etc/echosphere/wordline-api.env`; LOCAL: user unit `~/.config/systemd/user/wordline-api.service`, key in `~/.config/echosphere/wordline-api.env`); `./tenant/Wordline/run.sh` for ad-hoc runs |
-| Data | `Wordline.csv` (42 rows, tab-separated) → `data/merchants.json` via `scripts/convert_csv.py` |
+| Data | `Wordline.csv` (42 rows, tab-separated; 2026-11-10 export adds `Address`, `Contact Person`) → `data/merchants.json` (schema 2) via `scripts/convert_csv.py` |
 
 Status 2026-11-06: implemented and verified on **LOCAL only**.  Nothing was
 deployed to DEMO or NEW PRODUCTION.
@@ -22,7 +22,10 @@ deployed to DEMO or NEW PRODUCTION.
 ## Layout
 
 - `Wordline.csv` — source export (ANCHORAPPTID, MERCHANT, Bank Name,
-  ASSETMODEL, Contact No, Type).
+  ASSETMODEL, Contact No, Address, Contact Person, Type; Address is a quoted
+  multi-line cell, the header is "Contact Person " with a trailing space).
+- `api/speech.py` — TTS-ready values for the four spoken fields (see
+  *Address and contact person* below).
 - `scripts/convert_csv.py` — CSV → `data/merchants.json` (`--check` verifies
   the JSON still matches the CSV; refuses duplicate terminal ids, duplicate
   digit keys, duplicate or non-10-digit contact numbers).
@@ -69,7 +72,9 @@ answers `503` while no key is configured and `401` on a wrong one.
 
 Hit: `200 {lookup_status: "found", found: true, verified: true, matched_by,
 terminal_id, outlet_name, bank_name, asset_type, contact_number,
-contact_number_masked, issue_type, issue_code}`.  Miss: `200 {lookup_status:
+contact_number_masked, issue_type, issue_code, address, contact_person}` —
+`outlet_name`, `asset_type`, `address`, `contact_person` TTS-ready (since
+2026-11-10; the listing carries neither address nor contact person).  Miss: `200 {lookup_status:
 "not_found", found_count: 0, message, hint}` with **no** mapped keys; no
 identifier: `422 {lookup_status: "no_identifier"}`; bad/missing key: `401`,
 unconfigured key: `503` (both `lookup_status: "unauthorized"`).  The GET
@@ -127,6 +132,92 @@ verified your terminal and merchant details".  The four silent prefill asks
 `customer_verified` is mapped from the hit so the LLM can answer follow-ups
 ("which bank is my terminal with?") from the looked-up facts.
 
+## Address and contact person (2026-11-10) — TTS-ready values
+
+The 2026-11-10 export added `Address` and `Contact Person`; every other
+column of the 42 rows is unchanged (verified cell by cell).
+
+**Data.** The converter stores both as exported (lines trimmed, empty lines
+dropped, line structure kept for the address) — `data/merchants.json` stays
+traceable to the CSV.  Both columns are optional, so an older export still
+converts.
+
+**API (response level).** `api/speech.py` shapes the four fields the bot reads
+out — `outlet_name` (MERCHANT), `asset_type` (ASSETMODEL), `address`,
+`contact_person` — in every single-merchant response (lookup, GET by id, GET
+by contact):
+
+| CSV | API |
+| --- | --- |
+| `AGARWAL PUBLIC SCHOOL` | `Agarwal Public School` |
+| `TRISTAR CARS PVT LTD` | `Tristar Cars Private Limited` |
+| `PALLADIAN HOSPITALITY LLP` / `MMTC PAMP INDIA` | `Palladian Hospitality LLP` / `MMTC Pamp India` |
+| `PAYTIVO-7210-2G+WIFI` | `Paytivo 7210 2G plus WiFi` |
+| `ANTERA AL9220U-Hand held GPRS` | `Antera AL9220U Handheld GPRS` |
+| `K C TIWARI` / `Prasanthan K. C` | `K C Tiwari` / `Prasanthan K C` |
+| `AGARWAL PUBLIC SCHOOL⏎BICHOLI MARDANA ROAD⏎INDORE MP⏎INDORE - 452016, MADHYA PRADESH⏎New ME Contact No.9303333356⏎Terminal Line No.0` | `Agarwal Public School, Bicholi Mardana Road, Indore, Madhya Pradesh 452016` |
+| `SHOP NO 17, SAIFEE PARK, 680⏎DR. MASCARENHAS ROAD, MAZGAON , MUMBAI⏎Merchant Pin Code⏎400010⏎Merchant State⏎MAHARASHTRA` | `Shop Number 17, Saifee Park, 680 Dr. Mascarenhas Road, Mazgaon, Mumbai, Maharashtra 400010` |
+
+Rules: ALL-CAPS words → Title case (joining words lower case); kept as
+written: initials, known acronyms (IDBI, HQ, LLP, GPRS, CHS …), capitalised
+tokens without a vowel (PNB, SBS, NSK, MMTC), letter+digit tokens (model and
+house numbers AL9220U, A2, 48A); expansions PVT LTD / PROP / NO 12 / H NO /
+G/F / BLDG / RD / OPP / NR / FLR / SOC / LM; models: hyphens → spaces, `+` →
+plus, WIFI → WiFi, Hand held → Handheld; addresses: export metadata lines and
+the Merchant Pin Code / Merchant State labels dropped (values kept once as
+"…, State PIN"), repeated segments said once, a trailing line repeating the
+contact person dropped.  Nothing is invented; truncated export values
+(`GYNAECOLOG`, `…GENERAL STOR`) are spoken as stored.  `bank_name` is not
+re-cased (out of scope of this change; `KOTAK BANK`, `PNB BANK`, `WLAXIS
+WEIPL NEW` are still read back as exported).
+
+Why: measured with the bot's own TTS (Sarvam `bulbul:v4-flash`,
+`shubh_hi_customer`) and a verbatim transcription of the audio — the raw
+values were read letter by letter (`H A N D held`, `P A Y T I V O`, `B L D G`,
+`S A F E`), `AGARWAL` became "Egarwel" in Hindi, a raw address made the TTS
+loop ("Mumbai Mumbai Mumbai…") and read the export's "New ME Contact
+No.9303333356"; the shaped values are read as words, model numbers as "A L
+nine two two zero U", pin codes digit by digit.
+
+**Connection.** Two more mappings: `address → address`, `contact_person →
+contact_person`.  A service without the fields maps nothing for them.
+
+**Workflow step 3** (`upgrade_visit_details`, LOCAL v15 / DEMO v18): a
+condition `address exists` in front of `n_raise` (we raise the paper roll
+request) and `n_bat_visit` (engineer visit, damaged battery).  With a record
+the new `n_raise_record` / `n_bat_visit_record` read the registered address
+and contact person back and ask only for corrections, the weekly off, the
+preferred working time and (paper roll) the quantity; the answer goes to the
+same variable and the flow continues to the same next step.  Without a
+record (miss, API down, below-80 % journey, or a merchant service that
+predates the fields) the original ask runs unchanged — replayed turn by turn
+in `tests/test_visit_details.py` against the v17 snapshot.
+
+**Prompt / runtime context.** `address` and `contact_person` are declared
+(labelled; "not available" until the lookup), the missing-value policy names
+them, and the prompt's CALLER DATA section lists them with the rule to say
+the shaped values exactly as written (no re-capitalising, translating,
+transliterating or spelling out).
+
+**Rollout state (2026-11-10).**
+
+| | LOCAL | DEMO |
+| --- | --- | --- |
+| Merchant API code + data | new (user unit restarted) | **previous — pending deploy** |
+| Connection mappings | + address, contact_person | + address, contact_person |
+| Runtime context | + 2 fields | + 2 fields |
+| System prompt | v6 published | v7 published |
+| Workflow | v15 (release v0.1.6) | v18 (release v0.1.10) |
+
+DEMO behaves exactly as before until its code is deployed (the gates stay
+false; read-backs keep the export's capitals).  Deploy = the tenant files
+only (`tenant/Wordline/api/speech.py`, `api/main.py`,
+`scripts/convert_csv.py`, `Wordline.csv`, `data/merchants.json`, tests,
+setup scripts, README) and `systemctl restart wordline-api` — no platform
+service restart, no further config step.  Check afterwards: `curl
+:9023/api/v1/health` (records 42, `data_generated_at` 2026-11-10) and one
+authenticated lookup returning `address` / `contact_person`.
+
 ## Running locally
 
 ```
@@ -134,7 +225,7 @@ verified your terminal and merchant details".  The four silent prefill asks
 env/bin/python tenant/Wordline/setup/01_api_connection.py --apply
 env/bin/python tenant/Wordline/setup/02_workflow.py --apply
 env/bin/python tenant/Wordline/setup/03_context_and_prompt.py --apply
-env/bin/pytest tenant/Wordline/tests -q                    # 61 offline tests
+env/bin/pytest tenant/Wordline/tests -q                    # offline tests (114 passed, 2 skipped on 2026-11-10)
 env/bin/python tenant/Wordline/tests/run_chat_scenarios.py # 7 live scenarios (--report for 04_go_live)
 env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --api-down   # stop :9023 first
 env/bin/python tenant/Wordline/tests/run_chat_scenarios.py --auth-fail  # run :9023 under another key first
