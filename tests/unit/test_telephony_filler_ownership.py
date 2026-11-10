@@ -47,6 +47,17 @@ def filler(owner, audio=None):
     )
 
 
+
+def far_end_fed(serializer, seconds: float = 1.0):
+    """The far end still has ``seconds`` of audio queued. A packetizing
+    serializer buffers only then: the FreeSWITCH fork one never holds audio
+    back while the far end runs dry (voice_runtime.telephony _FORK_DRY_GUARD_S)."""
+    import time
+
+    serializer._playout_until = time.monotonic() + seconds
+    return serializer
+
+
 def audio_from_wire(raw):
     message = json.loads(raw)
     if "media" in message:
@@ -77,7 +88,7 @@ async def test_filler_packets_leave_immediately_without_advancing_reply_ramp(mak
 async def test_cleanup_preserves_unrelated_pending_audio_and_never_sends_global_clear(
     make_serializer,
 ):
-    serializer = make_serializer()
+    serializer = far_end_fed(make_serializer())
     serializer._ramp_step = len(_RAMP_THRESHOLDS)
     unrelated = pcm(1000, samples=400)
     assert await serializer.serialize(OutputAudioRawFrame(
@@ -162,7 +173,7 @@ async def test_same_turn_number_in_different_calls_does_not_share_cancellation(
 async def test_clear_for_different_owner_preserves_active_filler_and_pending_tts(
     make_serializer,
 ):
-    serializer = make_serializer()
+    serializer = far_end_fed(make_serializer())
     cleared, current = FillerAudioOwner(turn_id=1), FillerAudioOwner(turn_id=1)
     pending = pcm(12000)
     assert await serializer.serialize(TTSAudioRawFrame(

@@ -472,13 +472,34 @@ _ENTRY_SIGNALS = _signals.names_where("entry")
 _COMPATIBLE_SIGNALS = _signals.compatible_map()
 
 
-def _edge_meta(edges: list[dict]) -> list[tuple[dict, list[str], set[str]]]:
-    """(edge, non-else tokens, semantic signals its tokens carry) per edge."""
+def _edge_meta(
+    edges: list[dict], signal_of: dict[str, str | None] | None = None,
+) -> list[tuple[dict, list[str], set[str]]]:
+    """(edge, non-else tokens, semantic signals its tokens carry) per edge.
+
+    ``signal_of`` memoises the classification per distinct token for the
+    caller's lifetime (one graph build passes one dict for every node). A
+    token's signal depends on the token alone, and edge labels repeat the
+    same answer tokens heavily: a 1,059-edge workflow carries ~51,750 tokens
+    of which ~2,870 are distinct. Classifying each occurrence ran ~600k
+    regex searches ON the event loop the first time a process used a
+    workflow version (2.5-3.4 s on the first call after every restart or
+    workflow save, 2026-11): every call in that process froze for that long
+    — audio stopped mid-word. The result is identical, token for token.
+    """
+    if signal_of is None:
+        signal_of = {}
     meta = []
     for edge in edges:
         tokens = [t for t in _edge_tokens(edge.get("label", ""))
                   if t not in _ELSE_LABELS]
-        signals = {s for s in (classify_user_signal(t) for t in tokens) if s}
+        signals = set()
+        for token in tokens:
+            if token not in signal_of:
+                signal_of[token] = classify_user_signal(token)
+            signal = signal_of[token]
+            if signal:
+                signals.add(signal)
         meta.append((edge, tokens, signals))
     return meta
 
@@ -873,9 +894,11 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         src = str(edge.get("from") or "")
         if src and str(edge.get("to") or "") in nodes_by_id:
             edges_from.setdefault(src, []).append(edge)
-    # (edge, tokens, semantic signals) per source node, computed once.
+    # (edge, tokens, semantic signals) per source node, computed once — and
+    # each distinct token classified once for the whole graph (see _edge_meta).
+    signal_of: dict[str, str | None] = {}
     edge_meta_from: dict[str, list[tuple[dict, list[str], set[str]]]] = {
-        src: _edge_meta(edges) for src, edges in edges_from.items()
+        src: _edge_meta(edges, signal_of) for src, edges in edges_from.items()
     }
 
     start_node = next(

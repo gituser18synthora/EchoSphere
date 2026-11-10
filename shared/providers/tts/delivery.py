@@ -59,6 +59,21 @@ _SARVAM_PITCH_MODELS = {"bulbul:v2"}
 #: just under 0 dBFS).
 SARVAM_LOUDNESS_DEFAULT = 1.0
 _SARVAM_LOUDNESS_MODELS = {"bulbul:v2", "bulbul:v3", "bulbul:v4-flash"}
+_SARVAM_DICTIONARY_MODELS = {"bulbul:v3", "bulbul:v4-flash"}
+
+
+def sarvam_dictionary_id(model: str | None, value: object) -> str | None:
+    """A configured dictionary ID safe for the Sarvam model's wire contract.
+
+    Empty strings are the settings-level explicit opt-out; neither they nor
+    legacy null defaults should become an invalid provider request. Both
+    adapters use this gate, so REST cues/previews and streaming replies agree.
+    """
+    if str(model or "").strip() not in _SARVAM_DICTIONARY_MODELS:
+        return None
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
 
 
 def sarvam_accepts_loudness(model: str | None) -> bool:
@@ -330,5 +345,12 @@ def resolve_engine_params(
         and model == str(tts.get("model") or "")
     )
     base = dict(tts.get("settings") or {}) if inherits_base else {}
-    params = {**base, **(engine.get("params") or {})}
+    overrides = dict(engine.get("params") or {})
+    # Catalog defaults and older saved language overrides contain dict_id:
+    # null. For the SAME provider/model that means inherit the bot selection,
+    # just like an omitted key. An explicit empty string means no dictionary
+    # for this language and must continue to override the base value.
+    if inherits_base and overrides.get("dict_id") is None:
+        overrides.pop("dict_id", None)
+    params = {**base, **overrides}
     return apply_delivery_params(provider, model, params, speed=speed, energy=energy)

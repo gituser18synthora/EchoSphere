@@ -956,27 +956,48 @@ def test_recording_duration_tracks_caller_clock_under_bot_bursts(rate):
     for second in range(4):  # 4 s call
         if second == 1:
             # The bot pushes a 2 s reply in ONE burst (faster than realtime).
-            total.extend(aligner.add_bot_audio(b"\x11\x22" * (rate * 2)))
+            total.extend(aligner.add_bot_audio(b"\x11\x22" * (rate * 2), now=now))
         for _ in range(50):  # 1 s of mic audio at 20 ms per frame
             now += 0.02
             total.extend(aligner.add_user_audio(b"\x01\x02" * (frame_bytes // 2),
                                                 now=now))
-    total.extend(aligner.stop())
+    total.extend(aligner.stop(now=now))
     duration = len(total) / (rate * 2 * 2)  # stereo
     assert abs(duration - 4.0) < 0.1, f"recording {duration:.2f}s for a 4s call"
     # stop() is idempotent: no double tail emission.
-    assert aligner.stop() == b""
+    assert aligner.stop(now=now) == b""
 
 
 def test_recording_fills_real_input_gaps_once():
+    """A stretch of caller audio that never arrives (muted mic, a transport
+    that dropped it) is silence — once the stream has shown, by staying
+    behind the wall clock, that it is a gap and not a delayed burst."""
     rate = 16000
     aligner = AlignedStereoRecorder(sample_rate=rate, chunk_seconds=10.0)
     frame = b"\x01\x02" * int(rate * 0.02)
     aligner.add_user_audio(frame, now=10.0)
-    aligner.add_user_audio(frame, now=11.0)  # 1 s capture gap (muted mic)
-    chunk = aligner.stop()
+    now = 11.0                      # 1 s capture gap, then the stream resumes
+    for _ in range(50):
+        aligner.add_user_audio(frame, now=now)
+        now += 0.02
+    chunk = aligner.stop(now=now - 0.02)
     duration = len(chunk) / (rate * 2 * 2)
-    assert abs(duration - 1.02) < 0.05
+    assert abs(duration - 2.0) < 0.05
+
+
+def test_recording_does_not_pad_for_caller_frames_that_arrive_late():
+    """The same 1 s without a frame — but the frames were only held up and
+    arrive together afterwards: nothing is missing, nothing is padded."""
+    rate = 16000
+    aligner = AlignedStereoRecorder(sample_rate=rate, chunk_seconds=10.0)
+    frame = b"\x01\x02" * int(rate * 0.02)
+    aligner.add_user_audio(frame, now=10.0)
+    for _ in range(50):             # the held second, delivered at once
+        aligner.add_user_audio(frame, now=11.0)
+    chunk = aligner.stop(now=11.0)
+    duration = len(chunk) / (rate * 2 * 2)
+    assert abs(duration - 1.02) < 0.01
+    assert chunk[0::4] == b"\x01" * (len(chunk) // 4)   # caller track: no silence
 
 
 def test_recording_bot_tail_is_bounded_and_aligned():
@@ -987,9 +1008,11 @@ def test_recording_bot_tail_is_bounded_and_aligned():
     for _ in range(10):
         now += 0.02
         aligner.add_user_audio(frame, now=now)
-    # Bot burst arrives; the call ends while it is still "playing".
-    aligner.add_bot_audio(b"\x11\x22" * (rate * 2))  # 2 s of bot audio
-    chunk = aligner.stop()
+    # Bot burst arrives; the call ends 300 ms later, while it is "playing".
+    aligner.add_bot_audio(b"\x11\x22" * (rate * 2), now=now)  # 2 s of bot audio
+    chunk = aligner.stop(now=now + 0.3)
     duration = len(chunk) / (rate * 2 * 2)
-    # 0.2 s of mic + the bot tail (2 s − what fit under the caller clock).
-    assert 2.0 <= duration <= 2.3
+    # 0.2 s of mic + the 0.3 s of the reply the far end had played — not the
+    # 1.7 s that was still queued there when the call ended.
+    assert 0.45 <= duration <= 0.55
+

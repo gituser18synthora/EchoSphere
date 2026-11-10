@@ -68,12 +68,30 @@ _VAANI_MAX_B64_CHARS = 140_000
 # reply starts costs no playout margin — five 40 ms ticks carry 200 ms of
 # audio in 160 ms of wall clock, so the dialer's lead is the same ~40 ms
 # either way. It simply arrives sooner.
+# (2026-11-10: that holds only for a far end that pre-buffers. One that plays
+# each packet the moment it arrives runs dry while the next, bigger packet is
+# still filling — see _FORK_DRY_GUARD_S, which closes that for mod_audio_fork.
+# mod_audio_stream plays chunks as files and Vaani asks for 3.2 KB chunks, so
+# both keep the ramp as it was.)
 _RAMP_THRESHOLDS = (640, 1280, 2560)
 # Outbound audio quiet for longer than this is a new utterance: the ramp
 # resets so the next reply's first packet is fast again.
 _RAMP_RESET_IDLE_S = 0.5
 # Outbound PCM of every serializer below: 8 kHz, 16-bit mono.
 _OUTBOUND_BYTES_PER_SECOND = 8000 * 2
+# mod_audio_fork plays what it is sent from the moment it arrives (a playout
+# buffer drained every 20 ms, no pre-buffer), and the output transport hands
+# this serializer audio at real-time pace: one 40 ms chunk per 40 ms. A
+# packet that waits to grow therefore arrives after the far end has already
+# played out everything before it — the growth IS dead air. The first-packet
+# ramp (640 → 1280 → 2560 → 3200 bytes) cut about 80 ms and then 40 ms of
+# silence into the first 400 ms of EVERY reply that way, and left no margin
+# after it. So audio that is waiting here goes out as soon as the far end
+# would otherwise run dry within this guard: one output chunk plus scheduling
+# slack. At real-time pace that is every chunk, with the 40 ms head start of
+# the first two (written back to back) as a standing cushion; packets only
+# grow when audio arrives faster than it plays.
+_FORK_DRY_GUARD_S = 0.06
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +117,27 @@ class _RampedAudioMixin:
         # Monotonic time at which the far end will have played everything
         # sent so far (see playout_remaining_s).
         self._playout_until = 0.0
+        # Call recording (see attach_wire_observer).
+        self._wire_observer = None
+
+    def attach_wire_observer(self, observer) -> bool:
+        """Report every outbound audio packet to ``observer`` as it is
+        emitted (``wire_audio(pcm, 8000)``) and every playout clear
+        (``wire_flush()``). The call recorder uses it: this serializer holds
+        audio back into packets, pads the last one and can retire a stale
+        remnant, so the frames handed to it are not what the far end got.
+        Returns True — the transport then does not report frames itself."""
+        self._wire_observer = observer
+        return True
+
+    def _observe_wire_audio(self, audio: bytes) -> None:
+        observer = self._wire_observer
+        if observer is None or not audio:
+            return
+        try:
+            observer.wire_audio(audio, 8000)
+        except Exception:  # noqa: BLE001 — recording must never break media
+            logger.debug("wire observer failed", exc_info=True)
 
     def _note_inbound_media(self) -> None:
         self.last_media_at = time.monotonic()
@@ -120,6 +159,17 @@ class _RampedAudioMixin:
     def _note_playout_cleared(self) -> None:
         """A kill/clear message emptied the provider's playout queue."""
         self._playout_until = 0.0
+        observer = self._wire_observer
+        if observer is not None:
+            try:
+                observer.wire_flush()
+            except Exception:  # noqa: BLE001
+                logger.debug("wire observer flush failed", exc_info=True)
+
+    def _far_end_running_dry(self, guard_s: float) -> bool:
+        """Whether the far end will have played everything sent so far
+        within ``guard_s`` — before the next paced chunk can top it up."""
+        return self._playout_until - time.monotonic() <= guard_s
 
     def playout_remaining_s(self) -> float:
         """Seconds of already-sent audio the far end has still to play.
@@ -372,6 +422,7 @@ class FreeSwitchAudioStreamSerializer(
 
     def _audio_message(self, audio: bytes) -> str:
         self._note_sent_audio(len(audio))
+        self._observe_wire_audio(audio)
         return json.dumps({
             "type": "streamAudio",
             "data": {
@@ -604,8 +655,12 @@ class FreeSwitchAudioForkSerializer(
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < self._min_chunk_bytes(
-            _FREESWITCH_MIN_CHUNK_BYTES
+        if (
+            not force
+            and available < self._min_chunk_bytes(_FREESWITCH_MIN_CHUNK_BYTES)
+            # Never hold audio back while the far end runs dry (see
+            # _FORK_DRY_GUARD_S): waiting for a bigger packet is a gap.
+            and not self._far_end_running_dry(_FORK_DRY_GUARD_S)
         ):
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
@@ -628,6 +683,7 @@ class FreeSwitchAudioForkSerializer(
 
     def _audio_message(self, audio: bytes) -> str:
         self._note_sent_audio(len(audio))
+        self._observe_wire_audio(audio)
         return json.dumps({
             "type": "playAudio",
             "data": {
@@ -873,6 +929,7 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
 
     def _audio_message(self, chunk: bytes) -> str:
         self._note_sent_audio(len(chunk))
+        self._observe_wire_audio(chunk)
         self._out_chunk += 1
         return json.dumps({
             "event": "media",

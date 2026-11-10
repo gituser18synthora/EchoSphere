@@ -57,8 +57,8 @@ class AmbienceAudioRawFrame(FillerAudioRawFrame):
     A filler frame on purpose: every serializer already sends tagged filler
     as its own packet — outside a reply's packet buffer and first-packet ramp
     on telephony, as a clearable ``filler_audio`` stream on the browser. It is
-    created inside the transport and never enters the pipeline, so it is
-    never recorded and never reaches the echo reference.
+    created inside the transport and never enters the pipeline, so it never
+    reaches the echo reference; the call recorder captures it at the wire.
     """
 
     # First room chunk after bot audio: a packetizing serializer may still

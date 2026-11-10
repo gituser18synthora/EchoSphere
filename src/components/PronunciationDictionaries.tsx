@@ -1,4 +1,4 @@
-/* Pronunciation dictionary selector + manager (Sarvam bulbul:v3 dict_id).
+/* Pronunciation dictionary selector + manager (Sarvam bulbul:v3/v4-flash dict_id).
 
    Tenants never see or type raw provider ids ("p_5cb7faa6") — they pick a
    named dictionary from their account, or manage word → "speak as" rows in
@@ -19,6 +19,9 @@ import { useApp } from "@/state/AppContext";
 
 interface LangOption { code: string; name: string }
 
+/* UI-only sentinel: callbacks always receive the schema value, never this token. */
+const INHERIT_DEFAULT = "__inherit_default_dictionary__";
+
 function countsSummary(counts: Record<string, number>): string {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const langs = Object.keys(counts).length;
@@ -28,12 +31,17 @@ function countsSummary(counts: Record<string, number>): string {
 
 /* ---------- selector ---------- */
 
-export function DictionaryField({ value, onChange, disabled, help }: {
+export function DictionaryField({ value, onChange, disabled, help, allowInherit = false, explicitNone = false, inheritedValue }: {
   /** Provider dict id currently selected (schema key dict_id). */
   value: string | null | undefined;
   onChange: (dictId: string | null) => void;
   disabled?: boolean;
   help?: string;
+  /** Language overrides distinguish inherited null from explicitly disabled "". */
+  allowInherit?: boolean;
+  /** Preserve explicit disable even when this field cannot inherit its engine. */
+  explicitNone?: boolean;
+  inheritedValue?: string | null;
 }) {
   const [dictionaries, setDictionaries] = useState<PronunciationDictionary[] | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
@@ -49,15 +57,24 @@ export function DictionaryField({ value, onChange, disabled, help }: {
   useEffect(() => { void reload(); }, [reload]);
 
   const known = (dictionaries ?? []).some((d) => d.dictId === value);
+  const inheritedDictionary = (dictionaries ?? []).find((d) => d.dictId === inheritedValue);
   return (
     <Field label="Pronunciation dictionary" plain hint={help}>
       <div className="row gap-8" style={{ alignItems: "stretch" }}>
         <select
           className="select" style={{ flex: 1, minWidth: 0 }}
           aria-label="Pronunciation dictionary"
-          value={value ?? ""} disabled={disabled}
-          onChange={(e) => onChange(e.target.value || null)}
+          value={allowInherit && value == null ? INHERIT_DEFAULT : value ?? ""} disabled={disabled}
+          onChange={(e) => {
+            if (allowInherit && e.target.value === INHERIT_DEFAULT) onChange(null);
+            else onChange(e.target.value || (allowInherit || explicitNone ? "" : null));
+          }}
         >
+          {allowInherit && (
+            <option value={INHERIT_DEFAULT}>
+              Inherit default dictionary{inheritedDictionary ? ` (${inheritedDictionary.name})` : ""}
+            </option>
+          )}
           <option value="">None</option>
           {value && !known && <option value={value}>{value} (unavailable)</option>}
           {(dictionaries ?? []).map((d) => (
@@ -81,7 +98,7 @@ export function DictionaryField({ value, onChange, disabled, help }: {
             void reload();
             /* Deleting the selected dictionary clears the selection so a
                dangling provider id is never staged. */
-            if (value && next.deletedDictId === value) onChange(null);
+            if (value && next.deletedDictId === value) onChange(allowInherit || explicitNone ? "" : null);
             if (next.selectDictId) onChange(next.selectDictId);
           }}
           toast={toast}
@@ -121,6 +138,7 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
   const [languages, setLanguages] = useState<LangOption[]>([]);
   /* null = list view; "new" = creating; otherwise the id being edited. */
   const [editing, setEditing] = useState<string | null>(null);
+  const [editingDictId, setEditingDictId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
@@ -137,8 +155,7 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
         setDictionaries([]);
       }
       try {
-        /* Dictionaries are a bulbul:v3 capability — offer exactly the
-           languages that model supports on this platform. */
+        /* Both supported Sarvam models use the same dictionary locales. */
         const info = await getModelLanguages("tts", "sarvam", "bulbul:v3");
         setLanguages(info.languages.map((l) => ({ code: l.code, name: l.name })));
       } catch {
@@ -153,16 +170,19 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
     setError(null);
     if (dictionary === null) {
       setEditing("new");
+      setEditingDictId(null);
       setName("");
       setRows([{ locale: defaultLocale, word: "", spokenAs: "" }]);
       return;
     }
     setEditing(dictionary.id);
+    setEditingDictId(dictionary.dictId || null);
     setName(dictionary.name);
     setRows([]);
     setLoadingDetail(true);
     try {
       const detail = await getPronunciationDictionary(dictionary.id);
+      setEditingDictId(detail.dictId || dictionary.dictId || null);
       setRows(toRows(detail.pronunciations));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load the dictionary contents");
@@ -186,9 +206,12 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
         toast(`Dictionary "${created.name}" created`);
         onChanged({ selectDictId: created.dictId });
       } else if (editing) {
-        await updatePronunciationDictionary(editing, { name: name.trim(), pronunciations });
+        const updated = await updatePronunciationDictionary(editing, { name: name.trim(), pronunciations });
         toast(`Dictionary "${name.trim()}" updated`);
-        onChanged({});
+        /* Use a provider id from saved metadata, never the internal row id.
+           Older API responses may omit it; the loaded detail remains valid. */
+        const savedDictId = updated?.dictId || editingDictId;
+        onChanged(savedDictId ? { selectDictId: savedDictId } : {});
       }
       setDictionaries(await listPronunciationDictionaries());
       setEditing(null);
@@ -222,7 +245,7 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
     <Modal
       open onClose={onClose} wide
       title="Pronunciation dictionaries"
-      sub="Fix how brands, acronyms and names are spoken (Sarvam bulbul:v3)"
+      sub="Fix how brands, acronyms and names are spoken (Sarvam bulbul:v3 / bulbul:v4-flash)"
       footer={
         editing === null ? (
           <>
@@ -249,6 +272,13 @@ export function DictionaryManagerModal({ onClose, onChanged, toast }: {
       }
     >
       <div className="col gap-12">
+        <p className="t-sub">
+          Saving a dictionary also selects it in the current draft. Preview uses
+          this selection; save the bot's voice settings to use it in calls.
+          Put all intended word rules in one selected dictionary; dictionaries
+          are not combined. Editing a dictionary changes its rules for every bot
+          already using it.
+        </p>
         {error && <p className="field-error" role="alert"><Icon name="alert" size={12} />{error}</p>}
 
         {editing === null ? (

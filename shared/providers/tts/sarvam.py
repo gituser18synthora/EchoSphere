@@ -17,7 +17,11 @@ import time
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
 from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
-from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
+from shared.providers.tts.delivery import (
+    omit_default_loudness,
+    sarvam_accepts_loudness,
+    sarvam_dictionary_id,
+)
 from shared.providers.tts.sarvam_voices import NoV4Equivalent, is_v4_model, v4_speaker
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
@@ -54,7 +58,7 @@ _MODEL_DEFAULT_SPEAKER = {"bulbul:v2": "anushka", "bulbul:v3": "shubh"}
 # Output rates the REST endpoint synthesizes natively (same set as streaming).
 _NATIVE_RATES = {8000, 16000, 22050, 24000}
 # Parameters forwarded from ProviderConfig.extra to the REST request.
-_REST_PARAMS = {"pace", "temperature", "pitch", "loudness", "enable_preprocessing"}
+_REST_PARAMS = {"pace", "temperature", "pitch", "loudness", "enable_preprocessing", "dict_id"}
 _V3_ONLY_PARAMS = {"temperature"}
 _V2_ONLY_PARAMS = {"pitch"}
 _FALLBACK_DEFAULT_SPEAKER = "shubh"
@@ -139,7 +143,7 @@ class SarvamTTS(TTSProvider):
         self._language = config.language or ""
         self._timeout = config.timeout_seconds
         # Synthesis parameters (the same names the streaming config uses:
-        # pace, temperature, pitch, loudness, enable_preprocessing) so a
+        # pace, temperature, pitch, loudness, enable_preprocessing, dict_id) so a
         # REST render can match a streamed reply's voice. Unknown keys are
         # ignored; ``output_sample_rate`` selects a native Sarvam rate so
         # short clips for an 8 kHz telephony leg need no resampling.
@@ -187,6 +191,10 @@ class SarvamTTS(TTSProvider):
             "output_audio_codec": "wav",
         }
         for key, value in omit_default_loudness(self._params).items():
+            if key == "dict_id":
+                value = sarvam_dictionary_id(self._model, value)
+                if value is None:
+                    continue
             if key in _V3_ONLY_PARAMS and not v3_contract:
                 continue
             if key in _V2_ONLY_PARAMS and v3_contract:

@@ -362,6 +362,9 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         self._cleared_fillers = set()
         self._echo_reference = None
         self._ambience = None
+        # Call recording (see attach_wire_recorder).
+        self._wire_tap = None
+        self._wire_tap_frames = False
         # What the end-of-call playout wait did (see _play_out_before_end);
         # None until an EndFrame reaches a serializer that tracks playout.
         self.end_playout: dict | None = None
@@ -373,13 +376,49 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
 
         - Bot audio is mixed with the room sound in ``_write_frame`` AFTER
           the echo reference has been fed the clean frame and BEFORE the
-          serializer encodes it. The frame the media sender pushes on to
-          the recorder is the clean original.
+          serializer encodes it. The frame the media sender pushes on
+          downstream is the clean original; the call recorder gets the
+          mixed audio from the wire (``attach_wire_recorder``).
         - Ambience-only frames (between turns) are written by the media
           sender on the playout-horizon clock; they are never fed to the
-          echo reference and never pushed downstream.
+          echo reference and never pushed downstream — the recorder gets
+          them from the wire as well.
         """
         self._ambience = ambience
+
+    def attach_wire_recorder(self, tap) -> None:
+        """Report the audio that reaches the wire to ``tap`` (the call
+        recorder): ``tap.wire_audio(pcm, sample_rate)`` for every piece of
+        outbound audio as it is sent — the final mix, i.e. the reply or cue
+        WITH the background ambience, and the room-only audio between turns
+        — and ``tap.wire_flush()`` when the far end is told to drop what it
+        has not played yet. Attach before the pipeline starts.
+
+        A packetizing telephony serializer (FreeSWITCH, Vaani) reports the
+        packets it actually emits, when it emits them: it holds audio back,
+        pads the last packet and can retire a stale remnant, so only it knows
+        what left. Every other serializer sends each frame as it is written,
+        so the frame handed to it is the wire audio.
+        """
+        self._wire_tap = tap
+        observe = getattr(self._params.serializer, "attach_wire_observer", None)
+        self._wire_tap_frames = not (callable(observe) and observe(tap))
+
+    def _tap_wire_audio(self, frame) -> None:
+        if not self._wire_tap_frames or not frame.audio:
+            return
+        try:
+            self._wire_tap.wire_audio(frame.audio, frame.sample_rate)
+        except Exception:  # noqa: BLE001 — recording must never break audio
+            logger.debug("wire recorder feed failed", exc_info=True)
+
+    def _tap_wire_flush(self) -> None:
+        if not self._wire_tap_frames:
+            return
+        try:
+            self._wire_tap.wire_flush()
+        except Exception:  # noqa: BLE001
+            logger.debug("wire recorder flush failed", exc_info=True)
 
     @staticmethod
     def _audio_seconds(frame) -> float:
@@ -439,6 +478,7 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         payload = await serializer.serialize(frame)
         if not payload or not await self._send_ambience_payload(payload):
             return False
+        self._tap_wire_audio(frame)
         ambience.note_room_sent(self._audio_seconds(frame))
         ambience.idle_since_audio = True
         ambience.audio_since_idle = False
@@ -450,6 +490,8 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         return nothing — their queue plays out, at most one chunk + lead)."""
         payload = await self._params.serializer.serialize(FillerClearFrame(ambience.owner))
         cleared = bool(payload) and await self._send_ambience_payload(payload)
+        if cleared:
+            self._tap_wire_flush()
         ambience.note_handoff(cleared)
 
     def attach_echo_reference(self, reference) -> None:
@@ -546,10 +588,12 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                     await self._ambience_handoff(ambience)
                 # Tagged filler bypasses optional fixed-size PCM buffering:
                 # it must never be concatenated with a real response packet.
-                payload = await self._params.serializer.serialize(self._with_ambience(frame))
+                mixed = self._with_ambience(frame)
+                payload = await self._params.serializer.serialize(mixed)
                 if payload and not frame.owner.cancelled:
                     self._note_wire_audio(frame)
                     await self._client.send(payload)
+                    self._tap_wire_audio(mixed)
                     if ambience is not None:
                         ambience.note_sent(self._audio_seconds(frame))
                     return True
@@ -562,8 +606,19 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                     self._cleared_fillers.add(owner.token)
             self._note_wire_audio(frame)
             if ambience is None:
-                return bool(await super()._write_frame(frame))
+                taken = bool(await super()._write_frame(frame))
+                self._tap_wire_frame(frame, frame, taken)
+                return taken
             return await self._write_with_ambience(frame, ambience)
+
+    def _tap_wire_frame(self, frame, written, taken: bool) -> None:
+        """``written`` (``frame`` with the room mixed in, or ``frame``) was
+        handed to the serializer."""
+        if isinstance(frame, OutputAudioRawFrame):
+            if taken:
+                self._tap_wire_audio(written)
+        elif isinstance(frame, InterruptionFrame):
+            self._tap_wire_flush()
 
     async def _write_with_ambience(self, frame, ambience) -> bool:
         serializer = self._params.serializer
@@ -571,7 +626,9 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
             await self._ambience_handoff(ambience)
         backlog = self._packet_backlog()
         dropped = getattr(serializer, "stale_audio_dropped", 0)
-        taken = bool(await super()._write_frame(self._with_ambience(frame)))
+        mixed = self._with_ambience(frame)
+        taken = bool(await super()._write_frame(mixed))
+        self._tap_wire_frame(frame, mixed, taken)
         if isinstance(frame, OutputAudioRawFrame) and frame.audio:
             seconds = self._audio_seconds(frame)
             if backlog is not None:
@@ -592,7 +649,8 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         if isinstance(frame, AmbienceAudioRawFrame):
             # Paced by the media sender's playout clock, not by a sleep here:
             # a reply frame arriving meanwhile goes out at once. Never pushed
-            # downstream — room audio is not recorded.
+            # downstream — the call recorder takes room audio from the wire
+            # (attach_wire_recorder), nothing else needs it.
             await self._write_frame(frame)
             return False
         if not isinstance(frame, FillerAudioRawFrame):

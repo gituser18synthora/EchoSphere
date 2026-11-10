@@ -18,7 +18,7 @@ The user established this standing preference on 2026-11-09:
 
 - Always write prompts and instructions provided to the user in English,
   including reusable prompts, project instructions, and step-by-step directions.
-- Explanations and general conversation may remain in Hindi/Hinglish unless
-  the user requests another language.
+- Explanations and general conversation must use Roman Hinglish, not
+  Devanagari Hindi, following the user's preference established on 2026-11-10.
 - Apply this preference in future conversations for this workspace without
   asking the user to repeat it, unless the user explicitly changes it.

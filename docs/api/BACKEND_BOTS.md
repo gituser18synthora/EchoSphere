@@ -432,6 +432,22 @@ Read-side sanitization: legacy per-provider speed keys (`pace`, `speed`) are str
 `ttsSettings` and from each `languageVoiceMap` entry's `params` — the top-level `speed`
 (delivery tuning) is the single canonical speed control.
 
+Pronunciation dictionary selection uses `ttsSettings.dict_id`. For a language override
+running the same provider and model, an omitted or `null` `params.dict_id` inherits the
+default dictionary; `""` explicitly disables it for that language; a nonempty id selects
+that dictionary. Other providers/models do not inherit the default engine's parameters.
+Sarvam `bulbul:v3` and `bulbul:v4-flash` forward a valid selected id over streaming and
+REST; absent or explicitly disabled ids are omitted from provider requests. Original
+text remains unchanged (for example, `Haier` in transcripts can be spoken using the
+selected dictionary's `हायर` rule).
+
+Saving words in the dictionary manager selects that dictionary in the current editor
+draft. Preview Generate uses that draft immediately. Apply settings stages the choice
+on the Voice tab; Save voice settings persists it for subsequent calls. Existing calls
+keep their original configuration. One selected dictionary supplies the word rules:
+separate dictionaries are not automatically combined, so rules for both `Haier` and
+`Refrigerator` belong in the same selected dictionary when both are needed.
+
 ### Update voice settings
 `PUT /api/v1/bots/{bot_id}/voice-settings`
 

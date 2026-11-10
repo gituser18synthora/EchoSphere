@@ -259,6 +259,8 @@ interface PreviewContext {
      row); the delivery values are bot-level and stage identically from
      every launch point, so both preview buttons share ONE modal behavior. */
   onApply?: (draft: PreviewDraft) => void;
+  /** Language row receiving Apply, including the default locale's override. */
+  targetLocale?: string;
   /** The staged per-language override for a locale, exactly as a live call
       would resolve it — null means the locale inherits the default engine. */
   resolveOverride?: (locale: string) => LanguageVoiceOverride | null;
@@ -628,6 +630,48 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
     return entry.provider && entry.model && entry.voice ? entry : null;
   };
 
+  const openVoicePreview = async (locale: string) => {
+    const override = resolveOverride(locale);
+    const engine = override ?? tts;
+    // Reconciliation needs the active model's schema; opening before its
+    // catalog finishes loading would silently discard its saved dictionary.
+    const [models] = await Promise.all([
+      ensureModels("tts", engine.provider), ensureVoices(engine.provider),
+    ]);
+    if (!models.some((model) => model.code === engine.model)) {
+      toast("The selected voice model could not be loaded. Retry Preview or choose an available model.", "error");
+      return;
+    }
+    setPreview({
+      provider: engine.provider, model: engine.model, voice: engine.voice,
+      language: locale, params: override ? override.params : tts.settings,
+      tuning, resolveOverride,
+      targetLocale: override ? locale : undefined,
+      requiresStreaming: Boolean(override),
+      defaultEngine: {
+        provider: tts.provider, model: tts.model,
+        voice: tts.voice, params: tts.settings,
+      },
+      onApply: (draft) => {
+        if (override) {
+          setRowField(locale, {
+            provider: draft.provider, model: draft.model,
+            voice: draft.voice, params: draft.settings,
+          });
+        } else {
+          setTts({
+            provider: draft.provider, model: draft.model,
+            voice: draft.voice, settings: draft.settings,
+          });
+        }
+        setTuning({
+          speed: draft.speed, pauseMs: draft.pauseMs,
+          empathy: draft.empathy, energy: draft.energy,
+        });
+      },
+    });
+  };
+
   /* Per-row status — shown as an icon+text chip (never color alone). */
   const rowStatus = (locale: string): { chip: string; label: string; message?: string } => {
     const entry = langMap[locale];
@@ -986,22 +1030,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                 icon="play"
                 disabled={!canManage || !tts.provider || !tts.model || !tts.voice}
                 title={noPermTitle ?? (!tts.voice ? "Pick a provider, model and voice first" : undefined)}
-                onClick={() => setPreview({
-                  provider: tts.provider, model: tts.model, voice: tts.voice,
-                  language: defaultLocale || bot.languages[0] || "", params: tts.settings,
-                  tuning,
-                  resolveOverride,
-                  onApply: (draft) => {
-                    setTts({
-                      provider: draft.provider, model: draft.model,
-                      voice: draft.voice, settings: draft.settings,
-                    });
-                    setTuning({
-                      speed: draft.speed, pauseMs: draft.pauseMs,
-                      empathy: draft.empathy, energy: draft.energy,
-                    });
-                  },
-                })}
+                onClick={() => void openVoicePreview(defaultLocale || bot.languages[0] || "")}
               >
                 Preview voice
               </Button>
@@ -1089,29 +1118,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                             disabled={!canManage || !override?.provider || !override.model || !override.voice}
                             title={noPermTitle ?? (override?.voice ? "Generate a real audio preview" : "Pick a provider, model and voice to preview")}
                             aria-label={`Preview voice for ${langLabel(locale)}`}
-                            onClick={() => override && setPreview({
-                              provider: override.provider, model: override.model, voice: override.voice,
-                              language: locale, params: override.params, tuning,
-                              requiresStreaming: true,
-                              resolveOverride,
-                              defaultEngine: {
-                                provider: tts.provider, model: tts.model,
-                                voice: tts.voice, params: tts.settings,
-                              },
-                              /* Engine + params go to this language row;
-                                 delivery values are bot-level and stage the
-                                 same way as the default-engine preview. */
-                              onApply: (draft) => {
-                                setRowField(locale, {
-                                  provider: draft.provider, model: draft.model,
-                                  voice: draft.voice, params: draft.settings,
-                                });
-                                setTuning({
-                                  speed: draft.speed, pauseMs: draft.pauseMs,
-                                  empathy: draft.empathy, energy: draft.energy,
-                                });
-                              },
-                            })}
+                            onClick={() => void openVoicePreview(locale)}
                           >
                             Preview voice
                           </Button>
@@ -1586,12 +1593,40 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     () => languages.filter((l) => !offeredLanguages.includes(l)),
     [languages, offeredLanguages],
   );
+  const pinnedOverride = enginePinned ? ctx?.resolveOverride?.(form.language) : null;
 
   const draftFor = (provider: string, model: string, params: ProviderSettings | undefined) => {
     const schema = stripDeliverySpeedParams(
       modelsFor(provider).find((m) => m.code === model)?.paramsSchema,
     );
     return reconcileSettings(schema, stripDeliverySpeedParams(params ?? {}));
+  };
+
+  const draftForOverride = (override: LanguageVoiceOverride) => {
+    const fallback = ctx?.defaultEngine;
+    const inherits = fallback?.provider === override.provider && fallback.model === override.model;
+    const params = inherits
+      ? { ...(fallback.params ?? {}), ...(override.params ?? {}) }
+      : { ...(override.params ?? {}) };
+    // Keep inheritance as a choice in the editor. Generate resolves it to
+    // the base ID, while Apply preserves it for future default changes.
+    if (override.params?.dict_id == null) delete params.dict_id;
+    return draftFor(override.provider, override.model, params);
+  };
+
+  const inheritsDictionary = Boolean(ctx?.targetLocale || overrideLocale)
+    && ctx?.defaultEngine?.provider === form.provider
+    && ctx?.defaultEngine?.model === form.model;
+  const inheritedDictionary = typeof ctx?.defaultEngine?.params?.dict_id === "string"
+    ? ctx.defaultEngine.params.dict_id : null;
+
+  const effectiveDraft = () => {
+    const params = { ...draft };
+    if (inheritsDictionary && params.dict_id == null) {
+      if (inheritedDictionary) params.dict_id = inheritedDictionary;
+      else delete params.dict_id;
+    }
+    return params;
   };
 
   /* Prefill from the launching context each time the modal opens. */
@@ -1609,21 +1644,16 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     });
     /* Start from the saved/staged values for this engine, reconciled against
        the model actually selected — never from another model's leftovers. */
-    setDraft(draftFor(ctx.provider, ctx.model, ctx.params));
+    setDraft(ctx.targetLocale
+      ? draftForOverride({ provider: ctx.provider, model: ctx.model, voice: ctx.voice, params: ctx.params })
+      : draftFor(ctx.provider, ctx.model, ctx.params));
     setSpeed(ctx.tuning?.speed ?? 1);
     setPause(ctx.tuning?.pauseMs ?? 350);
     setEmpathy(ctx.tuning?.empathy ?? 50);
     setEnergy(ctx.tuning?.energy ?? 50);
     /* Launched from a per-language row: the modal starts ON that override,
        so a later switch to an inheriting locale must restore the default. */
-    const launchedOnOverride = Boolean(
-      ctx.defaultEngine && (
-        ctx.defaultEngine.provider !== ctx.provider
-        || ctx.defaultEngine.model !== ctx.model
-        || ctx.defaultEngine.voice !== ctx.voice
-      ),
-    );
-    setOverrideLocale(launchedOnOverride ? (ctx.language || null) : null);
+    setOverrideLocale(ctx.targetLocale ?? null);
     setApplied(false);
     setResult(null);
     setError(null);
@@ -1700,9 +1730,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     const fallback = ctx.defaultEngine
       ?? { provider: ctx.provider, model: ctx.model, voice: ctx.voice, params: ctx.params };
     const override = ctx.resolveOverride?.(locale) ?? null;
-    const isDefaultEngine = (e: { provider: string; model: string; voice: string }) =>
-      e.provider === fallback.provider && e.model === fallback.model && e.voice === fallback.voice;
-    if (override === null || isDefaultEngine(override)) {
+    if (override === null) {
       if (overrideLocale !== null) {
         setForm((f) => ({
           ...f, language: locale,
@@ -1717,7 +1745,6 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
       return;
     }
     await Promise.all([ensureVoices(override.provider), ensureModels(override.provider)]);
-    const sameEngine = override.provider === fallback.provider && override.model === fallback.model;
     setForm((f) => ({
       ...f, language: locale,
       provider: override.provider, model: override.model, voice: override.voice,
@@ -1727,10 +1754,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     }));
     /* Runtime semantics: base tts_settings apply only when the override runs
        the default provider+model; otherwise the override's params stand alone. */
-    setDraft(draftFor(
-      override.provider, override.model,
-      sameEngine ? { ...(fallback.params ?? {}), ...(override.params ?? {}) } : override.params,
-    ));
+    setDraft(draftForOverride(override));
     setOverrideLocale(locale);
   };
 
@@ -1745,7 +1769,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         /* The unsaved draft is what gets synthesized — that is the point of
            tuning here. It is already reconciled to the selected model, so no
            parameter from a previous provider/model can ride along. */
-        params: draft,
+        params: effectiveDraft(),
         /* Delivery tuning DRAFTS: canonical speed, sentence pause and native
            energy mapping are applied server-side with the live-call logic
            (shared/providers/tts/delivery.py). Empathy shapes live LLM replies
@@ -1796,13 +1820,8 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
      While the modal previews a per-language override that is NOT the engine
      it was launched to edit, applying would clobber the launch target with a
      different locale's engine — blocked with an explanatory title. */
-  const launchedOnOverride = Boolean(ctx?.defaultEngine && (
-    ctx.defaultEngine.provider !== ctx.provider
-    || ctx.defaultEngine.model !== ctx.model
-    || ctx.defaultEngine.voice !== ctx.voice
-  ));
   const applyingForeignOverride = overrideLocale !== null
-    && !(launchedOnOverride && overrideLocale === ctx?.language);
+    && overrideLocale !== ctx?.targetLocale;
   /* A per-language target only accepts realtime-streaming engines (the
      backend enforces the same rule on save) — a stale non-streaming model
      can still be PREVIEWED, just never applied. */
@@ -1925,13 +1944,9 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
           </Field>
           <Field
             label="Language" plain
-            hint={
-              hiddenLanguages.length > 0
-                ? `${selectedModel?.displayName ?? form.model} does not speak ${hiddenLanguages.join(", ")} — map those languages to another engine below.`
-                : overrideLocale
-                  ? undefined
-                  : "A language with a per-language override previews that engine, like a real call."
-            }
+            hint={overrideLocale || hiddenLanguages.length > 0
+              ? undefined
+              : "A language with a per-language override previews that engine, like a real call."}
           >
             <select
               className="select" value={form.language} aria-label="Preview language"
@@ -1944,6 +1959,18 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
             </select>
           </Field>
         </div>
+        {hiddenLanguages.length > 0 && (
+          <p className="t-micro" style={{ margin: 0 }} data-testid="unsupported-languages-hint">
+            {selectedModel?.displayName ?? form.model} does not speak {hiddenLanguages.join(", ")}.
+            Choose a supported language or another voice model.
+          </p>
+        )}
+        {pinnedOverride && (
+          <p className="t-micro" style={{ margin: 0 }} data-testid="pinned-engine-hint">
+            Preview uses your manually selected voice settings. {form.language} calls use{' '}
+            {pinnedOverride.provider}/{pinnedOverride.model} and that language's saved pronunciation settings.
+          </p>
+        )}
         {overrideLocale && (
           <p className="t-micro" style={{ margin: 0 }} data-testid="override-hint">
             <Icon name="info" size={12} /> {overrideLocale} uses its per-language voice override —
@@ -2044,11 +2071,14 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
                 <DictionaryField
                   key={`preview-dict:${form.provider}:${form.model}:${key}`}
                   value={typeof draft[key] === "string" ? (draft[key] as string) : null}
+                  allowInherit={inheritsDictionary}
+                  explicitNone={Boolean(ctx?.targetLocale || overrideLocale)}
+                  inheritedValue={inheritedDictionary}
                   help={spec.help}
                   onChange={(dictId) => {
                     setDraft((d) => {
                       const next = { ...d };
-                      if (dictId) next[key] = dictId;
+                      if (dictId !== null) next[key] = dictId;
                       else delete next[key];
                       return next;
                     });

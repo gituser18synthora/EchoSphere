@@ -53,6 +53,16 @@ VAANI_START = {
 }
 
 
+
+def far_end_fed(serializer, seconds: float = 1.0):
+    """The far end still has ``seconds`` of audio queued. A packetizing
+    serializer buffers only then: the FreeSWITCH fork one never holds audio
+    back while the far end runs dry (voice_runtime.telephony _FORK_DRY_GUARD_S)."""
+    import time
+
+    serializer._playout_until = time.monotonic() + seconds
+    return serializer
+
 class TestFactory:
     def test_unknown_provider_rejected(self):
         with pytest.raises(ProviderError):
@@ -404,7 +414,7 @@ class TestVaaniTelephony:
         (FreeSwitchAudioForkSerializer, "playAudio", "audioContent"),
     ])
     async def test_freeswitch_audio_flush_message_sends_the_buffered_tail(self, make, kind, key):
-        serializer = make()
+        serializer = far_end_fed(make())
         serializer._ramp_step = len(_RAMP_THRESHOLDS)
         assert await serializer.serialize(OutputAudioRawFrame(
             audio=b"\x01" * 800, sample_rate=8000, num_channels=1,
@@ -429,7 +439,7 @@ class TestVaaniTelephony:
         # for 1-2 s and then played glued to the front of the reply — heard
         # as the breath happening twice. Audio older than the idle gap is
         # a finished sound; it is retired, never prepended.
-        serializer = make()
+        serializer = far_end_fed(make())
         serializer._ramp_step = len(_RAMP_THRESHOLDS)
         assert await serializer.serialize(OutputAudioRawFrame(
             audio=b"\x01" * 800, sample_rate=8000, num_channels=1,

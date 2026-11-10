@@ -26,6 +26,7 @@ configuration (ResolvedBotConfig):
 import asyncio
 import logging
 import math
+import time
 from dataclasses import replace
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -36,6 +37,7 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InputAudioRawFrame,
+    InterruptionFrame,
     OutputAudioRawFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -623,25 +625,51 @@ def build_stt_service(
 
 
 class AlignedRecordingProcessor(FrameProcessor):
-    """Feeds the wall-clock-aligned stereo recorder from pipeline frames.
+    """Feeds the wall-clock-aligned stereo recorder (see AlignedStereoRecorder).
 
     Pure observer: every frame passes through untouched, so the audio sent to
-    STT and to the caller is byte-identical with or without recording. Ready
-    stereo chunks are handed to a dedicated writer task — disk latency never
-    sits on the audio path — and each aligned region is written exactly once
-    (``stop_recording`` is idempotent, covering both the EndFrame path and
-    the recorder-driven ``CallRecordingWriter.close()``).
+    STT and to the caller is byte-identical with or without recording.
+
+    - Caller track: the ``InputAudioRawFrame`` stream reaching the end of
+      the pipeline (post-gate). The pre-roll the caller gate replays when it
+      opens is marked ``gate_preroll`` and goes back over the silence the
+      gate had passed on for that stretch.
+    - Bot track: what was WRITTEN TO THE WIRE. The output transport reports
+      each piece of outbound audio at the moment it is sent (``wire_audio``)
+      and each far-end clear (``wire_flush``) — see
+      ``FillerWebsocketOutputTransport.attach_wire_recorder``. That is the
+      final mix (reply, latency cues, background ambience, room-only audio
+      between turns) in the packets the far end received. The clean
+      ``OutputAudioRawFrame`` copies the transport pushes downstream are
+      ignored then; they are the bot track only for a transport without the
+      hook.
+
+    Ready stereo chunks are handed to a dedicated writer task — disk latency
+    never sits on the audio path — and each aligned region is written exactly
+    once (``stop_recording`` is idempotent, covering both the EndFrame path
+    and the recorder-driven ``CallRecordingWriter.close()``).
     """
 
-    def __init__(self, *, writer: CallRecordingWriter, sample_rate: int) -> None:
+    # Outbound audio quiet for this long is a new utterance for the wire
+    # resampler: its filter tail belongs to the audio before the pause.
+    _WIRE_RESAMPLER_IDLE_S = 0.1
+    # Without the wire tap a frame's send time is known only to about one
+    # output chunk plus scheduling jitter.
+    _FALLBACK_SEND_SLACK_S = 0.06
+
+    def __init__(self, *, writer: CallRecordingWriter, sample_rate: int,
+                 far_end: str = "telephony") -> None:
         super().__init__()
         self._writer = writer
-        self._aligner = AlignedStereoRecorder(sample_rate=sample_rate)
+        self._aligner = AlignedStereoRecorder(sample_rate=sample_rate, far_end=far_end)
         self._in_resampler = create_stream_resampler()
         self._out_resampler = create_stream_resampler()
         self._write_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._write_task = None
         self._stopped = False
+        self._wire_attached = False
+        self._wire_stream = None          # (source rate, soxr stream)
+        self._wire_last_at = 0.0
 
     def _enqueue(self, chunk: bytes) -> None:
         if not chunk:
@@ -660,11 +688,85 @@ class AlignedRecordingProcessor(FrameProcessor):
             finally:
                 self._write_queue.task_done()
 
+    # ── wire tap (called by the output transport, on the event loop) ─────
+    def attach_wire(self):
+        """The output transport will report the wire audio: stop taking the
+        bot track from pipeline frames. Returns the tap (this object)."""
+        self._wire_attached = True
+        return self
+
+    def wire_audio(self, pcm: bytes, sample_rate: int) -> None:
+        """``pcm`` (16-bit mono) was just sent to the far end."""
+        if self._stopped or not pcm:
+            return
+        now = time.monotonic()
+        try:
+            audio = self._wire_to_recording_rate(pcm, int(sample_rate), now)
+            self._wire_last_at = now
+            self._enqueue(self._aligner.add_bot_audio(audio, now=now))
+        except Exception:  # noqa: BLE001 — recording must never break audio
+            logger.debug("wire audio not recorded", exc_info=True)
+
+    def wire_flush(self) -> None:
+        """The far end was told to drop the audio it had not played yet."""
+        if self._stopped:
+            return
+        try:
+            self._wire_stream = None      # its tail belonged to the dropped audio
+            self._aligner.flush_bot(now=time.monotonic())
+        except Exception:  # noqa: BLE001
+            logger.debug("wire flush not recorded", exc_info=True)
+
+    def _wire_tail(self) -> bytes:
+        """What the wire resampler still holds of the audio fed so far."""
+        stream, self._wire_stream = self._wire_stream, None
+        if stream is None:
+            return b""
+        import numpy as np
+
+        tail = stream[1].resample_chunk(np.zeros(0, dtype=np.int16), last=True)
+        return tail.astype("<i2").tobytes()
+
+    def _wire_to_recording_rate(self, pcm: bytes, rate: int, now: float) -> bytes:
+        target = self._aligner.sample_rate
+        if rate == target:
+            return pcm
+        import numpy as np
+
+        stream = self._wire_stream
+        if stream is not None and (
+            stream[0] != rate or now - self._wire_last_at > self._WIRE_RESAMPLER_IDLE_S
+        ):
+            # A pause (or a rate change): finish the previous run where it
+            # ended instead of gluing its tail onto this audio.
+            tail = self._wire_tail()
+            if tail:
+                self._enqueue(self._aligner.add_bot_audio(tail, now=self._wire_last_at))
+            stream = None
+        if stream is None:
+            try:
+                import soxr
+
+                stream = (rate, soxr.ResampleStream(rate, target, 1, dtype="int16", quality="HQ"))
+            except Exception:  # noqa: BLE001 — soxr ships with pipecat; belt and braces
+                from shared.audio.pcm import resample_pcm
+
+                return resample_pcm(pcm, rate, target)
+            self._wire_stream = stream
+        samples = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype="<i2")
+        return stream[1].resample_chunk(samples).astype("<i2").tobytes()
+
     async def stop_recording(self) -> None:
         """Flush the tail and drain pending writes. Idempotent."""
         if self._stopped:
             return
         self._stopped = True
+        try:
+            tail = self._wire_tail()
+            if tail:
+                self._enqueue(self._aligner.add_bot_audio(tail, now=self._wire_last_at))
+        except Exception:  # noqa: BLE001
+            logger.debug("wire resampler tail not recorded", exc_info=True)
         tail = self._aligner.stop()
         if tail:
             self._enqueue(tail)
@@ -679,12 +781,25 @@ class AlignedRecordingProcessor(FrameProcessor):
             resampled = await self._in_resampler.resample(
                 frame.audio, frame.sample_rate, self._aligner.sample_rate
             )
-            self._enqueue(self._aligner.add_user_audio(resampled))
+            self._enqueue(self._aligner.add_user_audio(
+                resampled, replay=getattr(frame, "gate_preroll", False),
+            ))
         elif isinstance(frame, OutputAudioRawFrame) and frame.audio and not self._stopped:
-            resampled = await self._out_resampler.resample(
-                frame.audio, frame.sample_rate, self._aligner.sample_rate
-            )
-            self._enqueue(self._aligner.add_bot_audio(resampled))
+            if not self._wire_attached:
+                # No wire tap on this transport: the frame it pushes on after
+                # writing is the best record of what was sent. It arrives
+                # after the transport's pacing wait — up to its own length
+                # after the send — so the send time is an estimate.
+                length = len(frame.audio) / (frame.sample_rate * max(1, frame.num_channels) * 2)
+                sent_at = time.monotonic() - length
+                resampled = await self._out_resampler.resample(
+                    frame.audio, frame.sample_rate, self._aligner.sample_rate
+                )
+                self._enqueue(self._aligner.add_bot_audio(
+                    resampled, now=sent_at, tolerance_s=self._FALLBACK_SEND_SLACK_S,
+                ))
+        elif isinstance(frame, InterruptionFrame) and not self._wire_attached and not self._stopped:
+            self._aligner.flush_bot()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             await self.stop_recording()
         await self.push_frame(frame, direction)
@@ -1342,16 +1457,20 @@ def build_voice_pipeline(
         transport.output().attach_ambience(ambience)
 
     if get_settings().voice_call_recording_enabled:
-        # Sits after transport.output() so it observes exactly the frames that
-        # were sent. Stereo WAV: caller on the left channel, bot on the right.
-        # The CALLER stream is the master clock (see AlignedStereoRecorder):
-        # pipecat's AudioBufferProcessor advanced the timeline on the arrival
-        # clock of bot audio, and transports that push TTS faster than real
-        # time inflated recordings well past the session's wall-clock length.
+        # Stereo WAV: caller on the left channel, bot on the right. The bot
+        # channel is what the far end played: the output transport reports
+        # the audio it writes to the wire — the final mix, background
+        # ambience included — and the recorder places it on the far end's
+        # playout clock (see AlignedStereoRecorder). The processor sits after
+        # transport.output() for the caller stream, and for the bot audio of
+        # a transport that has no wire hook.
         recording_writer = CallRecordingWriter(recorder)
         audiobuffer = AlignedRecordingProcessor(
             writer=recording_writer, sample_rate=stt_sample_rate,
+            far_end="browser" if transport_kind == "browser" else "telephony",
         )
+        if hasattr(transport.output(), "attach_wire_recorder"):
+            transport.output().attach_wire_recorder(audiobuffer.attach_wire())
         recording_writer.audiobuffer = audiobuffer
         # The recorder drives the final flush at call end (writer.close) —
         # teardown does not reliably deliver Cancel/End frames to processors

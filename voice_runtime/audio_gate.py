@@ -497,14 +497,17 @@ class CallerAudioGate(FrameProcessor):
             self._accumulate_segment(level, duration_ms)
             for buffered in self._preroll:
                 self._retain(buffered, sample_rate)
-                await self.push_frame(
-                    InputAudioRawFrame(
-                        audio=buffered,
-                        sample_rate=sample_rate,
-                        num_channels=channels,
-                    ),
-                    direction,
+                replayed = InputAudioRawFrame(
+                    audio=buffered,
+                    sample_rate=sample_rate,
+                    num_channels=channels,
                 )
+                # This audio's own time has already gone downstream as
+                # silence (below). VAD/STT take it as the next audio, which
+                # is the point; anything that keeps TIME by counting caller
+                # samples — the call recorder — must not count it twice.
+                replayed.gate_preroll = True
+                await self.push_frame(replayed, direction)
             self._stats["passed_ms"] += self._preroll_ms_held + duration_ms
             self._preroll.clear()
             self._preroll_ms_held = 0.0

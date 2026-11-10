@@ -483,8 +483,15 @@ Two wire formats, selected by the `transport` query parameter on the WS URL
 
   `{"type": "killAudio"}` is always sent on interruption.
 
-Both variants chunk outbound audio on 320-byte boundaries (min 3 200 bytes
-steady-state with the same first-packet ramp as Vaani, max 32 000 bytes).
+Both variants chunk outbound audio on 320-byte boundaries (max 32 000
+bytes). `mod_audio_stream` buffers to 3 200 bytes steady-state with the same
+first-packet ramp as Vaani (the module plays each chunk as a file).
+`mod_audio_fork` plays from a playout buffer the moment audio arrives, so its
+serializer never holds reply audio back while the far end is about to run
+dry (within 60 ms): at the transport's real-time pace each 40 ms chunk goes
+out as its own packet, and packets grow only when audio arrives faster than
+it plays. The ramp to 200 ms packets on this transport left ~80 ms + ~40 ms
+of dead air in the first 400 ms of every reply (2026-11-10).
 Inbound text frames on FreeSWITCH sockets are treated as module metadata and
 ignored (logged once). Call *control* (transfer/hangup on the PBX) is
 separate, over ESL — see [../TELEPHONY.md](../TELEPHONY.md).
@@ -556,7 +563,7 @@ End-to-end flow of one call (trace: `voice_runtime/app.py::_run_call`,
    noise floor) → Silero VAD → VAD latency probe → STT (Deepgram Flux /
    Sarvam realtime WS / segmented REST) → user-turn controller
    (word-confirmed barge-in) → ConversationBrain → TTS (streaming router or
-   segmented) → transport.output() [→ AudioBufferProcessor for recording]`.
+   segmented) → transport.output() [wire tap → AlignedRecordingProcessor for recording]`.
 5. **Greeting** — bot speaks first: `session_config` (browser), then the
    authored greeting or a generated memory-continuation opening.
 6. **Turns** — STT finals are quality-gated (`transcript_gate`: noise,
@@ -629,7 +636,14 @@ What an integrator can observe without touching the audio path:
   per call (duration, containment/escalation, cost).
 - **Recordings** — stereo WAV (caller left, bot right) under
   `VOICE_RECORDINGS_DIR/<tenant_id>/<SESSION_ID>.wav` when
-  `VOICE_CALL_RECORDING_ENABLED` is on.
+  `VOICE_CALL_RECORDING_ENABLED` is on. The bot channel is the far end's
+  playout rebuilt from what was written to the wire: the final outbound mix
+  (reply, latency cues, background ambience, room-only audio between turns)
+  in the packets the far end received, queued behind each other and cut
+  where a barge-in cleared them. A gap in it is a gap the far end was
+  given; caller frames that merely reach the recorder late never lengthen
+  the recording or cut the bot track. It is a server-side reconstruction —
+  what the operator network or the handset codec did afterwards is not in it.
 - **Process logs** — per-session lifecycle lines
   (`voice session <SESSION_ID> ended (turns=N)`), inbound-audio level
   telemetry on FreeSWITCH sockets (5 s intervals), STT/TTS provider failures

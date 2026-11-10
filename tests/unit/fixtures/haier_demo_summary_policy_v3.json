@@ -1,0 +1,349 @@
+{
+  "summaryFields": [
+    {
+      "name": "customer_name",
+      "type": "text",
+      "label": "Customer",
+      "allowLlm": true,
+      "maxLength": 80,
+      "description": "Customer's name exactly as the bot addressed them in the greeting (the dialer record). Null if the bot never said a name."
+    },
+    {
+      "name": "product_name",
+      "type": "text",
+      "label": "Product",
+      "allowLlm": true,
+      "maxLength": 60,
+      "description": "Haier product the bot named in its purpose line (TV, Split AC, Washing Machine, Refrigerator, ...). Null if not named."
+    },
+    {
+      "name": "wo_number",
+      "type": "text",
+      "label": "WO / reference number",
+      "allowLlm": true,
+      "maxLength": 40,
+      "description": "Work-order or request number ONLY if one was spoken on the call (by the bot or the customer). Not sent by the dialer today, so usually null; never invent one."
+    },
+    {
+      "name": "rejection_reason",
+      "type": "choice",
+      "label": "Original rejection reason",
+      "source": "rejection_reason",
+      "options": [
+        "bill_not_available",
+        "customer_refused_visit",
+        "product_not_delivered",
+        "ecom_damaged_delivery",
+        "refused_to_pay",
+        "unit_ok_no_defect",
+        "not_haier_product",
+        "no_response"
+      ],
+      "allowLlm": false,
+      "description": "Field-team rejection code the call was about (dialer value)."
+    },
+    {
+      "name": "identity_confirmed",
+      "type": "yes_no",
+      "label": "Identity confirmed",
+      "source": "identity_answer",
+      "values": {
+        "no": "No",
+        "yes": "Yes"
+      },
+      "allowLlm": true,
+      "description": "Did the person on the call confirm being the named customer? Yes only on an explicit confirmation to the bot's identity question; No when they said they are not that person.",
+      "evidenceRequired": true,
+      "openWhenUnmapped": true
+    },
+    {
+      "name": "technician_contact",
+      "type": "choice",
+      "label": "Technician call/visit",
+      "options": [
+        "called",
+        "visited",
+        "no_contact"
+      ],
+      "allowLlm": true,
+      "description": "What the customer said about contact from the Haier technician before this call: called = a call came (no visit), visited = a technician visited, no_contact = no call and no visit. Null when not discussed.",
+      "evidenceRequired": true,
+      "extractionInstructions": "Only the customer's own statement counts. 'Call aaya tha / baat hui thi' = called. 'Technician aaya tha / visit hui thi' = visited. 'Koi call ya visit nahi hui / koi nahi aaya' = no_contact. A bare haan/nahi counts only as the answer to the bot's technician question immediately before it."
+    },
+    {
+      "name": "customer_statement",
+      "type": "text",
+      "label": "Customer's explanation / objection",
+      "allowLlm": true,
+      "maxLength": 240,
+      "description": "The customer's own explanation of what happened or their objection, in their words (transliterate Hindi if needed), one or two short clauses. Null if they only answered yes/no.",
+      "evidenceRequired": true
+    },
+    {
+      "name": "service_required",
+      "type": "choice",
+      "label": "Service still required",
+      "source": "outcome",
+      "values": {
+        "redispatch": "yes",
+        "cancel_gift": "later",
+        "cancel_resale": "no",
+        "cancel_resolved": "no",
+        "close_completed": "no",
+        "cancel_no_service": "no",
+        "cancel_ecom_damaged": "no",
+        "cancel_not_delivered": "later",
+        "cancel_service_later": "later",
+        "close_completed_other": "no",
+        "existing_case_followup": "yes",
+        "cancel_payment_declined": "no",
+        "cancel_not_haier_product": "no"
+      },
+      "options": [
+        "yes",
+        "no",
+        "later"
+      ],
+      "allowLlm": true,
+      "description": "Customer's current service requirement: yes = wants the technician visit, no = no service needed, later = wants it at a later date.",
+      "evidenceRequired": true,
+      "openWhenUnmapped": true,
+      "extractionInstructions": "Use the customer's answer to 'kya aapko service ki requirement hai' or an equivalent statement. 'Baad mein / abhi nahi, X din baad' = later."
+    },
+    {
+      "name": "issue_resolved",
+      "type": "choice",
+      "label": "Issue resolved",
+      "source": "outcome",
+      "values": {
+        "redispatch": "not_resolved",
+        "cancel_resolved": "resolved_without_haier",
+        "close_completed_other": "resolved_without_haier",
+        "redispatch_completion": "resolved_by_haier_technician",
+        "existing_case_followup": "not_resolved"
+      },
+      "options": [
+        "not_resolved",
+        "resolved_by_haier_technician",
+        "resolved_without_haier"
+      ],
+      "allowLlm": true,
+      "description": "Whether the original problem is already resolved and by whom, per the customer: not_resolved, resolved_by_haier_technician, resolved_without_haier (worked on its own / self / someone else).",
+      "evidenceRequired": true,
+      "openWhenUnmapped": true,
+      "extractionInstructions": "'Problem abhi bhi hai / kaam nahi hua' = not_resolved. 'Technician ne theek kar diya / installation Haier ne kar di' = resolved_by_haier_technician. 'Apne aap theek ho gaya / khud karwa liya / bahar se karwaya' = resolved_without_haier. Null when the customer never said."
+    },
+    {
+      "name": "requested_timing",
+      "type": "text",
+      "label": "Requested callback/visit timing (as said)",
+      "allowLlm": true,
+      "maxLength": 120,
+      "description": "When the customer wants the technician visit or a callback, in their own words (e.g. 'kal subah', '10 din baad', 'next week'). Null if no timing was given.",
+      "evidenceRequired": true
+    },
+    {
+      "name": "requested_date",
+      "type": "date",
+      "label": "Requested date (ISO)",
+      "allowLlm": true,
+      "timezone": "Asia/Kolkata",
+      "description": "The requested visit/callback day as an absolute date, only when the customer's words pin a specific day (kal, parso, Monday, 15 tarikh). Null for vague timing.",
+      "evidenceRequired": true
+    },
+    {
+      "name": "customer_confirmed_action",
+      "type": "yes_no",
+      "label": "Customer confirmed bot's action",
+      "allowLlm": true,
+      "description": "After the bot stated its action (forwarding for re-dispatch / for cancellation), did the customer explicitly agree or acknowledge (theek hai, haan, ok)? No only on an explicit objection; null when the call ended before any reply.",
+      "evidenceRequired": true
+    },
+    {
+      "name": "dnc_requested",
+      "type": "yes_no",
+      "label": "Do-not-call requested",
+      "source": "outcome",
+      "values": {
+        "repeat_calls_noted": "Yes"
+      },
+      "allowLlm": true,
+      "description": "Customer asked not to be called again / complained about repeated calls and wanted them stopped.",
+      "evidenceRequired": true,
+      "openWhenUnmapped": true
+    },
+    {
+      "name": "workflow_outcome",
+      "type": "choice",
+      "label": "Workflow decision",
+      "source": "outcome",
+      "options": [
+        "redispatch",
+        "redispatch_completion",
+        "close_completed",
+        "cancel_resolved",
+        "cancel_no_service",
+        "cancel_not_delivered",
+        "cancel_ecom_damaged",
+        "cancel_not_haier_product",
+        "cancel_service_later",
+        "cancel_gift",
+        "cancel_resale",
+        "cancel_payment_declined",
+        "wrong_person_no_haier_product",
+        "wrong_person_no_request",
+        "wrong_person_unavailable",
+        "unverified_no_action",
+        "existing_case_followup",
+        "existing_request_open",
+        "other_issue_noted",
+        "repeat_calls_noted",
+        "close_completed_other"
+      ],
+      "allowLlm": false,
+      "description": "The end node the guided flow reached (platform-recorded). Null when the call ended before the flow concluded."
+    },
+    {
+      "name": "disposition",
+      "type": "choice",
+      "label": "Disposition",
+      "source": "outcome",
+      "values": {
+        "redispatch": "Connected – Service Required (Re-dispatch)",
+        "cancel_gift": "Connected – Service Not Required (Cancel WO)",
+        "cancel_resale": "Connected – Service Not Required (Cancel WO)",
+        "cancel_resolved": "Connected – Issue Resolved (Either by customer or local Tech.)",
+        "close_completed": "Unmapped (needs review)",
+        "cancel_no_service": "Connected – Service Not Required (Cancel WO)",
+        "other_issue_noted": "Unmapped (needs review)",
+        "repeat_calls_noted": "Unmapped (needs review)",
+        "cancel_ecom_damaged": "Connected – Service Not Required (Cancel WO)",
+        "cancel_not_delivered": "Connected – Service Not Required (Cancel WO)",
+        "cancel_service_later": "Connected – Service Not Required (Cancel WO)",
+        "unverified_no_action": "Unmapped (needs review)",
+        "close_completed_other": "Connected – Issue Resolved (Either by customer or local Tech.)",
+        "existing_request_open": "Unmapped (needs review)",
+        "redispatch_completion": "Connected – Issue Resolved by Haier Tech",
+        "existing_case_followup": "Unmapped (needs review)",
+        "cancel_payment_declined": "Connected – Service Not Required (Cancel WO)",
+        "wrong_person_no_request": "Connected – Service Not Required (Cancel WO)",
+        "cancel_not_haier_product": "Connected – Service Not Required (Cancel WO)",
+        "wrong_person_unavailable": "Connected –Contact later",
+        "wrong_person_no_haier_product": "Connected – Service Not Required (Cancel WO)"
+      },
+      "options": [
+        "Connected – Service Required (Re-dispatch)",
+        "Connected – Service Not Required (Cancel WO)",
+        "Connected – Issue Resolved by Haier Tech",
+        "Connected – Issue Resolved (Either by customer or local Tech.)",
+        "Connected –Contact later",
+        "Not Connected – Switch off",
+        "No Connected – Invalid Number",
+        "Not Connected – Call Disconnected",
+        "Not Connected – Pending for Attempt",
+        "Unmapped (needs review)"
+      ],
+      "allowLlm": false,
+      "description": "Official Haier POC disposition derived from the workflow decision (platform-recorded). The four Not Connected values are reserved for telephony/dialer evidence and are never produced from conversation text; Unmapped (needs review) marks outcomes the client rules do not cover."
+    },
+    {
+      "name": "disposition_reason",
+      "type": "text",
+      "label": "Disposition reason",
+      "source": "outcome",
+      "values": {
+        "redispatch": "Customer still needs the service; request forwarded for re-dispatch",
+        "cancel_gift": "Product is a gift; recipient to raise the request",
+        "cancel_resale": "Bought for resale; no installation needed",
+        "cancel_resolved": "Product working fine now without a Haier visit; forwarded for cancellation",
+        "close_completed": "Customer reports installation/service completed, nothing pending; who did it could not be confirmed (needs review)",
+        "cancel_no_service": "Customer does not need the service",
+        "other_issue_noted": "Customer raised a different issue; noted, no action on this request (disposition needs review)",
+        "repeat_calls_noted": "Customer asked to stop the calls; noted and forwarded (disposition needs review)",
+        "cancel_ecom_damaged": "E-com damaged delivery; customer to replace via the seller and raise a new request",
+        "cancel_not_delivered": "Product not delivered yet; customer to raise a new request after delivery",
+        "cancel_service_later": "Service wanted after the 5-day window; customer to raise a new request when needed",
+        "unverified_no_action": "Status could not be confirmed on the call; no action taken (disposition needs review)",
+        "close_completed_other": "Installation/service completed by the customer or a local technician, nothing pending; forwarded for closure",
+        "existing_request_open": "A request for this is already open; no duplicate created (disposition needs review)",
+        "redispatch_completion": "Problem fixed by a Haier technician; forwarded to close as completed",
+        "existing_case_followup": "Customer has an open case; forwarded for follow-up on it (disposition needs review)",
+        "cancel_payment_declined": "Customer not ready to pay the service charges",
+        "wrong_person_no_request": "Wrong contact: no such request raised; forwarded for cancellation",
+        "cancel_not_haier_product": "Not a Haier product",
+        "wrong_person_unavailable": "Customer not available on this number now; call again",
+        "wrong_person_no_haier_product": "Wrong contact: no Haier product; forwarded for cancellation"
+      },
+      "allowLlm": false,
+      "maxLength": 160,
+      "description": "Concise reason for the disposition (platform-recorded from the workflow decision)."
+    },
+    {
+      "name": "cancel_reason",
+      "type": "choice",
+      "label": "Cancellation sub-reason",
+      "source": "outcome",
+      "values": {
+        "cancel_gift": "gift_recipient_to_raise",
+        "cancel_resale": "resale_no_installation",
+        "cancel_no_service": "no_service_required",
+        "cancel_ecom_damaged": "ecom_damaged_delivery",
+        "cancel_not_delivered": "product_not_delivered",
+        "cancel_service_later": "service_after_5_days",
+        "cancel_payment_declined": "payment_declined",
+        "wrong_person_no_request": "wrong_contact_no_request",
+        "cancel_not_haier_product": "not_haier_product",
+        "wrong_person_no_haier_product": "wrong_contact_no_haier_product"
+      },
+      "options": [
+        "ecom_damaged_delivery",
+        "gift_recipient_to_raise",
+        "no_service_required",
+        "not_haier_product",
+        "payment_declined",
+        "product_not_delivered",
+        "resale_no_installation",
+        "service_after_5_days",
+        "wrong_contact_no_haier_product",
+        "wrong_contact_no_request"
+      ],
+      "allowLlm": false,
+      "requires": {
+        "disposition": [
+          "Connected – Service Not Required (Cancel WO)"
+        ]
+      },
+      "description": "Why the work order is being cancelled (only for CANCEL_WO)."
+    },
+    {
+      "name": "backend_action_status",
+      "type": "choice",
+      "label": "Backend execution",
+      "source": "outcome",
+      "values": {
+        "*": "no_integration_configured"
+      },
+      "options": [
+        "no_integration_configured",
+        "requested",
+        "confirmed",
+        "failed"
+      ],
+      "allowLlm": false,
+      "description": "Whether the re-dispatch/cancellation was actually executed in Haier's system. No CRM integration is configured for this bot, so the bot only FORWARDS the request: no_integration_configured means nothing was executed by the platform."
+    },
+    {
+      "name": "call_completion",
+      "type": "choice",
+      "label": "Call completion",
+      "options": [
+        "flow_completed",
+        "customer_disconnected_midway",
+        "ended_without_outcome"
+      ],
+      "allowLlm": true,
+      "description": "How the conversation ended: flow_completed = the bot reached its closing line (dhanyavaad / din shubh rahe); customer_disconnected_midway = the platform facts show end_reason caller_hangup before the closing; ended_without_outcome = anything else (silence, bot-side end before a decision).",
+      "extractionInstructions": "Decide from the platform facts (end_reason) and the last bot turn, not from guesses about the customer."
+    }
+  ]
+}

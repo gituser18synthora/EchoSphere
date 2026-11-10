@@ -868,9 +868,13 @@ class TestTransportOn:
 
     @pytest.mark.parametrize("kind", ["fork", "vaani"])
     async def test_telephony_reply_packets_and_tail_are_unchanged(self, kind):
-        """Room packets are their own 320-byte packets; the reply keeps the
-        640/1280/2560 ramp, and its last partial packet is flushed before
-        the room resumes (instead of waiting in the buffer)."""
+        """Room packets are their own 320-byte packets. Vaani: the reply
+        keeps the 640/1280/2560 ramp, and its last partial packet is flushed
+        before the room resumes (instead of waiting in the buffer).
+        FreeSWITCH fork: no reply audio waits for a bigger packet while the
+        far end runs dry — at real-time pace every 40 ms chunk goes out at
+        once, and a chunk that was held is flushed before the room resumes
+        (see _FORK_DRY_GUARD_S)."""
         async with Call(kind) as call:
             await asyncio.sleep(0.5)
             queued = await call.reply(330, frame_ms=110)
@@ -885,13 +889,18 @@ class TestTransportOn:
             speech = bool(np.abs(np.frombuffer(pcm, dtype="<i2").astype(np.int32)).max() > SPEECH // 2)
             sizes.append((len(pcm), speech))
         speech_packets = [n for n, s in sizes if s]
-        assert speech_packets[:3] == [640, 1280, 2560]
+        if kind == "fork":
+            # One 40 ms chunk at a time; two together only while the far end
+            # still holds more than the guard (the room's lead adds to it).
+            assert speech_packets[0] == 640 and set(speech_packets) <= {640, 1280}
+        else:
+            assert speech_packets[:3] == [640, 1280, 2560]
         # pipecat >= 1.8 flushes the reply's last partial chunk padded with
         # silence instead of dropping it (the final 10 ms of 330 ms become a
         # full 40 ms packet), so every byte of speech reaches the wire.
         assert sum(speech_packets) == -(-(330 * 16) // 640) * 640  # whole chunks, tail padded
         assert all(n == 320 for n, s in sizes if not s)
-        assert call.mixer.stats()["remnant_flushes"] == 1
+        assert call.mixer.stats()["remnant_flushes"] in ((0, 1) if kind == "fork" else (1,))
         # no room packet between the first and the last reply packet
         first = next(i for i, (_n, s) in enumerate(sizes) if s)
         last = max(i for i, (_n, s) in enumerate(sizes) if s)

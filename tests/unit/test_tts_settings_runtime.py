@@ -143,6 +143,66 @@ class TestSettingsDoNotLeakAcrossEngines:
         assert settings.params["temperature"] == pytest.approx(0.8)
 
 
+class TestPronunciationDictionaryInheritance:
+    @pytest.mark.parametrize("override", [{}, {"dict_id": None}])
+    def test_matching_language_engine_inherits_saved_dictionary(self, override):
+        """A schema-default null in Hindi must not hide the selected dictionary."""
+        config = {
+            **SARVAM_V3,
+            "settings": {"dict_id": "haier-products", "temperature": 0.35},
+            "language_map": {
+                "hi-IN": {**SARVAM_V3, "params": override.copy()},
+            },
+        }
+        router = build_router(config)
+        engine = router._engine_for_language("hi-IN")
+        settings = router._stream_settings(engine, "hi-IN")
+        assert settings.params["dict_id"] == "haier-products"
+        assert settings.params["temperature"] == pytest.approx(0.35)
+        # Settings resolution must not silently migrate stored values.
+        assert config["language_map"]["hi-IN"]["params"] == override
+        assert config["settings"]["dict_id"] == "haier-products"
+
+    @pytest.mark.parametrize("override, expected", [
+        ("hindi-specific", "hindi-specific"),
+        ("", ""),
+    ])
+    def test_selected_or_explicitly_disabled_language_dictionary_wins(self, override, expected):
+        router = build_router({
+            **SARVAM_V3,
+            "settings": {"dict_id": "haier-products"},
+            "language_map": {
+                "hi-IN": {**SARVAM_V3, "params": {"dict_id": override}},
+            },
+        })
+        settings = router._stream_settings(router._engine_for_language("hi-IN"), "hi-IN")
+        assert settings.params["dict_id"] == expected
+
+    @pytest.mark.parametrize("provider, model, voice", [
+        ("sarvam", "bulbul:v2", "anushka"),
+        ("sarvam", "bulbul:v4-flash", "shubh"),
+        ("elevenlabs", "eleven_flash_v2_5", "monika"),
+    ])
+    def test_null_override_never_inherits_dictionary_from_another_engine(self, provider, model, voice):
+        router = build_router({
+            **SARVAM_V3,
+            "settings": {"dict_id": "haier-products", "temperature": 0.35},
+            "language_map": {
+                "hi-IN": {
+                    "provider": provider, "model": model, "voice": voice,
+                    "params": {"dict_id": None},
+                    "api_key_reference": (
+                        "env:ELEVENLABS_API_KEY" if provider == "elevenlabs"
+                        else "env:SARVAM_API_KEY"
+                    ),
+                },
+            },
+        })
+        settings = router._stream_settings(router._engine_for_language("hi-IN"), "hi-IN")
+        assert settings.params.get("dict_id") is None
+        assert "temperature" not in settings.params
+
+
 class TestAdapterDropsUnsupportedParameters:
     """Last line of defence: even if an unsupported parameter reached an
     adapter, it must never be put on the wire."""

@@ -11,7 +11,7 @@
    - applying stages the draft, and only an explicit Save persists it
    - reset restores schema defaults */
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VoiceTab from "@/pages/tenant/studio/VoiceTab";
@@ -790,6 +790,322 @@ describe("Voice preview — pronunciation dictionary", () => {
     // The numeric companion clamps out-of-range entries instead of staging 20.
     setParam(dialog, "Min buffer size", 20);
     expect(paramInput(dialog, "Min buffer size")).toHaveValue(30);
+  });
+});
+
+describe("Voice preview — pronunciation inheritance and runtime parity", () => {
+  const DEFAULT_DICT = "p_5cb7faa6";
+  const HINDI_DICT = "p_haier_hi";
+
+  function installDictionarySettings(overrides: Record<string, unknown>) {
+    installMocks(baseSettings(overrides));
+    vi.mocked(api.listPronunciationDictionaries).mockResolvedValue([
+      {
+        id: "pd_1", provider: "sarvam", dictId: DEFAULT_DICT, name: "Collections Hindi",
+        description: null, languageWordCounts: { "hi-IN": 3 }, createdAt: null, updatedAt: null,
+      },
+      {
+        id: "pd_haier", provider: "sarvam", dictId: HINDI_DICT, name: "Haier Hindi",
+        description: null, languageWordCounts: { "hi-IN": 2 }, createdAt: null, updatedAt: null,
+      },
+    ] as never);
+  }
+
+  async function openHindiPreview(user: ReturnType<typeof userEvent.setup>) {
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    const row = screen.getByText("Hindi").closest("li")!;
+    const button = within(row).getByRole("button", { name: "Preview voice for Hindi" });
+    await waitFor(() => expect(button).toBeEnabled());
+    await user.click(button);
+    return screen.findByRole("dialog");
+  }
+
+  async function generate(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) {
+    const previousCalls = vi.mocked(api.generateTtsPreview).mock.calls.length;
+    // The audio mock never emits `ended`; stop the previous preview before
+    // asking the modal to generate another language's audio.
+    const stop = within(dialog).getByRole("button", { name: "Stop" });
+    if (!(stop as HTMLButtonElement).disabled) await user.click(stop);
+    await user.click(within(dialog).getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalledTimes(previousCalls + 1));
+    return vi.mocked(api.generateTtsPreview).mock.calls.at(-1)![0];
+  }
+
+  async function applyAndSave(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) {
+    await user.click(within(dialog).getByRole("button", { name: "Apply settings" }));
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    return vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as {
+      ttsProvider: string; ttsModel: string; ttsVoice: string;
+      ttsSettings: Record<string, unknown>;
+      languageVoiceMap: Record<string, { provider: string; model: string; voice: string; params: Record<string, unknown> }>;
+    };
+  }
+
+  it.each([
+    ["missing", { temperature: 0.35 }],
+    ["null", { temperature: 0.35, dict_id: null }],
+  ])("a language-row preview inherits the default dictionary when dict_id is %s", async (_label, params) => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT, min_buffer_size: 90 },
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh", params },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openHindiPreview(user);
+
+    const request = await generate(user, dialog);
+    expect(request).toMatchObject({
+      provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh", language: "hi-IN",
+      params: { dict_id: DEFAULT_DICT, temperature: 0.35, min_buffer_size: 90 },
+    });
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it("switching languages applies different dictionary params even with identical provider, model and voice", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT, temperature: 0.2, min_buffer_size: 90 },
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": {
+          provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+          params: { dict_id: HINDI_DICT, temperature: 0.4 },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openPreview(user);
+    await user.selectOptions(within(dialog).getByLabelText("Preview language"), "hi-IN");
+    await waitFor(() => expect(paramInput(dialog, "Temperature")).toHaveValue(0.4));
+
+    expect(await generate(user, dialog)).toMatchObject({
+      language: "hi-IN", params: { dict_id: HINDI_DICT, temperature: 0.4, min_buffer_size: 90 },
+    });
+
+    await user.selectOptions(within(dialog).getByLabelText("Preview language"), "en-IN");
+    await waitFor(() => expect(paramInput(dialog, "Temperature")).toHaveValue(0.2));
+    expect(await generate(user, dialog)).toMatchObject({
+      language: "en-IN", params: { dict_id: DEFAULT_DICT, temperature: 0.2 },
+    });
+  });
+
+  it("the initial default preview resolves the default locale's override engine and params", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT, temperature: 0.2 },
+      languageVoiceMap: {
+        default: "hi-IN",
+        "hi-IN": {
+          provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+          params: { stability: 0.9 },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openPreview(user);
+
+    await waitFor(() => expect(within(dialog).getByLabelText("Preview provider")).toHaveValue("elevenlabs"));
+    expect(paramInput(dialog, "Stability")).toHaveValue(0.9);
+    const request = await generate(user, dialog);
+    expect(request).toMatchObject({
+      provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+      language: "hi-IN", params: { stability: 0.9 },
+    });
+    expect(request.params).not.toHaveProperty("dict_id");
+    expect(request.params).not.toHaveProperty("temperature");
+  });
+
+  it("retains default-locale override params when its model and voice catalogs load after Preview is clicked", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT, temperature: 0.2 },
+      languageVoiceMap: {
+        default: "hi-IN",
+        "hi-IN": {
+          provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+          params: { stability: 0.9 },
+        },
+      },
+    });
+    let resolveModels!: (models: typeof ELEVEN_MODELS) => void;
+    let resolveVoices!: (voices: ReturnType<typeof voice>[]) => void;
+    const pendingModels = new Promise<typeof ELEVEN_MODELS>((resolve) => { resolveModels = resolve; });
+    const pendingVoices = new Promise<ReturnType<typeof voice>[]>((resolve) => { resolveVoices = resolve; });
+    vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
+      provider === "elevenlabs" ? pendingModels : Promise.resolve(SARVAM_MODELS)) as never);
+    vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
+      provider === "elevenlabs" ? pendingVoices
+        : Promise.resolve([voice("vp-shubh", "Shubh", ["bulbul:v3", "bulbul:v2"])])) as never);
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    await waitFor(() => expect(api.listProviderModels).toHaveBeenCalledWith("tts", "elevenlabs"));
+    await waitFor(() => expect(api.listProviderVoices).toHaveBeenCalledWith("elevenlabs"));
+    const button = screen.getByRole("button", { name: "Preview voice" });
+    await waitFor(() => expect(button).toBeEnabled());
+    await user.click(button);
+
+    await act(async () => {
+      resolveModels(ELEVEN_MODELS);
+      resolveVoices([voice("vp-rachel", "Rachel", ["eleven_flash_v2_5", "eleven_v3"], "elevenlabs")]);
+    });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText("Preview provider")).toHaveValue("elevenlabs");
+    expect(paramInput(dialog, "Stability")).toHaveValue(0.9);
+    const request = await generate(user, dialog);
+    expect(request).toMatchObject({
+      provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+      language: "hi-IN", params: { stability: 0.9 },
+    });
+    expect(request.params).not.toHaveProperty("dict_id");
+    expect(request.params).not.toHaveProperty("temperature");
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it("a failed override model catalog blocks Preview and leaves saved dictionary settings intact", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT, temperature: 0.2 },
+      languageVoiceMap: {
+        default: "hi-IN",
+        "hi-IN": {
+          provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+          params: { stability: 0.9 },
+        },
+      },
+    });
+    vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
+      provider === "elevenlabs" ? Promise.reject(new Error("Model catalog unavailable"))
+        : Promise.resolve(SARVAM_MODELS)) as never);
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    await waitFor(() => expect(api.listProviderModels).toHaveBeenCalledWith("tts", "elevenlabs"));
+    const attemptsBeforePreview = vi.mocked(api.listProviderModels).mock.calls
+      .filter(([, provider]) => provider === "elevenlabs").length;
+    const button = screen.getByRole("button", { name: "Preview voice" });
+    await waitFor(() => expect(button).toBeEnabled());
+    await user.click(button);
+    await waitFor(() => expect(vi.mocked(api.listProviderModels).mock.calls
+      .filter(([, provider]) => provider === "elevenlabs").length).toBeGreaterThan(attemptsBeforePreview));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Apply settings" })).not.toBeInTheDocument();
+    expect(api.generateTtsPreview).not.toHaveBeenCalled();
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).toMatchObject({
+      ttsProvider: "sarvam", ttsModel: "bulbul:v3",
+      ttsSettings: { dict_id: DEFAULT_DICT, temperature: 0.2 },
+      languageVoiceMap: {
+        "hi-IN": {
+          provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel",
+          params: { stability: 0.9 },
+        },
+      },
+    });
+  });
+
+  it("None on a language row disables the inherited dictionary on the wire and persists an explicit disable", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT },
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh", params: {} },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openHindiPreview(user);
+    const selector = await within(dialog).findByLabelText("Pronunciation dictionary");
+    const none = within(selector).getByRole("option", { name: /^None/ });
+    await user.selectOptions(selector, none);
+
+    // The preview endpoint receives a disable marker or no dictionary; the
+    // provider adapter must omit an empty dictionary from the actual request.
+    expect((await generate(user, dialog)).params?.dict_id ?? "").toBe("");
+    const payload = await applyAndSave(user, dialog);
+    expect(payload.ttsSettings).toMatchObject({ dict_id: DEFAULT_DICT });
+    expect(payload.languageVoiceMap["hi-IN"].params.dict_id).toBe("");
+  });
+
+  it("Inherit default dictionary restores the base dictionary without copying an explicit language dictionary", async () => {
+    installDictionarySettings({
+      ttsSettings: { dict_id: DEFAULT_DICT },
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh", params: { dict_id: "" } },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openHindiPreview(user);
+    const selector = await within(dialog).findByLabelText("Pronunciation dictionary");
+    const inherit = within(selector).getByRole("option", { name: /Inherit default dictionary/i });
+    await user.selectOptions(selector, inherit);
+
+    expect(await generate(user, dialog)).toMatchObject({ params: { dict_id: DEFAULT_DICT } });
+    const payload = await applyAndSave(user, dialog);
+    expect(payload.ttsSettings).toMatchObject({ dict_id: DEFAULT_DICT });
+    expect(payload.languageVoiceMap["hi-IN"].params.dict_id ?? null).toBeNull();
+  });
+
+  it("None on a different-model language override persists an explicit disable without offering inheritance", async () => {
+    installDictionarySettings({
+      ttsModel: "bulbul:v2", ttsSettings: { pitch: 0.4 },
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": {
+          provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+          params: { dict_id: HINDI_DICT, temperature: 0.3 },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openHindiPreview(user);
+    const selector = await within(dialog).findByLabelText("Pronunciation dictionary");
+    expect(within(selector).queryByRole("option", { name: /Inherit default dictionary/i }))
+      .not.toBeInTheDocument();
+    await user.selectOptions(selector, within(selector).getByRole("option", { name: /^None/ }));
+
+    expect((await generate(user, dialog)).params?.dict_id ?? "").toBe("");
+    const payload = await applyAndSave(user, dialog);
+    expect(payload.ttsModel).toBe("bulbul:v2");
+    expect(payload.ttsSettings).toEqual({ pitch: 0.4 });
+    expect(payload.languageVoiceMap["hi-IN"].params).toMatchObject({ dict_id: "", temperature: 0.3 });
+  });
+
+  it("applying the initial default-locale override stages its dictionary on that language and preserves the base engine", async () => {
+    installDictionarySettings({
+      ttsModel: "bulbul:v2", ttsSettings: { pitch: 0.4, min_buffer_size: 90 },
+      languageVoiceMap: {
+        default: "hi-IN",
+        "hi-IN": {
+          provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+          params: { temperature: 0.3 },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const dialog = await openPreview(user);
+    await waitFor(() => expect(within(dialog).getByLabelText("Preview model")).toHaveValue("bulbul:v3"));
+    const selector = await within(dialog).findByLabelText("Pronunciation dictionary");
+    await user.selectOptions(selector, HINDI_DICT);
+    expect(await generate(user, dialog)).toMatchObject({
+      model: "bulbul:v3", language: "hi-IN", params: { dict_id: HINDI_DICT, temperature: 0.3 },
+    });
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+
+    const payload = await applyAndSave(user, dialog);
+    expect(payload).toMatchObject({
+      ttsProvider: "sarvam", ttsModel: "bulbul:v2", ttsVoice: "vp-shubh",
+      ttsSettings: { pitch: 0.4, min_buffer_size: 90 },
+    });
+    expect(payload.ttsSettings).not.toHaveProperty("dict_id");
+    expect(payload.languageVoiceMap["hi-IN"]).toMatchObject({
+      provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+      params: { dict_id: HINDI_DICT, temperature: 0.3 },
+    });
   });
 });
 

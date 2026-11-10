@@ -711,43 +711,81 @@ class CallRecordingWriter:
 
 
 class AlignedStereoRecorder:
-    """Wall-clock-aligned stereo call audio (caller left, bot right).
+    """Stereo call audio on ONE wall-clock timeline (caller left, bot right).
 
-    Replaces pipecat's AudioBufferProcessor for call recording. That
-    processor advances the timeline on the ARRIVAL clock of bot audio; output
-    transports that push TTS downstream faster than real time (the browser
-    WebSocket — the client buffers and paces playback itself) made every
-    reply burst inflate the timeline: both tracks were padded up to the burst
-    position, so recordings ran materially longer than the session and the
-    tracks drifted apart (observed: 113.8 s recording for an 86 s call).
+    The bot track is the far end's playout, rebuilt from what was actually
+    written to the wire: the final outbound mix (reply, latency cues and the
+    background ambience) in the packets the far end received, each placed
+    where the far end plays it — queued behind the audio it still has, or,
+    when it has run dry, at the moment the packet arrives. A clear
+    (barge-in) drops what the far end had not played yet. So a gap in the
+    recording is a gap the caller heard, and nothing else is.
 
-    Here the CALLER (microphone) stream is the master clock — it is captured
-    in real time on every transport. Bot audio queues as it arrives and is
-    laid onto the timeline no faster than the caller clock advances, starting
-    at the wall-clock position where its burst began (which is when the
-    client starts playing it). Real input gaps are silence-filled exactly
-    once, every aligned region is emitted exactly once (stop is idempotent),
-    and file writes run on a dedicated task so disk latency never touches the
-    audio path. The processor only observes frames — the audio sent to STT
-    and to the caller is byte-identical with or without it.
+    The caller track is the caller stream laid end to end. Its sample count
+    is the caller's clock; the arrival time of a frame only bounds it (a
+    frame cannot arrive before it was captured), which fixes the timeline's
+    origin. Frames that reach the recorder late — it sits at the end of the
+    pipeline, behind every processor and behind any event-loop stall — are
+    delivery jitter, not missing audio: they are never padded for. Silence is
+    inserted only for a gap that PERSISTS (the stream really lost audio), at
+    the position where it opened. Audio the caller gate REPLAYS when it opens
+    (its pre-roll: the onset of the caller's words, whose time it had already
+    passed on as silence) goes back over that silence; it is not new time.
 
-    Framework-facing: subclasses FrameProcessor lazily (pipecat import kept
-    inside pipeline assembly) — see :func:`build_aligned_recorder`.
+    The previous version appended the gate's replayed pre-roll after the
+    silence it stood for (≈ 0.2 s more caller audio than wall time at every
+    gate opening), padded the caller track whenever a frame arrived more than
+    200 ms after the one before it and then appended the delayed frames as
+    well, and laid bot audio onto the caller's ARRIVAL clock. Each of those
+    lengthened the recording and cut a hole of the same size into whatever
+    the bot was saying — a break the caller never heard — and the room
+    sound, mixed in at the wire, was not recorded at all.
+
+    Pure logic (no pipecat, no I/O): the frame plumbing lives in
+    ``voice_runtime.pipeline.AlignedRecordingProcessor``.
     """
 
-    # Implemented in voice_runtime.pipeline via build_aligned_recorder, which
-    # binds this logic into a FrameProcessor. Kept here as the single home of
-    # the alignment algorithm so it is unit-testable without pipecat frames.
+    # A caller frame this much behind the wall clock may be a real gap …
+    GAP_MIN_S = 0.2
+    # … if it is still that far behind after this long. A delayed burst
+    # catches up within a few milliseconds per frame.
+    GAP_CONFIRM_S = 0.5
+    # Lateness shrinking by more than this is a burst catching up.
+    GAP_CATCHUP_S = 0.03
+    # An origin correction of at least this much re-times buffered bot audio;
+    # anything smaller is clock drift (see _retime).
+    RETIME_MIN_S = 0.005
+    # No caller audio at all for this long while bot audio keeps going out:
+    # the caller track is silence-filled so the recording keeps streaming.
+    ABSENT_CALLER_S = 10.0
+    # How the far end restarts once it has run dry: a telephony leg plays
+    # from its next 20 ms tick, the browser client schedules 40 ms ahead
+    # (src/services/voiceClient.ts PcmPlaybackQueue).
+    FAR_END = {
+        "telephony": {"tick_s": 0.02, "lead_s": 0.0},
+        "browser": {"tick_s": 0.0, "lead_s": 0.04},
+    }
 
     def __init__(self, *, sample_rate: int, chunk_seconds: float = 10.0,
-                 max_bot_backlog_seconds: float = 120.0) -> None:
+                 max_bot_backlog_seconds: float = 120.0,
+                 far_end: str = "telephony") -> None:
         self._rate = int(sample_rate)
         self._chunk_bytes = int(self._rate * 2 * chunk_seconds)
-        self._bot_backlog_cap = int(self._rate * 2 * max_bot_backlog_seconds)
+        model = self.FAR_END.get(far_end, self.FAR_END["telephony"])
+        self._tick = int(round(self._rate * model["tick_s"]))
+        self._lead = int(round(self._rate * model["lead_s"]))
+        self._backlog_cap = int(self._rate * max_bot_backlog_seconds)
+        self._absent_caller = int(self._rate * self.ABSENT_CALLER_S)
+        # Both buffers start at timeline sample ``_base`` (already emitted).
+        self._base = 0
         self._user = bytearray()
         self._bot = bytearray()
-        self._bot_queue = bytearray()
-        self._last_user_at: float | None = None
+        self._user_end = 0            # timeline sample after the last caller sample
+        self._user_started = False
+        self._playhead = 0            # timeline sample where the far end runs dry
+        self._origin: float | None = None   # monotonic time of timeline sample 0
+        self._gap: list | None = None       # a possible caller-stream gap (see _track_gap)
+        self._replay = bytearray()          # gate pre-roll awaiting its place
         self._stopped = False
 
     @property
@@ -763,72 +801,196 @@ class AlignedStereoRecorder:
         out[3::4] = right[1::2]
         return bytes(out)
 
-    def add_user_audio(self, audio: bytes, *, now: float | None = None) -> bytes:
-        """Fold one caller frame in; returns a ready stereo chunk (or b"")."""
-        if self._stopped or not audio:
+    def _position(self, now: float) -> int:
+        """Timeline sample being played/captured at wall time ``now``."""
+        return max(0, int(round((now - self._origin) * self._rate)))
+
+    # ── caller track ─────────────────────────────────────────────────────
+    def add_user_audio(self, audio: bytes, *, now: float | None = None,
+                       replay: bool = False) -> bytes:
+        """Fold one caller frame in; returns a ready stereo chunk (or b"").
+
+        ``replay``: the frame is audio the caller gate held back and is
+        releasing now (its pre-roll). Its time span — the stretch just
+        before the next live frame — is already on the track as the silence
+        the gate passed on meanwhile, so it replaces that silence.
+        """
+        if self._stopped or len(audio) < 2:
             return b""
         now = time.monotonic() if now is None else now
-        if self._last_user_at is not None:
-            # Real capture gap (muted mic, transport stall): silence, once.
-            elapsed = now - self._last_user_at
-            gap = elapsed - len(audio) / (self._rate * 2)
-            if gap > 0.2:
-                pad = int(gap * self._rate * 2)
-                self._user.extend(b"\x00" * (pad - pad % 2))
-        self._last_user_at = now
+        if len(audio) % 2:
+            audio = audio[:-1]
+        if replay:
+            self._replay.extend(audio)
+            return b""
+        self._place_replay()
+        samples = len(audio) // 2
+        if self._origin is None:
+            self._origin = now - samples / self._rate
+        # How far this frame trails the wall clock. It can never lead it: a
+        # negative value means the origin estimate was late (the frames that
+        # set it had been delayed), so the origin moves back.
+        late = (now - self._origin) - (self._user_end + samples) / self._rate
+        if late < 0:
+            self._retime(-late)
+            late = 0.0
+        if not self._user_started:
+            self._user_started = True
+            # The caller stream began this long after the first bot audio.
+            self._pad_user(self._user_end, late)
+        else:
+            self._track_gap(late, now)
         self._user.extend(audio)
-        self._place_bot_backlog()
+        self._user_end += samples
         return self._take_chunk()
 
-    def add_bot_audio(self, audio: bytes) -> bytes:
-        """Fold one bot frame in; returns a ready stereo chunk (or b"")."""
-        if self._stopped or not audio:
-            return b""
-        if not self._bot_queue and len(self._bot) < len(self._user):
-            # A new utterance starts NOW (current caller-clock position);
-            # the stretch before it was genuine silence on the bot track.
-            self._bot.extend(b"\x00" * (len(self._user) - len(self._bot)))
-        self._bot_queue.extend(audio)
-        if len(self._bot_queue) > self._bot_backlog_cap:
-            del self._bot_queue[: len(self._bot_queue) - self._bot_backlog_cap]
-        self._place_bot_backlog()
-        return self._take_chunk()
+    def _retime(self, seconds: float) -> None:
+        """The timeline's origin was ``seconds`` later than assumed.
 
-    def _place_bot_backlog(self) -> None:
-        """Move queued bot audio onto the already-elapsed caller timeline."""
-        need = len(self._user) - len(self._bot)
-        if need <= 0 or not self._bot_queue:
+        Bot audio is placed by wall time, so what is still in the buffer was
+        put that much too early: it moves with the origin. This happens as a
+        call starts — its first caller frames reach the recorder late, in a
+        burst, while the first outbound audio is already going out — and it
+        keeps the two tracks together should the caller track ever run
+        ahead of the clock. Sub-frame corrections are clock drift between
+        the caller's sample clock and this host: the origin follows, the
+        audio stays where it is (moving it would cut a sample into speech).
+        """
+        self._origin -= seconds
+        samples = int(round(seconds * self._rate))
+        if seconds < self.RETIME_MIN_S or samples <= 0 or self._playhead <= self._base:
             return
-        take = min(need, len(self._bot_queue))
-        self._bot.extend(self._bot_queue[:take])
-        del self._bot_queue[:take]
+        self._bot[0:0] = bytes(samples * 2)
+        self._playhead += samples
 
-    def _align_bot_to_user(self) -> None:
-        self._place_bot_backlog()
-        need = len(self._user) - len(self._bot)
-        if need > 0:  # backlog exhausted → the remainder was real silence
-            self._bot.extend(b"\x00" * need)
+    def _place_replay(self) -> None:
+        """Write the released pre-roll over the end of the caller track."""
+        if not self._replay:
+            return
+        size = min(len(self._replay), len(self._user))    # what is not emitted yet
+        if size:
+            self._user[len(self._user) - size:] = self._replay[len(self._replay) - size:]
+        self._replay.clear()
 
+    def _track_gap(self, late: float, now: float) -> None:
+        if late < self.GAP_MIN_S:
+            self._gap = None
+            return
+        if self._gap is None:
+            # [opened at, lateness then, position, smallest lateness since]
+            self._gap = [now, late, self._user_end, late]
+            return
+        since, at_open, position, smallest = self._gap
+        if late < at_open - self.GAP_CATCHUP_S:
+            # Catching up: these are delayed frames, not a hole. Watch on.
+            self._gap = [now, late, position, late]
+            return
+        smallest = min(smallest, late)
+        self._gap[3] = smallest
+        if now - since >= self.GAP_CONFIRM_S:
+            # Still this far behind: the stream lost audio where it opened.
+            # The smallest lateness seen is the hole; the rest was jitter.
+            self._gap = None
+            self._pad_user(position, smallest)
+
+    def _pad_user(self, position: int, seconds: float) -> None:
+        """Silence in the caller track at timeline sample ``position``."""
+        samples = int(round(seconds * self._rate))
+        if samples <= 0:
+            return
+        offset = max(0, min(len(self._user), (position - self._base) * 2))
+        self._user[offset:offset] = bytes(samples * 2)
+        self._user_end += samples
+
+    # ── bot track (far-end playout) ──────────────────────────────────────
+    def add_bot_audio(self, audio: bytes, *, now: float | None = None,
+                      tolerance_s: float = 0.0) -> bytes:
+        """Fold in audio that was sent to the far end at ``now``; returns a
+        ready stereo chunk (or b"").
+
+        ``tolerance_s``: how precisely ``now`` is known. The wire tap reports
+        the send itself (0). A caller that only sees the frame after the
+        transport's pacing wait passes its estimate and the slack, and audio
+        within that slack of the playhead counts as continuous.
+        """
+        if self._stopped or len(audio) < 2:
+            return b""
+        now = time.monotonic() if now is None else now
+        if len(audio) % 2:
+            audio = audio[:-1]
+        if self._origin is None:
+            self._origin = now
+        current = self._position(now)
+        if self._playhead > current - int(tolerance_s * self._rate):
+            start = self._playhead            # queued behind what is playing
+        else:
+            start = current + self._lead      # ran dry: playback restarts
+            if self._tick:
+                start = -(-start // self._tick) * self._tick
+        start = max(start, self._base)        # what was emitted is final
+        if start - current <= self._backlog_cap:
+            self._write_bot(start, audio)
+        if not self._user_started or current - self._user_end > self._absent_caller:
+            self._fill_absent_caller(current)
+        return self._take_chunk()
+
+    def _write_bot(self, start: int, audio: bytes) -> None:
+        offset = (start - self._base) * 2
+        if offset < 0:                        # never: the past is final
+            audio, offset = audio[-offset:], 0
+        if len(self._bot) < offset:
+            self._bot.extend(bytes(offset - len(self._bot)))
+        self._bot[offset:offset + len(audio)] = audio
+        self._playhead = start + len(audio) // 2
+
+    def flush_bot(self, *, now: float | None = None) -> None:
+        """The far end dropped the audio it had not played yet (barge-in
+        ``killAudio`` / ``clear``, the browser client's stop)."""
+        if self._stopped or self._origin is None:
+            return
+        current = self._position(time.monotonic() if now is None else now)
+        if self._playhead <= current:
+            return
+        del self._bot[max(0, (current - self._base) * 2):]
+        self._playhead = current
+
+    def _fill_absent_caller(self, current: int) -> None:
+        """No caller stream (yet, or any more) while bot audio goes out."""
+        lag = current - self._user_end - self._absent_caller // 2
+        if lag > 0 and current - self._user_end > self._absent_caller:
+            self._gap = None
+            self._pad_user(self._user_end, lag / self._rate)
+
+    # ── output ───────────────────────────────────────────────────────────
     def _take_chunk(self, *, force: bool = False) -> bytes:
-        if len(self._user) < self._chunk_bytes and not force:
+        size = len(self._user)
+        if not force and (size < self._chunk_bytes or self._gap is not None):
             return b""
-        self._align_bot_to_user()
-        n = min(len(self._user), len(self._bot))
-        if n <= 0:
+        if size <= 0:
             return b""
-        chunk = self._interleave(bytes(self._user[:n]), bytes(self._bot[:n]))
-        del self._user[:n]
-        del self._bot[:n]
+        if len(self._bot) < size:
+            self._bot.extend(bytes(size - len(self._bot)))
+        chunk = self._interleave(bytes(self._user[:size]), bytes(self._bot[:size]))
+        del self._user[:size]
+        del self._bot[:size]
+        self._base += size // 2
         return chunk
 
-    def stop(self) -> bytes:
-        """Final chunk: place the remaining bot backlog (audio the caller was
-        still hearing when the call ended — bounded) and close. Idempotent."""
+    def stop(self, *, now: float | None = None) -> bytes:
+        """Final chunk: everything up to the end of the call — the later of
+        the caller stream's end and the bot audio the far end had played by
+        now (audio still queued there was never heard). Idempotent."""
         if self._stopped:
             return b""
         self._stopped = True
-        self._bot.extend(self._bot_queue)
-        self._bot_queue.clear()
-        if len(self._user) < len(self._bot):
-            self._user.extend(b"\x00" * (len(self._bot) - len(self._user)))
+        self._gap = None
+        self._place_replay()
+        end = self._user_end
+        if self._origin is not None:
+            current = self._position(time.monotonic() if now is None else now)
+            end = max(end, min(self._playhead, current))
+        del self._bot[max(0, (end - self._base) * 2):]
+        if self._user_end < end:
+            self._user.extend(bytes((end - self._user_end) * 2))
+            self._user_end = end
         return self._take_chunk(force=True)

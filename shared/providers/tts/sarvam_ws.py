@@ -39,7 +39,11 @@ from shared.providers.languages import (
     to_platform_language,
     to_provider_language,
 )
-from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
+from shared.providers.tts.delivery import (
+    omit_default_loudness,
+    sarvam_accepts_loudness,
+    sarvam_dictionary_id,
+)
 from shared.providers.tts.sarvam_voices import (
     NoV4Equivalent,
     is_v4_model,
@@ -425,6 +429,10 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         for key, value in params.items():
             if value is None or key in ("send_completion_event",):
                 continue
+            if key == "dict_id":
+                value = sarvam_dictionary_id(model, value)
+                if value is None:
+                    continue
             if key in allowed:
                 config[key] = value
             else:

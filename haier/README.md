@@ -36,6 +36,22 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   product_name, rejection_reason, rejection_reason_label) are the call's context and the
   saved test data only fills sessions without variables. Dry-run by default; `--apply`.
   Requires API + voice-worker code that knows the mode (shared/runtime_context.py).
+- `setup/07_demo_workflow_repair.py`, `haier_unit_ok_repair.py` and
+  `haier_demo_policy_repair.py` — pure configuration transforms for the reviewed
+  Studio DEMO bot `bot_450a4f7b4832`. They separate technician contact from
+  dissatisfaction, route confirmed pending problems through the required apology,
+  and amend the bot's prompt and summary policy. These helpers do not run in the
+  per-call runtime or add model requests. Contact-match precedence is stored in
+  ordered capture arrays because MySQL JSON objects may reorder dictionary keys.
+- `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
+  validated configuration through the existing DEMO API only. Unchanged prompts
+  and summary settings are retained. It never deploys server code or restarts
+  services.
+- `tests/replay_demo_decisions.py` — isolated real decision-model/workflow replay
+  of private exports, optionally using a trusted downloaded engine source. It
+  keeps checkpoints and recordings in memory and forbids external workflow tools.
+  It verifies text routing and summaries; it does not verify live audio or
+  interruption timing. Validate database-returned definitions as well as builders.
 - `tests/scenarios.py` — 37 customer-side scripts (8 transcripts, 21 reason branches, 8 edge cases).
 - `tests/replay_offline.py` — real engine, no DB, hooks mocked: runs before anything is applied.
 - `tests/run_chat_scenarios.py` — same scripts over `POST /bots/{id}/testing/simulate` after apply.

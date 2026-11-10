@@ -487,8 +487,14 @@ chunk.
   Provisional pause: queued reply audio is held, the room keeps playing.
 - **Call end**: the room stops with the last queued audio (EndFrame), on
   cancel, or when the socket closes; end-of-call silence stays silent.
-- **Never** mixed into caller/STT input, never fed to the echo reference,
-  never recorded (recordings keep the clean bot channel).
+- **Never** mixed into caller/STT input and never fed to the echo reference.
+- **Recorded as heard** (2026-11-10): the call recording's bot channel is
+  the audio written to the wire — the reply or cue WITH the room mixed in,
+  and the room-only audio between turns — placed on the far end's playout
+  clock (`FillerWebsocketOutputTransport.attach_wire_recorder` →
+  `AlignedStereoRecorder`). Before that the recorder took the clean frames
+  pushed downstream, so the room was audible on the call and absent from
+  the recording.
 
 ### Assets and cache
 
