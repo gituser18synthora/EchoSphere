@@ -23,6 +23,11 @@ _LETTERS = dict(zip(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
 ))
 _LETTERS.update({"जेड": "Z", "ज़ेड": "Z"})
+# Python's \w excludes Indic vowel marks: a bare \b would recognize the ए
+# inside बोलिए as the letter A. Treat marks and joiners as part of a word.
+_WORD_CHAR = r"[\w\u0300-\u036f\u0900-\u0963\u0971-\u097f\u1cd0-\u1cff\u200c\u200d]"
+_TOKEN_START = r"(?<!" + _WORD_CHAR + r")"
+_TOKEN_END = r"(?!" + _WORD_CHAR + r")"
 # A spelling word must corroborate the stated letter. Unknown/mismatched
 # phonetics stay ambiguous; they never turn into a guessed suffix.
 _HINDI_PHONETICS = {
@@ -43,18 +48,53 @@ _HINDI_PHONETICS = {
 }
 _LETTER_TOKEN = r"(?:" + "|".join(map(re.escape, sorted(_LETTERS, key=len, reverse=True))) + r"|[A-Za-z])"
 _PHONETIC = re.compile(
-    r"(?<!\w)(?:(?P<repeat>double|triple|डबल|ट्रिपल)\s+)?"
+    _TOKEN_START + r"(?:(?P<repeat>double|triple|डबल|ट्रिपल)\s+)?"
     r"(?:(?P<echo>" + _LETTER_TOKEN + r")[\s,.;।-]+)?"
     r"(?P<letter>" + _LETTER_TOKEN + r"|[A-Za-z]{2})\s+"
     r"(?:for|as\s+in|फोर|फ़ोर|फॉर|फ़ॉर)\s+"
     # Danda/double danda are sentence punctuation, not part of the spelling
     # word. Including them made the exact spoken `अल्फा।` fail corroboration.
-    r"(?P<word>[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+)(?!\w)", re.I,
+    r"(?P<word>[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+)" + _TOKEN_END, re.I,
 )
 _REPEATED_LETTER = re.compile(
-    r"(?<!\w)(double|triple|डबल|ट्रिपल)\s+(" + _LETTER_TOKEN + r")(?!\w)", re.I,
+    _TOKEN_START + r"(double|triple|डबल|ट्रिपल)\s+(" + _LETTER_TOKEN + r")" + _TOKEN_END, re.I,
 )
 _CONTINUATION = re.compile(r"^\s*(?:and|aur|और)\b[\s,.;।-]*", re.I)
+_REPETITION_PREFIX = re.compile(
+    r"^\s*(?:i\s+(?:just\s+)?said|"
+    r"maine\s+(?:abhi\s+)?(?:bola|kaha|bataya)(?:\s+(?:na|tha))?|"
+    r"मैंने\s+(?:अभी\s+)?(?:बोला|कहा|बताया)(?:\s+(?:ना|था))?)"
+    r"[\s,:;।-]+", re.I,
+)
+_RESTART_PREFIX = re.compile(
+    r"^\s*(?:start\s+again|again\s+from\s+(?:the\s+)?(?:start|beginning)|"
+    r"phir\s+se|dobara|फिर\s+से|दोबारा|wrong|incorrect|galat|गलत|ग़लत)"
+    r"[\s,:;।—-]+", re.I,
+)
+_ID_LABEL = (
+    r"(?:(?:terminal|booking|order|complaint|ticket|reference|account|policy|claim|"
+    r"टर्मिनल|बुकिंग|ऑर्डर|शिकायत)\s+)?"
+    r"(?:id|tid|mid|identifier|number|no|आईडी|आई\s*(?:डी|टी)|नंबर|नम्बर)|"
+    r"(?:phone|mobile|फोन|फ़ोन|मोबाइल)(?:\s+(?:number|नंबर|नम्बर))?"
+)
+_IDENTIFIER_PREFIX = re.compile(
+    r"^\s*(?:(?:my|mera|meri|मेरा|मेरी)\s+)?(?:" + _ID_LABEL + r")"
+    r"(?:\s+(?:" + _ID_LABEL + r"))?\s+(?:is|hai|hain|है|हैं)[\s,:;।-]+", re.I,
+)
+# Unlike digits_dominant's tolerant prose heuristic, buffered IDs require
+# every remaining token to be dictation. Strip only known hesitation/control
+# fillers; arbitrary English or Hindi words must remain visible to the gate.
+_DICTATION_FILLER = re.compile(
+    _TOKEN_START + r"(?:uh|um|umm|hmm|hm|ah|aa|haan|han|ji|yes|ok|okay|so|"
+    r"it's|its|is|the|अच्छा|हाँ|हां|तो)" + _TOKEN_END
+    + r"(?!\s+(?:for|as\s+in|फोर|फ़ोर|फॉर|फ़ॉर)" + _TOKEN_END + r")", re.I,
+)
+_DICTATION_CONNECTOR = re.compile(
+    r"(?<=[A-Za-z0-9])[\s,.;।-]+(?:and|aur|और)[\s,.;।-]+(?=[A-Za-z0-9])", re.I,
+)
+_COURTESY = r"(?:please|sir|madam|कृपया|प्लीज|सर|मैडम)"
+_DICTATION_COURTESY_START = re.compile(r"^\s*(?:" + _COURTESY + r"[\s,.!;।-]+){1,2}", re.I)
+_DICTATION_COURTESY_END = re.compile(r"(?:[\s,.!;।-]+" + _COURTESY + r"){1,2}[\s,.!;।-]*$", re.I)
 _NEGATIVE = re.compile(r"(?<![\w./_-])(?:no|not|wrong|incorrect|nahi|nahin|nhi|galat|नहीं|नही|गलत|ग़लत|இல்லை|അല്ല)(?![\w/_-])", re.I)
 _CORRECTION = re.compile(r"(?<!\w)(?:but|actually|instead|except|ending|last|first|replace|correction|lekin|लेकिन|आखिरी|आख़िरी|बदलो|बदल|सुधार)(?!\w)", re.I)
 _YES = re.compile(
@@ -167,7 +207,7 @@ def spoken_identifier_text(text: str) -> str:
     value, _ = _identifier_spelling(text, mark_phonetics=True)
     value = spoken_digit_text(value)
     for word, letter in _LETTERS.items():
-        value = re.sub(r"(?<!\w)" + re.escape(word) + r"(?!\w)", letter, value)
+        value = re.sub(_TOKEN_START + re.escape(word) + _TOKEN_END, letter, value)
     # A connector belongs to the ID only between a numeric run and a
     # following isolated letter. Other prose remains untouched.
     value = re.sub(r"(?<=\d)[\s,.;।-]+(?:and|aur|और)[\s,.;।-]+(?=\ue000)", " ", value, flags=re.I)
@@ -175,7 +215,7 @@ def spoken_identifier_text(text: str) -> str:
     value = re.sub(r"(?<=\d)[\s,.;।-]+(?:and|aur|और)[\s,.;।-]+(?=[A-Za-z](?:[\s,.;।-]+[A-Za-z])*[\s,.!;।-]*$)", " ", value, flags=re.I)
     # Join only adjacent single letters / digit runs, leaving prose alone.
     token = r"(?:\d+|[A-Za-z])"
-    pattern = re.compile(r"(?<!\w)(" + token + r"(?:[\s,.;।-]+" + token + r")+)(?!\w)")
+    pattern = re.compile(_TOKEN_START + r"(" + token + r"(?:[\s,.;।-]+" + token + r")+)" + _TOKEN_END)
     return pattern.sub(lambda m: re.sub(r"[\s,.;।-]+", "", m[1]).upper(), value)
 
 
@@ -192,12 +232,26 @@ def confirmation_answer(text: str) -> str | None:
 
 def identifier_suffix(text: str) -> str | None:
     """One clear letter continuation, never arbitrary prose or double letters."""
-    if looks_like_question(text or "") or not identifier_spelling_valid(text):
+    if (looks_like_question(text or "") or confirmation_answer(text) is not None
+            or not identifier_spelling_valid(text)):
         return None
-    value = _CONTINUATION.sub("", (text or "").strip(" \t\r\n,.!।"))
+    value = _REPETITION_PREFIX.sub("", (text or "").strip(" \t\r\n,.!।॥"))
+    value = _CONTINUATION.sub("", value)
     value = re.sub(r"^(?:letter|लेटर)\s+", "", value, flags=re.I)
     value = spoken_identifier_text(value).strip(" \t\r\n,.!।")
     return value.upper() if re.fullmatch(r"[A-Za-z]", value) else None
+
+
+def identifier_suffix_repeated(text: str) -> bool:
+    """Explicitly repeating an earlier single letter, rather than adding one."""
+    return bool(_REPETITION_PREFIX.match(text or "") and identifier_suffix(text))
+
+
+def _dictation_payload(text: str) -> str:
+    value = _RESTART_PREFIX.sub("", text or "")
+    value = _IDENTIFIER_PREFIX.sub("", value)
+    value = _REPETITION_PREFIX.sub("", value)
+    return _DICTATION_FILLER.sub("", value).strip(" \t\r\n,.!।॥")
 
 
 def canonical_identifier(value: str) -> str:
@@ -208,19 +262,39 @@ def identifier_sequence(text: str) -> str:
     if not identifier_spelling_valid(text):
         return ""
     normalized = spoken_identifier_text(text)
-    runs = re.findall(r"(?<!\w)[A-Za-z]*\d+[A-Za-z0-9]*(?!\w)", normalized)
+    runs = re.findall(_TOKEN_START + r"[A-Za-z]*\d+[A-Za-z0-9]*" + _TOKEN_END, normalized)
     if runs:
         return "".join(runs).upper()
-    letter = re.fullmatch(r"\s*(?:letter\s+)?([A-Za-z])[\s,.!।]*", normalized, re.I)
-    return letter[1].upper() if letter else ""
+    letter = re.fullmatch(r"\s*(?:letter\s+)?([A-Za-z])[\s,.!।॥]*", normalized, re.I)
+    if letter:
+        return letter[1].upper()
+    # Explicitly dictated repeats may continue a numeric partial. Ordinary
+    # all-letter words do not become dictation merely because they are ASCII.
+    payload = _dictation_payload(text)
+    letters = spoken_identifier_text(payload)
+    if re.fullmatch(r"[A-Za-z]", letters):
+        return letters.upper()
+    if (re.fullmatch(r"[A-Za-z]+", letters)
+            and (_REPEATED_LETTER.fullmatch(payload) or _PHONETIC.fullmatch(payload)
+                 or re.fullmatch(_LETTER_TOKEN + r"(?:[\s,.;।-]+" + _LETTER_TOKEN + r")+", payload, re.I))):
+        return letters.upper()
+    return ""
 
 
 def identifier_dictation(text: str) -> bool:
-    from shared.orchestration.spoken_numbers import digits_dominant
-    normalized = spoken_identifier_text(text)
-    sequence = identifier_sequence(text)
-    return bool(sequence) and (digits_dominant(text)
-                              or re.sub(r"[^A-Za-z0-9]", "", normalized).upper() == sequence)
+    if looks_like_question(text or "") or confirmation_answer(text) is not None:
+        return False
+    payload = _dictation_payload(text)
+    normalized = spoken_identifier_text(payload)
+    # Resolve spelling before removing courtesy: Sir in "S for Sir" is
+    # corroborating evidence, while a trailing "sir" after digits is prose.
+    normalized = _DICTATION_COURTESY_START.sub("", normalized)
+    normalized = _DICTATION_COURTESY_END.sub("", normalized)
+    normalized = _DICTATION_CONNECTOR.sub("", normalized)
+    sequence = identifier_sequence(payload)
+    # Preserve Unicode letters when checking the remainder: deleting Hindi
+    # prose made a readback question containing एक बार look like the ID 1.
+    return bool(sequence) and re.sub(r"[\W_]+", "", normalized).upper() == sequence
 
 
 def spoken_readback(value: str) -> str:

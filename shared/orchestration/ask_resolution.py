@@ -101,6 +101,40 @@ _DIGITS_RESTART_RE = _lang.compile_alternation("digits_restart") or re.compile(r
 # "What did you note so far?" — answered from the actual pending buffer,
 # never with a claim that nothing was heard when digits are held.
 _DIGITS_READBACK_RE = _lang.compile_alternation("digits_readback") or re.compile(r"(?!)")
+# A readback request can contain incidental digit words ("एक बार") and
+# restart words ("फिर से"). Resolve its meaning before either can change the
+# held identifier.
+_IDENTIFIER_READBACK_RE = re.compile(
+    r"(?:क्या|कौन\s*(?:सा|सी|से)?|कितने(?:\s+अंक)?)\s*"
+    r"(?:(?:आपने|तुमने|आप)\s+)?(?:नोट|लिखा|लिखे|सुना|सुने)"
+    r"|\b(?:what|which)\s+(?:(?:number|id|digits?)\s+)?(?:did|have|do)\s+you\s+"
+    r"(?:hear|heard|note|noted|write|written|capture|captured)\b", re.I,
+)
+_IDENTIFIER_REJECTED_RE = re.compile(
+    r"\b(?:wrong|galat|galti|(?:that|it)(?:'s|\s+(?:was|is))?\s+wrong|"
+    r"not\s+correct|incorrect|clear\s+(?:the\s+)?(?:number|digits?|id|it)|scratch\s+that)\b"
+    r"|गलत|ग़लत", re.I,
+)
+_IDENTIFIER_READBACK_FILLER_RE = re.compile(
+    r"(?:(?:please|again|once|more|one|time|sir|madam|down|so|far|"
+    r"kya|kiya|kia|hai|hain|aapne|phir|se|dobara|boliye|batao|to|ise|ek|baar|bar|ab|tak|"
+    r"किया|किए|किये|है|हैं|था|थे|आपने|आप|फिर|से|दोबारा|बोलिए|बताइए|बताओ|तो|इसे|एक|बार|जी|अब|तक)"
+    r"[\s,.!?।॥:;—-]*)*", re.I,
+)
+_IDENTIFIER_COMPLETE_RE = re.compile(
+    r"(?:बस\s+(?:इतने|इतना|यही|ये)\s*(?:ही\s*)?(?:हैं|है)?"
+    r"|(?:इतने|इतना|यही)\s+ही\s+(?:हैं|है)"
+    r"|(?:that(?:'s|\s+is)|this\s+is)\s+(?:all|it)"
+    r"|(?:those|these)\s+are\s+all\s+(?:the\s+)?digits"
+    r"|bas\s+(?:itne|itna|yahi)\s*(?:hi\s*)?(?:hai|hain)?)", re.I,
+)
+# Recognized flat schemas have one digit block with optional outer letters.
+# Keep this deliberately narrow: a failed full match of an arbitrary custom
+# regex may simply be a valid structured identifier that is not finished.
+_SIMPLE_OUTER_LETTER_SCHEMA = (
+    r"(?<![A-Za-z0-9])((?:(?:[A-Za-z]|ए|एम)(?:\s+for\s+[A-Za-z]+)?[\s-]*)?"
+    r"\d(?:[\s-]?\d){6,7}(?:[\s-]*(?:[A-Za-z]|ए|एम))?)(?![A-Za-z0-9])"
+)
 
 
 def _digit_count(value: str) -> int:
@@ -108,7 +142,42 @@ def _digit_count(value: str) -> int:
     return sum(character.isdecimal() for character in value)
 
 
-def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) -> str:
+def _simple_digit_schema(entity: dict) -> bool:
+    """Only schemas whose failed concatenation cannot be a structured prefix."""
+    if entity.get("regexPatterns") or entity.get("regex_patterns"):
+        return False
+    pattern = str(entity.get("regexPattern") or entity.get("regex_pattern") or "")
+    if pattern == _SIMPLE_OUTER_LETTER_SCHEMA:
+        return True
+    if not (pattern.startswith("^") and pattern.endswith("$")):
+        return False
+    body = pattern[1:-1]
+    if body.startswith("(?:") and body.endswith(")"):
+        body = body[3:-1]
+    elif body.startswith("(") and body.endswith(")"):
+        body = body[1:-1]
+    return bool(re.fullmatch(r"(?:\\d|\[0-9\])(?:\{\d+(?:,\d+)?\})?", body))
+
+
+def identifier_readback_request(text: str) -> bool:
+    """Recognize a held-ID readback without mistaking an explicit reset."""
+    if not text or _IDENTIFIER_REJECTED_RE.search(text):
+        return False
+    for pattern in (_DIGITS_READBACK_RE, _IDENTIFIER_READBACK_RE):
+        for match in pattern.finditer(text):
+            remainder = (text[:match.start()] + " " + text[match.end():]).strip(" \t\r\n,.!?।॥:;—-")
+            if _IDENTIFIER_READBACK_FILLER_RE.fullmatch(remainder):
+                return True
+    return False
+
+
+def identifier_completion_remark(text: str) -> bool:
+    """A bounded 'that is all' remark, without an ID or an unavailable claim."""
+    return bool(text and _IDENTIFIER_COMPLETE_RE.fullmatch(text.strip(" \t\r\n,.!।")))
+
+
+def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str,
+                          *, continuation: bool = True) -> str:
     """Speakable summary of the pending identifier buffer.
 
     Sensitive identifiers (phone numbers, masked/PII entities) are never read
@@ -117,20 +186,41 @@ def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) ->
     if not digits:
         return canned("wf_digits_none", lang)
     entity = _ask_entity(node, variable)
+    from shared.orchestration.identifier_confirmation import identifier_kind, spoken_readback
+    kind = identifier_kind(node, variable)
+    # Keep backend schema classification unchanged while treating inferred
+    # phone fields as private during partial readback, even if their legacy
+    # dataType is text or identifier.
+    name_kind = identifier_kind({"config": {"entity": {"name": entity.get("name")}}}, variable)
     sensitive = (
         bool(entity.get("pii"))
         or bool(entity.get("maskingEnabled") or entity.get("masking_enabled"))
         or str(entity.get("dataType") or entity.get("data_type") or "") == "phone"
+        or kind == "phone" or name_kind == "phone"
     )
-    if sensitive:
-        key, spoken = "wf_digits_readback_masked", " ".join(digits[-2:])
-    else:
-        key, spoken = "wf_digits_readback", " ".join(digits)
+    held = digits[-2:] if sensitive else digits
+    spoken = (spoken_readback(held) if kind
+              else " ".join(held))
+    key = "wf_digits_readback_masked" if sensitive else "wf_digits_readback"
+    template = canned(key, lang)
+    if not continuation:
+        # These templates put the readback before their continuation advice.
+        # Reuse that localized summary when the complete attempt needs to be
+        # repeated, without asking the caller to add more digits to it.
+        prefix, marker, _ = template.partition("{digits}")
+        template = prefix + marker + ("।" if lang.split("-")[0] == "hi" else ".")
     return (
-        canned(key, lang)
+        template
         .replace("{count}", str(_digit_count(digits)))
         .replace("{digits}", spoken)
     )
+
+
+def _identifier_recapture_reply(ctx: AskContext, digits: str, kind: str) -> str:
+    from shared.orchestration.identifier_confirmation import recapture_prompt
+
+    return (_digits_readback_reply(ctx.node, ctx.variable, digits, ctx.lang, continuation=False)
+            + " " + recapture_prompt(kind, ctx.lang))
 
 
 def _apply_also_capture(node: dict, text: str, slots: dict,
@@ -725,11 +815,52 @@ def digits_restart(ctx: AskContext) -> bool:
 def digits_readback(ctx: AskContext) -> bool:
     """"What did you note?" — answer from the ACTUAL pending buffer (masked
     for sensitive fields), never a claim that nothing was heard."""
-    if not (ctx.expects_digits and _DIGITS_READBACK_RE.search(ctx.text)):
+    if not (ctx.expects_digits and identifier_readback_request(ctx.text)):
         return False
     ctx.replies.append(_digits_readback_reply(ctx.node, ctx.variable, ctx.buffered, ctx.lang))
     ctx.audit.append({"action": "digits_readback", "node": ctx.node_id, "held_digits": _digit_count(ctx.buffered)})
     ctx.stay()  # no retry burned
+    return True
+
+
+def identifier_complete(ctx: AskContext) -> bool:
+    """A completion remark is not an unavailable ID or a failed retry.
+
+    Only the entity schema can accept the held value. If collection is still
+    open, ask for the complete reference without taking its fallback exit.
+    """
+    from shared.orchestration.identifier_confirmation import identifier_kind
+
+    if not (ctx.expects_digits and ctx.buffered and identifier_completion_remark(ctx.text)):
+        return False
+    kind = identifier_kind(ctx.node, ctx.variable)
+    if not kind:
+        return False
+    ctx.replies.append(_identifier_recapture_reply(ctx, ctx.buffered, kind))
+    ctx.audit.append({"action": "identifier_incomplete", "node": ctx.node_id,
+                      "held_digits": _digit_count(ctx.buffered)})
+    ctx.stay()
+    return True
+
+
+def identifier_repeated_suffix(ctx: AskContext) -> bool:
+    """An explicit spelling reminder repeats the held letter, not the ID."""
+    from shared.orchestration.identifier_confirmation import (
+        identifier_kind, identifier_suffix, identifier_suffix_repeated,
+    )
+
+    if not (ctx.expects_digits and ctx.buffered
+            and identifier_kind(ctx.node, ctx.variable) == "identifier"
+            and identifier_suffix_repeated(ctx.text)):
+        return False
+    suffix = identifier_suffix(ctx.text)
+    trailing = re.search(r"([A-Za-z]+)$", ctx.buffered)
+    if not (trailing and trailing[1].upper() == suffix):
+        return False
+    ctx.replies.append(_digits_readback_reply(ctx.node, ctx.variable, ctx.buffered, ctx.lang))
+    ctx.audit.append({"action": "identifier_spelling_repeated", "node": ctx.node_id,
+                      "held_digits": _digit_count(ctx.buffered)})
+    ctx.stay()
     return True
 
 
@@ -746,8 +877,35 @@ def prepare_dictation(ctx: AskContext) -> None:
         ctx.dictated = not ctx.handled and identifier_dictation(ctx.text)
         ctx.fresh = sequence if ctx.dictated else ""
     ctx.combined = (ctx.buffered + ctx.fresh)[:_MAX_PENDING_DIGITS]
-    ctx.max_digits = (identifier_length_bounds(_ask_entity(ctx.node, ctx.variable))[1]
-                      if ctx.expects_digits else _MAX_PENDING_DIGITS)
+    minimum, maximum = (identifier_length_bounds(entity) if ctx.expects_digits
+                        else (0, _MAX_PENDING_DIGITS))
+    if ctx.buffered and ctx.fresh:
+        from shared.orchestration.identifier_confirmation import (
+            canonical_identifier, identifier_kind, raw_candidate,
+        )
+        old_suffix = re.fullmatch(r"(.+?)([A-Za-z])", ctx.buffered)
+        fresh_suffix = re.fullmatch(r"(.+?)([A-Za-z])", ctx.fresh)
+        extending_spelled_attempt = bool(
+            old_suffix and fresh_suffix and _digit_count(old_suffix[1])
+            and old_suffix[2].upper() == fresh_suffix[2].upper()
+            and len(fresh_suffix[1]) > len(old_suffix[1])
+            and fresh_suffix[1].startswith(old_suffix[1])
+        )
+        whole_attempt = minimum <= _digit_count(ctx.fresh) <= maximum
+        combined_candidate = raw_candidate(ctx.node, ctx.variable, ctx.combined)
+        if ((whole_attempt or extending_spelled_attempt) and _simple_digit_schema(entity)
+                and identifier_kind(ctx.node, ctx.variable)
+                and combined_candidate != canonical_identifier(ctx.combined)):
+            # A complete fresh attempt must not inherit an old partial when
+            # their concatenation is invalid. A valid concatenation still
+            # wins for callers legitimately dictating a long ID in chunks.
+            ctx.pending_digits.pop(ctx.node_id, None)
+            ctx.buffered = ""
+            ctx.combined = ctx.fresh[:_MAX_PENDING_DIGITS]
+            ctx.audit.append({"action": "identifier_reset", "node": ctx.node_id,
+                              "reason": ("extended_spelled_attempt" if extending_spelled_attempt
+                                         else "complete_fresh_attempt")})
+    ctx.max_digits = maximum
     if entity.get("preserveAlphanumeric") or entity.get("dataType") == "identifier":
         ctx.max_digits += 4  # bounded letters do not count as numeric overflow
     ctx.joint_vars = (_joint_yes_no_variables(ctx.config)
@@ -1039,7 +1197,18 @@ def outcome_digits_partial(ctx: AskContext) -> bool:
     ctx.pending_digits[ctx.node_id] = ctx.combined
     count = _digit_count(ctx.combined)
     ctx.audit.append({"action": "digits_partial", "node": ctx.node_id, "held_digits": count})
-    ctx.replies.append(canned("wf_digits_partial_count", ctx.lang).replace("{count}", str(count)))
+    from shared.orchestration.entity_extractor import identifier_length_bounds
+    from shared.orchestration.identifier_confirmation import (
+        canonical_identifier, identifier_kind, raw_candidate,
+    )
+    entity = _ask_entity(ctx.node, ctx.variable)
+    minimum, maximum = identifier_length_bounds(entity)
+    kind = identifier_kind(ctx.node, ctx.variable)
+    if (kind and _simple_digit_schema(entity) and minimum <= count <= maximum
+            and raw_candidate(ctx.node, ctx.variable, ctx.combined) != canonical_identifier(ctx.combined)):
+        ctx.replies.append(_identifier_recapture_reply(ctx, ctx.combined, kind))
+    else:
+        ctx.replies.append(canned("wf_digits_partial_count", ctx.lang).replace("{count}", str(count)))
     ctx.stay()
     return True
 
@@ -1121,7 +1290,9 @@ _RESOLVERS: dict[str, Stage] = {
     "standard": resolve_standard,
 }
 DEFAULT_RESOLVERS: tuple[str, ...] = ("joint_yes_no", "semantic_slots", "narrative_guard", "standard")
-PRE_HANDLERS: tuple[Stage, ...] = (rejected_answer, digits_restart, digits_readback)
+PRE_HANDLERS: tuple[Stage, ...] = (
+    rejected_answer, digits_readback, digits_restart, identifier_complete, identifier_repeated_suffix,
+)
 OUTCOMES: tuple[Stage, ...] = (
     outcome_handled, outcome_filled, outcome_joint_partial, outcome_digits_overflow,
     outcome_digits_partial, outcome_semantic_reask, outcome_signal_unmatched,

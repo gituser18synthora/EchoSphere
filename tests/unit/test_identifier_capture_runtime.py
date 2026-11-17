@@ -809,7 +809,7 @@ async def test_readback_answers_from_pending_buffer(engine, executor):
     await _turn(engine, "seven zero zero", "s-read")
     result = await _turn(engine, "what did you note?", "s-read")
     assert "3 digits" in result["reply"]
-    assert "7 0 0" in result["reply"]
+    assert "seven, zero, zero" in result["reply"]
     # The buffer survives the question and the id still completes.
     finished = await _turn(engine, "one zero zero two", "s-read")
     assert finished["slots"]["order_ref"] == "7001002"
@@ -834,7 +834,7 @@ async def test_phone_readback_is_masked(engine, executor):
                          workflow="phone_capture_journey")
     assert "98765" not in result["reply"].replace(" ", "")
     assert "5 digits" in result["reply"] or "5 अंक" in result["reply"]
-    assert "6 5" in result["reply"]  # ending only
+    assert "six, five" in result["reply"]  # ending only
 
 
 @pytest.mark.asyncio

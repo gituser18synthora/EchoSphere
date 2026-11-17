@@ -426,6 +426,15 @@ def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
     return str(node.get("label") or "").strip() if fallback_label else ""
 
 
+def _localized_node_prompt(node: dict, language: str) -> str | None:
+    """Keep a paused workflow question in the caller's conversation language."""
+    locale = (language or "en").split("-")[0].lower()
+    translated = (_node_config(node).get("textByLanguage") or {}).get(locale)
+    if isinstance(translated, str) and translated.strip():
+        return translated.strip()
+    return _node_text(node, "question", "prompt", "text", fallback_label=False) or None
+
+
 def _edge_tokens(label: str) -> list[str]:
     return [t.strip().lower() for t in re.split(r"[/,|]", label or "") if t.strip()]
 
@@ -2023,8 +2032,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         if not reply_text and not off_script:
             reply_text = canned("wf_anything_else", lang)
         awaiting_prompt = (
-            _node_text(nodes_by_id[awaiting], "question", "prompt", "text",
-                       fallback_label=False)
+            _localized_node_prompt(nodes_by_id[awaiting], lang)
             if awaiting and awaiting in nodes_by_id else None
         )
         awaiting_identifier = None
@@ -2305,7 +2313,12 @@ class WorkflowEngine:
             previous.get("slots") or {}, previous.get("audit") or [],
             language or "en", previous.get("readback_values"),
         ) if previous.get("awaiting") and not reset_state else None
-        if pause_for_context and previous.get("awaiting") and not reset_state and readback_pending is None:
+        partial_identifier_readback = bool(
+            previous.get("awaiting_identifier")
+            and _ask.identifier_readback_request(user_text)
+        )
+        if (pause_for_context and previous.get("awaiting") and not reset_state
+                and readback_pending is None and not partial_identifier_readback):
             # A standalone question about this call must not fill a free-text
             # slot, match a yes/no edge, burn retries or execute an action.
             # Read the pending step without invoking or updating its graph.
@@ -2319,7 +2332,11 @@ class WorkflowEngine:
                 "slots": dict(previous.get("slots") or {}),
                 "handoffQueue": None, "offScript": True,
                 "contextResponse": False, "contextQuestion": True,
-                "nodePrompt": previous.get("awaiting_prompt"),
+                "nodePrompt": (
+                    previous.get("awaiting_prompt")
+                    if previous["awaiting"] in (previous.get("pending_identifier_confirmations") or {})
+                    else _localized_node_prompt(pending, language) or previous.get("awaiting_prompt")
+                ),
                 "awaitingIdentifier": previous.get("awaiting_identifier"),
                 "awaitingKind": pending.get("kind"), "signal": signal,
                 "awaitingAsk": _awaiting_ask_shape(pending),

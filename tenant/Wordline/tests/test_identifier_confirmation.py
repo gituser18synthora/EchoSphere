@@ -259,5 +259,5 @@ async def test_partial_id_readback_counts_numeric_characters_and_retains_letters
     readback = await turn("what did you note?")
     assert readback["awaitingIdentifier"]["held_digits"] == "1234B"
     assert "4 digits" in readback["reply"]
-    assert "1 2 3 4 B" in readback["reply"]
+    assert "one, two, three, four, letter B" in readback["reply"]
     assert not readback["awaitingIdentifierConfirmation"] and "lookup" not in readback["trace"]

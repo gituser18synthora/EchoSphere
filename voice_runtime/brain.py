@@ -98,6 +98,7 @@ from shared.guardrails import (
 )
 from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
+from shared.orchestration.ask_resolution import identifier_readback_request
 from shared.orchestration.delivery import delivery_instructions
 from shared.orchestration.deterministic_answers import (
     ASK_KIND_HUB,
@@ -142,6 +143,7 @@ from shared.orchestration.naturalness import (
 from shared.orchestration.router import (
     is_bare_hmm,
     leading_affirmation,
+    looks_like_question,
     RouteDecision,
     RouteKind,
     TurnRouter,
@@ -6489,6 +6491,21 @@ class ConversationBrain(FrameProcessor):
         decided before the engine ever runs. ``route`` is the router's
         decision for the turn (None while prefetching, before it exists).
         """
+        if (
+            self._identifier_capture is not None
+            and self._active_workflow is not None
+            and (route is None or route.kind == RouteKind.WORKFLOW)
+        ):
+            # The workflow owns the current buffer and its masked readback.
+            # A question about that buffer needs neither classification nor
+            # a context answer reconstructed from conversation history.
+            if identifier_readback_request(text):
+                return "identifier_readback"
+            # A clear wait command while reading an ID does not need a
+            # model interpretation. In cv_0a537c60c4d4 the classifier changed
+            # bare "Wait" to clarify and started answering instead of waiting.
+            if not looks_like_question(text) and classify_user_signal(text) == "hold":
+                return "identifier_hold"
         if self._policy is None:
             return self._identity_fast_path(text, route)
         return self._policy.deterministic_turn_resolution(
