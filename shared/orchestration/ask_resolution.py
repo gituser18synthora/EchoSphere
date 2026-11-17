@@ -103,6 +103,11 @@ _DIGITS_RESTART_RE = _lang.compile_alternation("digits_restart") or re.compile(r
 _DIGITS_READBACK_RE = _lang.compile_alternation("digits_readback") or re.compile(r"(?!)")
 
 
+def _digit_count(value: str) -> int:
+    """Letters can be held with an identifier, but are never digits."""
+    return sum(character.isdecimal() for character in value)
+
+
 def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) -> str:
     """Speakable summary of the pending identifier buffer.
 
@@ -123,7 +128,7 @@ def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) ->
         key, spoken = "wf_digits_readback", " ".join(digits)
     return (
         canned(key, lang)
-        .replace("{count}", str(len(digits)))
+        .replace("{count}", str(_digit_count(digits)))
         .replace("{digits}", spoken)
     )
 
@@ -697,8 +702,15 @@ def digits_restart(ctx: AskContext) -> bool:
     same utterance re-dictates digits ("wrong — seven zero…"), they seed the
     fresh buffer below."""
     from shared.orchestration.spoken_numbers import spoken_digit_sequence
+    from shared.orchestration.identifier_confirmation import confirmation_answer
 
-    if not (ctx.expects_digits and ctx.buffered and _DIGITS_RESTART_RE.search(ctx.text)):
+    if not (ctx.expects_digits and ctx.buffered):
+        return False
+    # A partial ID has not reached the confirmation gate yet, but a clear
+    # rejection still invalidates what was held. The common parser excludes
+    # questions and correction-bearing prose; a bare classifier label cannot
+    # erase the caller's partial identifier.
+    if not (_DIGITS_RESTART_RE.search(ctx.text) or confirmation_answer(ctx.text) == "no"):
         return False
     ctx.pending_digits.pop(ctx.node_id, None)
     ctx.buffered = ""
@@ -716,7 +728,7 @@ def digits_readback(ctx: AskContext) -> bool:
     if not (ctx.expects_digits and _DIGITS_READBACK_RE.search(ctx.text)):
         return False
     ctx.replies.append(_digits_readback_reply(ctx.node, ctx.variable, ctx.buffered, ctx.lang))
-    ctx.audit.append({"action": "digits_readback", "node": ctx.node_id, "held_digits": len(ctx.buffered)})
+    ctx.audit.append({"action": "digits_readback", "node": ctx.node_id, "held_digits": _digit_count(ctx.buffered)})
     ctx.stay()  # no retry burned
     return True
 
@@ -903,7 +915,7 @@ def outcome_filled(ctx: AskContext) -> bool:
     if ctx.identifier_confirmed:
         entry["confirmed"] = True
     if ctx.accumulated:
-        entry["accumulated_digits"] = len(ctx.combined)
+        entry["accumulated_digits"] = _digit_count(ctx.combined)
     ctx.audit.append(entry)
     if not ctx.captured_first:
         _apply_also_capture(ctx.node, ctx.text, ctx.slots, ctx.audit, ctx.node_id)
@@ -1012,7 +1024,8 @@ def outcome_digits_overflow(ctx: AskContext) -> bool:
         ctx.pending_digits[ctx.node_id] = kept
     ctx.node_retries[ctx.node_id] = ctx.node_retries.get(ctx.node_id, 0) + 1
     ctx.audit.append({"action": "identifier_overflow", "node": ctx.node_id,
-                      "dropped_digits": len(ctx.combined) - len(kept), "held_digits": len(kept)})
+                      "dropped_digits": _digit_count(ctx.combined) - _digit_count(kept),
+                      "held_digits": _digit_count(kept)})
     ctx.replies.append(canned("wf_digits_overflow", ctx.lang))
     ctx.stay()
     return True
@@ -1024,8 +1037,9 @@ def outcome_digits_partial(ctx: AskContext) -> bool:
     if not (ctx.dictated and ctx.fresh and ctx.combined != ctx.buffered):
         return False
     ctx.pending_digits[ctx.node_id] = ctx.combined
-    ctx.audit.append({"action": "digits_partial", "node": ctx.node_id, "held_digits": len(ctx.combined)})
-    ctx.replies.append(canned("wf_digits_partial_count", ctx.lang).replace("{count}", str(len(ctx.combined))))
+    count = _digit_count(ctx.combined)
+    ctx.audit.append({"action": "digits_partial", "node": ctx.node_id, "held_digits": count})
+    ctx.replies.append(canned("wf_digits_partial_count", ctx.lang).replace("{count}", str(count)))
     ctx.stay()
     return True
 
@@ -1143,6 +1157,8 @@ def resolve_ask(ctx: AskContext) -> AskContext:
     if ctx.identifier_confirmed:
         outcome_filled(ctx)
         return ctx
+    if resolve_explicit_identifier_confirmation(ctx):
+        return ctx
     reconcile_question_label(ctx)
     prepare_digits(ctx)
     for handler in PRE_HANDLERS:
@@ -1157,3 +1173,82 @@ def resolve_ask(ctx: AskContext) -> AskContext:
         if outcome(ctx):
             break
     return ctx
+
+
+def resolve_explicit_identifier_confirmation(ctx: AskContext) -> bool:
+    """Apply the common confirmation rules to older, explicitly wired gates.
+
+    These asks already lead through their own yes/no branches, so the common
+    platform gate deliberately does not wrap them. Their authored surface
+    patterns must not reject a clear ``It's correct`` or let an ``affirm``
+    model label overrule a question/correction. Keep the authored branches and
+    captures for full replacements; a suffix fragment is amended only against
+    the original identifier schema and always needs another confirmation.
+    """
+    variable = ctx.config.get("confirmsIdentifier")
+    if not isinstance(variable, str) or not variable.strip():
+        return False
+    from shared.orchestration.identifier_confirmation import (
+        amend_identifier_suffix, canonical_identifier, confirmation_answer,
+        confirmation_prompt, identifier_kind, raw_candidate, recapture_prompt,
+    )
+
+    variable = variable.strip()
+    schema = next((spec.get("entity") for spec in ctx.config.get("alsoCapture") or []
+                   if isinstance(spec, dict) and spec.get("variable") == variable
+                   and isinstance(spec.get("entity"), dict) and not spec.get("clear")), None)
+    capture_node = {"id": ctx.node_id, "kind": "ask", "config": {
+        "variable": variable, "entity": schema or {},
+    }}
+    previous = str(ctx.slots.get(variable) or "")
+
+    def hold() -> bool:
+        # Do not let an old permissive synonym pattern or alsoCapture matcher
+        # reinterpret a question/invalid partial after the safe parser declined.
+        ctx.captured_first = True
+        if not outcome_signal_unmatched(ctx):
+            outcome_retry(ctx)
+        return True
+
+    if looks_like_question(ctx.text):
+        return hold()
+    amended = (amend_identifier_suffix(capture_node, variable, previous, ctx.text)
+               if schema and previous else None)
+    if amended is not None:
+        # A correction updates only this identifier. Do not fill the yes/no
+        # answer or take either authored branch until a later clear answer.
+        value = _extract_ask_value(capture_node, variable, amended)
+        if value is None:
+            return hold()
+        ctx.slots[variable] = value
+        ctx.slots.pop(ctx.variable, None)
+        ctx.node_retries.pop(ctx.node_id, None)
+        ctx.audit.append({"action": "identifier_suffix_corrected", "node": ctx.node_id,
+                          "variable": variable})
+        ctx.replies.append(confirmation_prompt(amended, "identifier", ctx.lang))
+        ctx.stay()
+        return True
+
+    answer = confirmation_answer(ctx.text)
+    candidate = (raw_candidate(capture_node, variable, ctx.text)
+                 if schema and answer is None else None)
+    if candidate is not None:
+        # Existing replacement captures run in their authored order (clear,
+        # then overwrite), and the existing no branch re-enters collection.
+        # Even a repeated complete ID is read back, never silently confirmed.
+        answer = "no"
+    if answer is None:
+        return hold()
+    if answer == "yes" and (not previous or (
+            schema and raw_candidate(capture_node, variable, previous) != canonical_identifier(previous))):
+        ctx.audit.append({"action": "identifier_confirmation_missing", "node": ctx.node_id,
+                          "variable": variable})
+        ctx.replies.append(recapture_prompt(identifier_kind(capture_node, variable) or "identifier", ctx.lang))
+        ctx.stay()
+        return True
+    value = _extract_ask_value(ctx.node, ctx.variable, answer)
+    if value is None:
+        return hold()  # an unrelated/custom canonical mapping stays authoritative
+    ctx.value = value
+    outcome_filled(ctx)
+    return True

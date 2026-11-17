@@ -2088,6 +2088,58 @@ class TestApiNodePayloadPassthroughs:
         assert args["session_id"] == "api-2"
         assert "bot_id" not in args and "not_a_key" not in args
 
+    async def test_tool_audit_is_masked_timed_and_returned_only_for_current_turn(self, engine, monkeypatch):
+        from shared.orchestration.tool_executor import ToolExecutor
+        import shared.orchestration.tool_executor as te
+        doc = self._definition({})
+        doc["nodes"][3] = {"id": "e", "kind": "ask", "config": {
+            "question": "Anything to add?", "variable": "comment", "entityType": "text",
+        }}
+        _use_definition(monkeypatch, doc)
+        connection = {"id": "api_audit", "method": "POST", "name": "Register",
+                      "is_state_changing": False, "require_confirmation": False,
+                      "allowed_intents": [], "allowed_workflows": [], "request_schema": None,
+                      "sensitive_masks": ["phone"], "response_mapping": [],
+                      "response_schema": None}
+        monkeypatch.setattr(te, "_load_connection_sync", lambda *args: connection)
+        monkeypatch.setattr(te, "get_tool_executor", ToolExecutor)
+        first = await _turn(engine, "start", name="api_meta", session="audit-once")
+        assert first["toolEvents"] == []
+        result = await _turn(engine, "yes", name="api_meta", session="audit-once",
+                             mock_tool_results={"Register": {"found": True, "phone": "9876543210"}})
+        assert len(result["toolEvents"]) == 1
+        event = result["toolEvents"][0]
+        assert event["ok"] and event["name"] == "Register" and event["mocked"]
+        assert event["completed_at"] >= event["started_at"] > 0
+        assert event["trace"]["request"]["args"] == {"deduction_explained": "yes"}
+        assert "9876543210" not in str(event)
+        assert event["trace"]["response"]["found"] is True
+        later = await _turn(engine, "a note", name="api_meta", session="audit-once")
+        assert later["toolEvents"] == []
+        state = await engine._graphs["def:wf_api_meta:v1"].aget_state(
+            {"configurable": {"thread_id": "audit-once:api_meta"}})
+        assert any(e.get("action") == "api_call" and e.get("trace") for e in state.values["audit"])
+
+    async def test_explicit_identifier_confirmation_metadata_and_unknown_id_readback(self, engine, monkeypatch):
+        doc = {"id": "wf_id_meta", "version": 1, "name": "id_meta", "nodes": [
+            {"id": "s", "kind": "start"},
+            {"id": "confirm", "kind": "ask", "config": {
+                "variable": "confirmation", "confirmsIdentifier": "booking_id",
+                "question": "Correct?", "readback": {"en": {
+                    "fields": [{"variable": "booking_id", "template": "Booking ID {value}.",
+                                "values": {"1111111A": "Known ID"}}],
+                    "question": "Is that correct?"}},
+                "entity": {"dataType": "text", "synonymPatterns": {"yes": ["^yes$"], "no": ["^no$"]}},
+            }},
+        ], "edges": [{"from": "s", "to": "confirm"}]}
+        _use_definition(monkeypatch, doc)
+        result = await _turn(engine, "hello", name="id_meta", session="id-meta",
+                             initial_slots={"booking_id": "0012345B"})
+        assert result["awaitingIdentifierConfirmation"] is True
+        assert result["awaitingAsk"]["kind"] == "yes_no"
+        assert "zero, zero, one, two, three, four, five, letter B" in result["reply"]
+        assert result["slots"]["booking_id"] == "0012345B"
+
 
 class TestConsumePrecedingUtterance:
     """An ask may opt in to consume the utterance that advanced the hub."""

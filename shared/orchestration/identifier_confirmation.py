@@ -22,15 +22,52 @@ _LETTERS = dict(zip(
      "एम", "एन", "ओ", "पी", "क्यू", "आर", "एस", "टी", "यू", "वी", "डब्ल्यू", "एक्स", "वाई", "ज़ेड"),
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
 ))
-_DIGITS = dict(zip("0123456789", "zero one two three four five six seven eight nine".split()))
+_LETTERS.update({"जेड": "Z", "ज़ेड": "Z"})
+# A spelling word must corroborate the stated letter. Unknown/mismatched
+# phonetics stay ambiguous; they never turn into a guessed suffix.
+_HINDI_PHONETICS = {
+    "अल्फा": "A", "ऐल्फा": "A", "एप्पल": "A", "ऐपल": "A", "एपल": "A",
+    "बॉय": "B", "बाय": "B", "बॉल": "B", "ब्रावो": "B",
+    "चार्ली": "C", "कैट": "C", "डेल्टा": "D", "डॉग": "D",
+    "इको": "E", "ईको": "E", "एको": "E", "एलिफेंट": "E",
+    "फॉक्सट्रॉट": "F", "फिश": "F", "गोल्फ": "G", "गोट": "G",
+    "होटल": "H", "हाउस": "H", "इंडिया": "I", "जूलियट": "J", "जोकर": "J",
+    "किलो": "K", "काइट": "K", "लीमा": "L", "लायन": "L",
+    "माइक": "M", "मैंगो": "M", "मेंगो": "M", "मंगो": "M",
+    "नवंबर": "N", "नेस्ट": "N", "ऑस्कर": "O", "ऑरेंज": "O",
+    "पापा": "P", "पैरट": "P", "क्यूबेक": "Q", "क्वीन": "Q",
+    "रोमियो": "R", "रैबिट": "R", "सिएरा": "S", "सन": "S",
+    "टैंगो": "T", "टाइगर": "T", "यूनिफॉर्म": "U", "अंब्रेला": "U",
+    "विक्टर": "V", "वैन": "V", "व्हिस्की": "W", "वॉच": "W",
+    "एक्सरे": "X", "यांकी": "Y", "याक": "Y", "ज़ूलू": "Z", "जीब्रा": "Z",
+}
+_LETTER_TOKEN = r"(?:" + "|".join(map(re.escape, sorted(_LETTERS, key=len, reverse=True))) + r"|[A-Za-z])"
+_PHONETIC = re.compile(
+    r"(?<!\w)(?:(?P<repeat>double|triple|डबल|ट्रिपल)\s+)?"
+    r"(?:(?P<echo>" + _LETTER_TOKEN + r")[\s,.;।-]+)?"
+    r"(?P<letter>" + _LETTER_TOKEN + r"|[A-Za-z]{2})\s+"
+    r"(?:for|as\s+in|फोर|फ़ोर|फॉर|फ़ॉर)\s+"
+    # Danda/double danda are sentence punctuation, not part of the spelling
+    # word. Including them made the exact spoken `अल्फा।` fail corroboration.
+    r"(?P<word>[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+)(?!\w)", re.I,
+)
+_REPEATED_LETTER = re.compile(
+    r"(?<!\w)(double|triple|डबल|ट्रिपल)\s+(" + _LETTER_TOKEN + r")(?!\w)", re.I,
+)
+_CONTINUATION = re.compile(r"^\s*(?:and|aur|और)\b[\s,.;।-]*", re.I)
 _NEGATIVE = re.compile(r"(?<![\w./_-])(?:no|not|wrong|incorrect|nahi|nahin|nhi|galat|नहीं|नही|गलत|ग़लत|இல்லை|അല്ല)(?![\w/_-])", re.I)
 _CORRECTION = re.compile(r"(?<!\w)(?:but|actually|instead|except|ending|last|first|replace|correction|lekin|लेकिन|आखिरी|आख़िरी|बदलो|बदल|सुधार)(?!\w)", re.I)
 _YES = re.compile(
-    r"^(?:(?:yes|yeah|yep|correct|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|"
-    r"sahi|hai|hain|bilkul|sir|madam|it|is|that's|that|हाँ|हां|हा|हाँजी|हांजी|जी|सही|है|हैं|"
+    r"^(?:(?:yes|yeah|yep|correct|confirmed|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|"
+    r"sahi|hai|hain|bilkul|sir|madam|okay|ok|it|is|it's|that's|that|this|हाँ|हां|हा|हाँजी|हांजी|जी|सही|है|हैं|"
     r"बिल्कुल|सर|ஆமாம்|சரி|അതെ|ശരി)[\s,.!।]*)+$", re.I,
 )
-_AFFIRMATIVE = re.compile(r"(?<!\w)(?:yes|yeah|yep|correct|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|sahi|bilkul|हाँ|हां|हा|हाँजी|हांजी|जी|सही|बिल्कुल|ஆமாம்|சரி|അതെ|ശരി)(?!\w)", re.I)
+_AFFIRMATIVE = re.compile(r"(?<!\w)(?:yes|yeah|yep|correct|confirmed|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|sahi|bilkul|हाँ|हां|हा|हाँजी|हांजी|जी|सही|बिल्कुल|ஆமாம்|சரி|അതെ|ശരി)(?!\w)", re.I)
+_NO = re.compile(
+    r"^(?:(?:no|not|wrong|incorrect|isn't|isnt|nahi|nahin|nhi|galat|"
+    r"yes|haan|han|ji|okay|ok|it|is|it's|that|that's|this|correct|confirmed|right|hai|sir|"
+    r"नहीं|नही|गलत|ग़लत|हाँ|हां|जी|यह|ये|सही|है|सर|இல்லை|അല്ല)[\s,.!।]*)+$", re.I,
+)
 
 
 def _field_words(value: str) -> set[str]:
@@ -87,18 +124,80 @@ def identifier_kind(node: dict, variable: str) -> str | None:
     return None
 
 
+def _letter(value: str) -> str | None:
+    value = _LETTERS.get(value, value.upper())
+    return value[0] if value and len(set(value)) == 1 and value[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" else None
+
+
+def _identifier_spelling(text: str, *, mark_phonetics: bool = False) -> tuple[str, bool]:
+    """Resolve spelling *before* number words (Hindi `फोर` also means four)."""
+    valid = True
+
+    def replace(match: re.Match) -> str:
+        nonlocal valid
+        letter = _letter(match["letter"])
+        word = match["word"]
+        phonetic = word[0].upper() if word.isascii() else _HINDI_PHONETICS.get(word)
+        echo = _letter(match["echo"]) if match["echo"] else letter
+        if not letter or phonetic != letter or echo != letter:
+            valid = False
+            return match[0]
+        # B, B for boy / MM for mango are corroborated spelling echoes.
+        # An explicit double/triple remains multiple letters.
+        count = 3 if (match["repeat"] or "").lower() in {"triple", "ट्रिपल"} else 2 if match["repeat"] else 1
+        result = " ".join([letter] * count)
+        return "\ue000" + result + "\ue001" if mark_phonetics else result
+
+    value = _PHONETIC.sub(replace, str(text or ""))
+    value = _REPEATED_LETTER.sub(
+        lambda m: " ".join([_letter(m[2])] * (3 if m[1].lower() in {"triple", "ट्रिपल"} else 2)), value,
+    )
+    return value, valid
+
+
+def identifier_spelling_valid(text: str) -> bool:
+    """A stated letter and its spelling word must agree before extraction."""
+    return _identifier_spelling(text)[1]
+
+
 def spoken_identifier_text(text: str) -> str:
-    """Normalize dictated letters without guessing sound-alike substitutions."""
+    """Normalize corroborated dictation without sound-alike substitutions."""
     from shared.orchestration.spoken_numbers import spoken_digit_text
 
-    value = spoken_digit_text(text)
-    value = re.sub(r"\b([A-Za-z])\s+(?:for|as\s+in)\s+[A-Za-z]+\b", lambda m: m[1].upper(), value, flags=re.I)
+    value, _ = _identifier_spelling(text, mark_phonetics=True)
+    value = spoken_digit_text(value)
     for word, letter in _LETTERS.items():
         value = re.sub(r"(?<!\w)" + re.escape(word) + r"(?!\w)", letter, value)
+    # A connector belongs to the ID only between a numeric run and a
+    # following isolated letter. Other prose remains untouched.
+    value = re.sub(r"(?<=\d)[\s,.;।-]+(?:and|aur|और)[\s,.;।-]+(?=\ue000)", " ", value, flags=re.I)
+    value = value.replace("\ue000", "").replace("\ue001", "")
+    value = re.sub(r"(?<=\d)[\s,.;।-]+(?:and|aur|और)[\s,.;।-]+(?=[A-Za-z](?:[\s,.;।-]+[A-Za-z])*[\s,.!;।-]*$)", " ", value, flags=re.I)
     # Join only adjacent single letters / digit runs, leaving prose alone.
     token = r"(?:\d+|[A-Za-z])"
     pattern = re.compile(r"(?<!\w)(" + token + r"(?:[\s,.;।-]+" + token + r")+)(?!\w)")
     return pattern.sub(lambda m: re.sub(r"[\s,.;।-]+", "", m[1]).upper(), value)
+
+
+def confirmation_answer(text: str) -> str | None:
+    """Constrained conversational yes/no; a question or correction is neither."""
+    control = (text or "").replace("’", "'").strip(" \t\r\n,.!।")
+    if (not control or looks_like_question(control) or _CORRECTION.search(control)
+            or re.match(r"^isn'?t\s+(?:it|that|this)\b", control, re.I)):
+        return None
+    if _NEGATIVE.search(control) or re.search(r"\bisn'?t\b", control, re.I):
+        return "no" if _NO.fullmatch(control) else None
+    return "yes" if _YES.fullmatch(control) and _AFFIRMATIVE.search(control) else None
+
+
+def identifier_suffix(text: str) -> str | None:
+    """One clear letter continuation, never arbitrary prose or double letters."""
+    if looks_like_question(text or "") or not identifier_spelling_valid(text):
+        return None
+    value = _CONTINUATION.sub("", (text or "").strip(" \t\r\n,.!।"))
+    value = re.sub(r"^(?:letter|लेटर)\s+", "", value, flags=re.I)
+    value = spoken_identifier_text(value).strip(" \t\r\n,.!।")
+    return value.upper() if re.fullmatch(r"[A-Za-z]", value) else None
 
 
 def canonical_identifier(value: str) -> str:
@@ -106,6 +205,8 @@ def canonical_identifier(value: str) -> str:
 
 
 def identifier_sequence(text: str) -> str:
+    if not identifier_spelling_valid(text):
+        return ""
     normalized = spoken_identifier_text(text)
     runs = re.findall(r"(?<!\w)[A-Za-z]*\d+[A-Za-z0-9]*(?!\w)", normalized)
     if runs:
@@ -123,10 +224,9 @@ def identifier_dictation(text: str) -> bool:
 
 
 def spoken_readback(value: str) -> str:
-    punctuation = {"+": "plus", "-": "hyphen", "/": "slash", "_": "underscore",
-                   ".": "dot", ":": "colon", "#": "hash"}
-    return ", ".join(_DIGITS.get(c, punctuation.get(c, "letter " + c))
-                     for c in canonical_identifier(value))
+    from shared.orchestration.spoken_numbers import english_identifier_readback
+
+    return english_identifier_readback(value)
 
 
 def confirmation_prompt(value: str, kind: str, language: str) -> str:
@@ -170,6 +270,32 @@ def raw_candidate(node: dict, variable: str, text: str) -> str | None:
     return canonical or None
 
 
+def amend_identifier_suffix(node: dict, variable: str, previous: str, text: str) -> str | None:
+    """Append/replace one suffix only when the entire new ID validates.
+
+    A single trailing letter can be replaced. Multiple existing letters or
+    an all-letter reference do not reveal which part the caller meant.
+    Phone numbers never accept alphabetic amendments.
+    """
+    from shared.orchestration.ask_resolution import _ask_entity
+    from shared.orchestration.entity_extractor import extract_entity
+
+    suffix = identifier_suffix(text)
+    previous = canonical_identifier(previous)
+    if (not suffix or identifier_kind(node, variable) != "identifier"
+            or not any(c.isdigit() for c in previous)):
+        return None
+    ending = re.search(r"[A-Z]+$", previous)
+    if ending and len(ending[0]) != 1:
+        return None
+    candidate = (previous[:-1] if ending else previous) + suffix
+    entity = {**_ask_entity(node, variable), "pii": False, "maskingEnabled": False, "masking_enabled": False}
+    extracted = extract_entity(candidate, entity)
+    if not extracted.get("matched") or canonical_identifier(extracted.get("value") or "") != candidate:
+        return None
+    return candidate
+
+
 def start_confirmation(ctx, *, offered: str | None = None) -> bool:
     """Intercept an otherwise valid capture before it becomes a slot."""
     kind = identifier_kind(ctx.node, ctx.variable)
@@ -198,7 +324,14 @@ def resolve_confirmation(ctx) -> bool:
     # An all-letter ID matcher can also accept YES / NO. Confirmation words
     # retain their conversational meaning instead of replacing the ID.
     control = ctx.text.replace("’", "'").strip(" \t\r\n,.!।")
-    affirmative = bool(_YES.fullmatch(control) and _AFFIRMATIVE.search(control))
+    answer = confirmation_answer(control)
+    affirmative = answer == "yes"
+    amended = amend_identifier_suffix(ctx.node, ctx.variable, pending["raw"], ctx.text)
+    if amended is not None:
+        from shared.orchestration.ask_resolution import _extract_ask_value
+        ctx.value = _extract_ask_value(ctx.node, ctx.variable, amended)
+        start_confirmation(ctx, offered=amended)
+        return True
     candidate_source = ctx.text
     # With alphabetic references, a broad authored matcher can otherwise
     # capture "no" / "actually" instead of the replacement that follows.
@@ -210,12 +343,12 @@ def resolve_confirmation(ctx) -> bool:
                 or candidate_source[prefix.end()] not in " \t\r\n,!;:।"):
             break
         candidate_source = candidate_source[prefix.end():]
-    candidate = (None if affirmative or _NEGATIVE.fullmatch(control)
+    candidate = (None if affirmative or answer == "no" or _NEGATIVE.fullmatch(control)
                  else raw_candidate(ctx.node, ctx.variable, candidate_source))
     prose = ctx.text
     if candidate:
         prose = re.sub(re.escape(candidate), "", prose, flags=re.I)
-    negative = bool(_NEGATIVE.search(prose))
+    negative = answer == "no" or bool(_NEGATIVE.search(prose))
     correction = bool(_CORRECTION.search(prose)) or bool(
         re.fullmatch(r"\s*(?:letter\s+)?[A-Za-z][\s,.!।]*", spoken_identifier_text(ctx.text), re.I))
     if candidate and candidate != pending["raw"]:
@@ -235,7 +368,7 @@ def resolve_confirmation(ctx) -> bool:
     remainder = ctx.text.replace("’", "'")
     if candidate == pending["raw"]:
         remainder = re.sub(re.escape(candidate), "", spoken_identifier_text(remainder), flags=re.I)
-    if (_YES.fullmatch(remainder.strip()) and _AFFIRMATIVE.search(remainder)
+    if (confirmation_answer(remainder) == "yes"
             and not looks_like_question(ctx.text)):
         ctx.value = pending["value"]
         ctx.identifier_confirmed = True

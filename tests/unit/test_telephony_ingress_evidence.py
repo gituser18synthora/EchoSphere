@@ -175,10 +175,14 @@ class TestMissingFinalOutcome:
         svc._utterance_generation = 3
         svc._transcript_generation = 2
         svc._stt_stopping = False
+        from unittest.mock import AsyncMock
+        from voice_runtime.stt_recovery import STTFinalMissingFrame
+        svc.push_frame = AsyncMock()
         await sarvam_mod.EndpointedSarvamSTTService._missing_final_retry(svc, 3)
         assert flushes == [True]
         assert recorder.kinds() == ["stt_missing_final_retry", "stt_final_missing"]
         assert recorder.events[1][1]["generation"] == 3
+        assert isinstance(svc.push_frame.call_args.args[0], STTFinalMissingFrame)
 
     @pytest.mark.asyncio
     async def test_no_loss_event_when_the_retry_recovers(self, monkeypatch):

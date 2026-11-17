@@ -830,9 +830,25 @@ def _group_applies(group: dict, slots: dict) -> bool:
     return True
 
 
+def _readback_speech_slots(localized: dict, slots: dict) -> dict:
+    """Format only explicitly typed presentation slots, leaving raw state intact."""
+    from shared.orchestration.spoken_numbers import english_identifier_readback
+
+    formats = dict(localized.get("formats") or {})
+    for field in localized.get("fields") or []:
+        if field.get("format") in {"identifier", "phone"}:
+            formats[field.get("variable")] = field["format"]
+    return {**slots, **{
+        name: english_identifier_readback(str(slots[name]))
+        for name, style in formats.items()
+        if style in {"identifier", "phone"} and slots.get(name) not in (None, "")
+    }}
+
+
 def render_readback_fields(localized: dict, slots: dict, only=None) -> list[str]:
     """Per-slot phrases (``fields``) for the given slots — optionally only some."""
     phrases: list[str] = []
+    speech_slots = _readback_speech_slots(localized, slots)
     for field in localized.get("fields") or []:
         variable = field.get("variable")
         if only is not None and variable not in only:
@@ -841,9 +857,14 @@ def render_readback_fields(localized: dict, slots: dict, only=None) -> list[str]
         if value in (None, "") or value in (field.get("omitValues") or []):
             continue
         phrase = (field.get("values") or {}).get(str(value))
+        style = field.get("format") or (localized.get("formats") or {}).get(variable)
+        if style in {"identifier", "phone"} and field.get("template"):
+            phrase = _fill_readback_template(
+                field["template"].replace("{value}", "{" + str(variable) + "}"), speech_slots,
+            )
         if phrase is None and field.get("template"):
             phrase = _fill_readback_template(
-                field["template"].replace("{value}", "{" + str(variable) + "}"), slots
+                field["template"].replace("{value}", "{" + str(variable) + "}"), speech_slots
             )
         if phrase:
             phrases.append(phrase)
@@ -854,13 +875,14 @@ def render_readback(localized: dict, slots: dict) -> str:
     """The full deterministic readback: intro, grouped sentences, remaining
     per-slot phrases, closing question."""
     parts = [localized.get("intro", "")]
+    speech_slots = _readback_speech_slots(localized, slots)
     consumed: set[str] = set()
     for group in localized.get("groups") or []:
         if not isinstance(group, dict) or not _group_applies(group, slots):
             continue
         if any(name in consumed for name in group.get("requires") or []):
             continue  # an earlier group already spoke these slots
-        rendered = _fill_readback_template(str(group.get("template") or ""), slots)
+        rendered = _fill_readback_template(str(group.get("template") or ""), speech_slots)
         if not rendered:
             continue
         parts.append(rendered)
@@ -1161,7 +1183,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             if not spoken:
                 return
             config = _node_config(node)
-            locale = lang.split("-")[0].lower()
+            locale = (lang or "en").split("-")[0].lower()
             translated = (config.get("textByLanguage") or {}).get(locale)
             if translated and spoken in [config.get(k) for k in
                                          ("text", "message", "prompt", "question")]:
@@ -1170,6 +1192,13 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             readback = config.get("readback")
             if isinstance(readback, dict):
                 localized = readback.get(locale) or readback.get("hi") or {}
+                confirmed_variable = config.get("confirmsIdentifier")
+                if confirmed_variable:
+                    localized = {**localized, "fields": [
+                        {**field, "format": "identifier"}
+                        if field.get("variable") == confirmed_variable else field
+                        for field in localized.get("fields") or []
+                    ]}
                 spoken = render_readback(localized, slots)
             replies.append(spoken)
             node_id = str(node.get("id") or "")
@@ -1897,6 +1926,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # ticketing system needs to correlate the call.
                     for key, value in _api_metadata(config, state).items():
                         args.setdefault(key, value)
+                    tool_started_at = time.time() * 1000
                     result = await get_tool_executor().execute(
                         tenant_id=state.get("tenant_id", ""),
                         bot_id=state.get("bot_id", ""),
@@ -1913,10 +1943,16 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # nodes ("payment_status equals completed" etc.).
                     for key, value in (result.mapped or {}).items():
                         slots.setdefault(str(key), value)
+                    audit_event = getattr(result, "audit_event", None)
+                    # Older extension executors may expose only the original
+                    # result contract; retain their status without inventing I/O.
+                    tool_event = audit_event() if callable(audit_event) else {
+                        "ok": result.ok, "status": result.status, "mocked": result.mocked,
+                    }
                     audit.append({"action": "api_call", "node": current,
-                                  "name": tool, "ok": result.ok,
-                                  "status": result.status,
-                                  "mocked": result.mocked})
+                                  "name": tool, **tool_event,
+                                  "started_at": tool_started_at,
+                                  "completed_at": time.time() * 1000})
                 else:
                     audit.append({"action": "api_call_skipped", "node": current,
                                   "reason": "no connection configured"})
@@ -2377,6 +2413,16 @@ class WorkflowEngine:
                   if str(n.get("id")) == str(state.get("awaiting"))), None)
             if state.get("awaiting") else None
         )
+        identifier_confirmation = bool(
+            state.get("awaiting") in (state.get("pending_identifier_confirmations") or {})
+            or _node_config(awaiting_node or {}).get("confirmsIdentifier")
+        )
+        prior_audit_count = 0 if reset_state else len(previous.get("audit") or [])
+        tool_events = [
+            {key: value for key, value in entry.items() if key != "action"}
+            for entry in (state.get("audit") or [])[prior_audit_count:]
+            if entry.get("action") == "api_call"
+        ]
         return {
             "reply": "" if off_script
                      else (state.get("reply") or canned("wf_repeat", language)),
@@ -2386,6 +2432,9 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
+            # Only this invocation's calls, never the accumulated checkpoint
+            # history. Traces are bounded and masked by ToolResult.
+            "toolEvents": tool_events,
             # How a semantic extraction started ahead of the decision was
             # used (used | mismatch | unused | failed | cancelled), None
             # when none was started.
@@ -2433,11 +2482,9 @@ class WorkflowEngine:
             # Expected answer of a paused ask ({kind, options}) — the brain's
             # PendingAsk for its reply prompt, router and Goal Engine state.
             "awaitingAsk": ({"kind": "yes_no", "options": ["yes", "no"]}
-                            if state.get("awaiting") in (state.get("pending_identifier_confirmations") or {})
+                            if identifier_confirmation
                             else _awaiting_ask_shape(awaiting_node)),
-            "awaitingIdentifierConfirmation": bool(
-                state.get("awaiting") in (state.get("pending_identifier_confirmations") or {})
-            ),
+            "awaitingIdentifierConfirmation": identifier_confirmation,
             # Signals the paused intent hub's edges carry (None elsewhere).
             "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
             "awaitingEdges": _awaiting_edges(definition, awaiting_node),

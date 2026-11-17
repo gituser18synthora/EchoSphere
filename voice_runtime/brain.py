@@ -105,6 +105,7 @@ from shared.orchestration.deterministic_answers import (
     resolve_short_answer,
 )
 from shared.orchestration.phrases import canned
+from voice_runtime.stt_recovery import STTFinalMissingFrame
 from shared.orchestration.placeholders import (
     StreamingPlaceholderFilter,
     iter_placeholders,
@@ -1071,6 +1072,8 @@ class ConversationBrain(FrameProcessor):
         # None while no ask is pending. Snapshotted with the question so a
         # rewound turn restores both.
         self._pending_ask_shape: dict | None = None
+        self._pending_identifier_confirmation = False
+        self._open_turn_pending_identifier_confirmation = False
         self._open_turn_pending_ask_shape: dict | None = None
         # Signals the edges of the paused workflow INTENT hub carry (engine
         # ``awaitingSignals``); None while the flow waits elsewhere.
@@ -1334,6 +1337,9 @@ class ConversationBrain(FrameProcessor):
         # Identifier-collection mode (active while a workflow ask awaits a
         # numeric identifier — see voice_runtime.identifier_capture).
         self._identifier_capture: IdentifierCapture | None = None
+        self._stt_repeat_prompts = 0
+        self._last_missing_stt_generation: int | None = None
+        self._pending_missing_stt_generation: int | None = None
         self._identifier_pause_window = resolve_pause_window(
             (config.stt or {}).get("settings") or {}
         )
@@ -1459,6 +1465,10 @@ class ConversationBrain(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
+        if isinstance(frame, STTFinalMissingFrame):
+            await self._recover_missing_stt_final(frame.generation)
+            return
+
         if isinstance(frame, StartFrame):
             # The transport's client-connected handler can fire speak_greeting
             # before the StartFrame has propagated (cold start) — frames pushed
@@ -1531,6 +1541,7 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._pending_missing_stt_generation = None
             self._transcript_timing.speech_started(frame.timestamp, frame.start_secs)
             self._physical_speech_active = True
             self._vad_episode += 1
@@ -1563,6 +1574,7 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            self._pending_missing_stt_generation = None
             # One PHYSICAL speech start arrives as up to two frames of
             # DIFFERENT types (InterruptionFrame + UserStartedSpeakingFrame
             # within moments). The first one owns the barge-in bookkeeping;
@@ -1710,7 +1722,8 @@ class ConversationBrain(FrameProcessor):
                 # Speech that produced no accepted transcript (noise, a
                 # recording notice, a foreign hallucination): the caller has
                 # not shown up, so the ladder resumes where it was.
-                self._arm_silence_timer()
+                if not await self._resume_missing_stt_final():
+                    self._arm_silence_timer()
                 if self._suspect_in_turn or self._announcement_in_turn:
                     # The turn's only speech was judged background or was a
                     # recording notice: if its audio had cut the reply (a
@@ -1849,7 +1862,8 @@ class ConversationBrain(FrameProcessor):
             else:
                 # The bot fell quiet with nothing in hand: from here the
                 # caller's silence is measured.
-                self._arm_silence_timer()
+                if not await self._resume_missing_stt_final():
+                    self._arm_silence_timer()
             return
 
         if isinstance(frame, TranscriptionFrame):
@@ -3373,6 +3387,23 @@ class ConversationBrain(FrameProcessor):
         """Dispatch the buffered utterance now: the Smart Turn verdict and
         the STT final are both in, so the complete-thought / short-reply /
         grace timers would only add dead time."""
+        capture = self._identifier_capture
+        if capture is not None:
+            buffered = " ".join(self._pending_segments).strip()
+            hold = capture.hold_delay(buffered)
+            if hold is not None and hold > 0:
+                # A general speech-completion verdict cannot decide that an
+                # identifier's next group or suffix has finished arriving.
+                # Keep the timer armed by the final; never extend it merely
+                # because Smart Turn reported the same pause again.
+                if not self._finalize_pending():
+                    age = (
+                        max(0.0, time.monotonic() - self._last_final_at)
+                        if self._last_final_at else 0.0
+                    )
+                    await self._schedule_finalize(max(0.0, hold - age))
+                self._recorder.add_event("identifier_endpoint_held", window_s=hold)
+                return
         final_age_ms = (
             round((time.monotonic() - self._last_final_at) * 1000.0, 1)
             if self._last_final_at is not None else None
@@ -3419,6 +3450,8 @@ class ConversationBrain(FrameProcessor):
         controller still considers the turn open — the caller has paused after a
         complete thought and we choose not to wait out the rest of the window.
         """
+        if self._closing:
+            return
         await self._cancel_finalize()
         wait = self._finalize_grace if delay is None else max(0.0, delay)
         self._finalize_task = self.create_task(
@@ -3484,7 +3517,7 @@ class ConversationBrain(FrameProcessor):
         text = (text_override or " ".join(self._pending_segments)).strip()
         if not text:
             return
-        if self._identifier_capture is not None and self._identifier_capture.is_dictation(text):
+        if self._identifier_payload(text) or self._identifier_confirmation_answer(text):
             # A dictated identifier is consumed deterministically by the
             # active workflow (see _handle_turn) — no Goal Engine request is
             # spent on it, per fragment or at dispatch.
@@ -3858,6 +3891,7 @@ class ConversationBrain(FrameProcessor):
                 self._active_workflow = previous_active
                 self._pending_workflow_question = self._open_turn_pending_question
                 self._pending_ask_shape = self._open_turn_pending_ask_shape
+                self._pending_identifier_confirmation = self._open_turn_pending_identifier_confirmation
                 self._pending_hub_signals = self._open_turn_pending_hub_signals
                 self._pending_hub_edges = self._open_turn_pending_hub_edges
                 self._pending_exact_ahead = self._open_turn_pending_exact_ahead
@@ -4112,6 +4146,24 @@ class ConversationBrain(FrameProcessor):
                 return locale
         return None
 
+    def _identifier_payload(self, text: str) -> bool:
+        capture = self._identifier_capture
+        if capture is not None:
+            from shared.orchestration.identifier_confirmation import identifier_suffix
+            return capture.is_dictation(text) or identifier_suffix(text) is not None
+        if self._pending_identifier_confirmation:
+            from shared.orchestration.identifier_confirmation import (
+                identifier_dictation, identifier_suffix,
+            )
+            return identifier_dictation(text) or identifier_suffix(text) is not None
+        return False
+
+    def _identifier_confirmation_answer(self, text: str) -> bool:
+        if not self._pending_identifier_confirmation:
+            return False
+        from shared.orchestration.identifier_confirmation import confirmation_answer
+        return confirmation_answer(text) is not None
+
     async def _maybe_switch_language(self, text: str, raw: str | None) -> None:
         """Follow the caller's CURRENT language, immediately but stably.
 
@@ -4135,6 +4187,13 @@ class ConversationBrain(FrameProcessor):
         untouched by a switch.
         """
         self._last_turn_detected_language = None
+        if self._identifier_payload(text):
+            self._reset_language_candidate()
+            self._recorder.add_event(
+                "language_switch_blocked", reason="identifier_dictation",
+                current=self._conversation_language,
+            )
+            return
         if not raw:
             self._reset_language_candidate()
             return
@@ -4368,7 +4427,44 @@ class ConversationBrain(FrameProcessor):
         dispatches (``_consume_pending_turn``).
         """
         self._silence_prompts = 0
+        self._stt_repeat_prompts = 0
+        self._pending_missing_stt_generation = None
         self._disarm_silence_timer()
+
+    async def _recover_missing_stt_final(self, generation: int) -> None:
+        """Ask for a repeat without inventing text or advancing a workflow."""
+        if self._closing or generation == self._last_missing_stt_generation:
+            return
+        self._last_missing_stt_generation = generation
+        self._pending_missing_stt_generation = generation
+        await self._resume_missing_stt_final()
+
+    async def _resume_missing_stt_final(self) -> bool:
+        """A lost final may arrive before turn-close; recover once it is quiet.
+
+        Fresh speech/text, a replacement response, and shutdown supersede the
+        lost episode. Waiting for the old turn or bot audio to stop does not.
+        """
+        if self._pending_missing_stt_generation is None:
+            return False
+        if (
+            self._closing or self._physical_speech_active or self._pending_segments
+            or self._generation_in_flight()
+        ):
+            self._pending_missing_stt_generation = None
+            return False
+        if self._bot_speaking or self._turn_active:
+            return False
+        self._pending_missing_stt_generation = None
+        if self._stt_repeat_prompts >= 2:
+            return False
+        self._stt_repeat_prompts += 1
+        self._disarm_silence_timer()
+        self._recorder.flush_event_soon(
+            "stt_repeat_requested", attempt=self._stt_repeat_prompts,
+        )
+        await self._say(canned("clarify", self._conversation_language))
+        return True
 
     def _disarm_silence_timer(self) -> None:
         task, self._silence_task = self._silence_task, None
@@ -5276,7 +5372,21 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(TextFrame(text))
         await self.push_frame(LLMFullResponseEndFrame())
 
+    def begin_shutdown(self) -> bool:
+        """Latch transport shutdown before cancellation callbacks can run.
+
+        Returns whether the call was open, so transport teardown after a
+        bot-controlled ending cannot be mistaken for the caller ending it.
+        """
+        was_open = not self._closing
+        self._closing = True
+        self._pending_missing_stt_generation = None
+        return was_open
+
     async def cleanup(self):
+        # Generation completion callbacks must see the closed state before
+        # any cancellation can re-arm silence or latency cues.
+        self.begin_shutdown()
         # Awaited cancellation (pipecat's task manager unregisters the task),
         # not the fire-and-forget disarm: a bare ``task.cancel()`` at teardown
         # left ``_silence_watch`` registered and the 1.12 runner reported it
@@ -5589,10 +5699,9 @@ class ConversationBrain(FrameProcessor):
             # and explicit transfer were all decided before this point and
             # keep their higher priority.
             if (
-                self._identifier_capture is not None
+                (self._identifier_payload(text) or self._identifier_confirmation_answer(text))
                 and self._active_workflow is not None
                 and decision.kind == RouteKind.WORKFLOW
-                and self._identifier_capture.is_dictation(text)
             ):
                 fast_path = "identifier_capture"
                 self._discard_decision_prefetch("identifier_capture")
@@ -7310,6 +7419,7 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_workflow = (workflow_name, self._active_workflow, text)
         self._open_turn_pending_question = self._pending_workflow_question
         self._open_turn_pending_ask_shape = self._pending_ask_shape
+        self._open_turn_pending_identifier_confirmation = self._pending_identifier_confirmation
         self._open_turn_pending_hub_signals = self._pending_hub_signals
         self._open_turn_pending_hub_edges = self._pending_hub_edges
         self._open_turn_pending_exact_ahead = self._pending_exact_ahead
@@ -7337,6 +7447,11 @@ class ConversationBrain(FrameProcessor):
             **({"extraction_ahead": extraction_ahead} if extraction_ahead is not None else {}),
         )
         self._open_turn_workflow_committed = True
+        for event in result.get("toolEvents") or []:
+            self._recorder.flush_event_soon("tool_executed", **event)
+            self._latency.mark_tool_span(
+                event.get("started_at", 0), event.get("completed_at", 0),
+            )
         # Stage timing for the latency reports: the workflow step (with its
         # semantic extraction, unless that ran ahead) after the decision.
         self._recorder.add_event(
@@ -7392,6 +7507,9 @@ class ConversationBrain(FrameProcessor):
         shape = result.get("awaitingAsk")
         self._pending_ask_shape = (
             dict(shape) if isinstance(shape, dict) and not result["done"] else None
+        )
+        self._pending_identifier_confirmation = bool(
+            result.get("awaitingIdentifierConfirmation") and not result["done"]
         )
         hub_signals = result.get("awaitingSignals")
         self._pending_hub_signals = (

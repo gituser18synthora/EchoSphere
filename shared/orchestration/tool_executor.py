@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_TTL_SECONDS = 24 * 3600
 _MAX_ARG_BYTES = 16_384
+_MAX_AUDIT_TRACE_BYTES = 16_384
+_AUDIT_SECRET_KEYS = frozenset({
+    "password", "password_hash", "secret", "api_key", "apikey", "token",
+    "access_token", "refresh_token", "authorization", "credential",
+    "private_key", "cookie", "pin", "otp", "cvv", "cvc",
+})
 # Connection lookups run on every tool call — a short in-process TTL cache
 # keeps the hot path at a dict hit. Staleness is bounded by the TTL only
 # (an edited connection applies within 45 s); misses are not cached so a
@@ -77,6 +83,43 @@ class ToolResult:
             "error": self.error, "latency_ms": self.latency_ms,
             "mocked": self.mocked,
         }
+
+    def audit_event(self) -> dict:
+        """A bounded copy of the executor's already field-masked trace.
+
+        Credentials are additionally removed by name even when a connection
+        did not list them in sensitive_masks. Raw data/mapped slots are never
+        substituted for a missing trace.
+        """
+        def sanitize(value, depth=0):
+            if depth > 8:
+                return "[truncated]"
+            if isinstance(value, dict):
+                result = {}
+                for index, (key, item) in enumerate(value.items()):
+                    if index >= 64:
+                        result["_truncated"] = True
+                        break
+                    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key))
+                    name = re.sub(r"([A-Z])([A-Z][a-z])", r"\1_\2", name)
+                    name = name.lower().replace("-", "_")
+                    sensitive = name in _AUDIT_SECRET_KEYS or any(
+                        name.endswith("_" + secret) for secret in _AUDIT_SECRET_KEYS
+                    )
+                    result[str(key)] = "***" if sensitive else sanitize(item, depth + 1)
+                return result
+            if isinstance(value, list):
+                result = [sanitize(item, depth + 1) for item in value[:32]]
+                return result + (["[truncated]"] if len(value) > 32 else [])
+            if isinstance(value, str) and len(value) > 1024:
+                return value[:1024] + "[truncated]"
+            return value
+
+        trace = sanitize(self.trace)
+        encoded = json.dumps(trace, ensure_ascii=False, default=str)
+        if len(encoded.encode("utf-8")) > _MAX_AUDIT_TRACE_BYTES:
+            trace = {"truncated": True, "preview": encoded.encode("utf-8")[:8000].decode("utf-8", errors="ignore")}
+        return {**self.as_event(), **({"trace": trace} if trace else {})}
 
 
 def validate_args(schema: dict | None, args: dict, *, check_size: bool = True) -> list[str]:

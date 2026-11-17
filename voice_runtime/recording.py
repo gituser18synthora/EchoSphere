@@ -38,6 +38,15 @@ class TurnRecord:
 class SessionRecorder:
     """Accumulates turns/events/usage for one call and persists them."""
 
+    def final_end_reason(self, default: str) -> str:
+        """Transport termination is independent of business resolution."""
+        if self.transferred:
+            return "transferred"
+        hangup_reason = (self.hangup or {}).get("reason")
+        if hangup_reason and hangup_reason != "unknown":
+            return hangup_reason
+        return self.disconnect_reason or default
+
     def __init__(self, session_id: str, config: ResolvedBotConfig, channel: str = "browser",
                  caller: str | None = None, call_id: str | None = None) -> None:
         self.session_id = session_id
@@ -79,6 +88,7 @@ class SessionRecorder:
         self.llm_request_options: dict | None = None
         self.llm_service_tiers: dict[str, int] = {}
         self.end_reason: str | None = None
+        self.disconnect_reason: str | None = None
         # finalize() must run exactly once per call — a duplicate teardown
         # path (or a replayed hangup signal) must never re-bill, re-summarize
         # or re-enqueue post-call work.

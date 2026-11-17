@@ -295,3 +295,44 @@ def test_default_false_does_not_disable_id_confirmation_but_yes_no_choices_are_e
     for entity in ({"allowedValues": ["yes", "no"]},
                    {"synonyms": {"yes": ["haan"], "no": ["nahi"]}}):
         assert identifier_kind({"config": {"entity": entity}}, "phoneVerified") is None
+
+
+@pytest.mark.parametrize("reply", ["Okay yes it's correct", "It's correct", "that's right"])
+async def test_natural_confirmation_commits_original_candidate_once(monkeypatch, reply):
+    wf = engine(monkeypatch)
+    await turn(wf, "1132986A", reset=True)
+    final = await turn(wf, reply)
+    assert final["slots"]["terminal_id"] == "1132986A"
+    assert final["done"] and final["trace"].count("lookup") == 1
+
+
+@pytest.mark.parametrize("original,suffix,expected", [
+    ("1132986", "and B, B for boy", "1132986B"),
+    ("4166725A", "MM for mango", "4166725M"),
+    ("1132986", "बी फोर बॉय", "1132986B"),
+])
+async def test_suffix_continuation_amends_private_candidate_then_reconfirms(monkeypatch, original, suffix, expected):
+    wf = engine(monkeypatch)
+    await turn(wf, original, reset=True)
+    updated = await turn(wf, suffix, signal="affirm")
+    assert updated["awaitingIdentifierConfirmation"] and not updated["slots"]
+    assert "letter " + expected[-1] in updated["reply"]
+    assert "lookup" not in updated["trace"]
+    final = await turn(wf, "It's correct")
+    assert final["slots"]["terminal_id"] == expected and final["trace"].count("lookup") == 1
+
+
+@pytest.mark.parametrize("reply", ["It's correct?", "yes but last B", "B for Alpha", "double B"])
+async def test_question_or_ambiguous_spelling_cannot_confirm_pending_id(monkeypatch, reply):
+    wf = engine(monkeypatch)
+    await turn(wf, "1132986", reset=True)
+    result = await turn(wf, reply, signal="affirm")
+    assert not result["done"] and not result["slots"] and "lookup" not in result["trace"]
+
+
+async def test_contracted_negative_restarts_capture_instead_of_confirming(monkeypatch):
+    wf = engine(monkeypatch)
+    await turn(wf, "1132986A", reset=True)
+    result = await turn(wf, "okay yes it isn't correct", signal="affirm")
+    assert not result["awaitingIdentifierConfirmation"] and not result["slots"]
+    assert "lookup" not in result["trace"] and not result["done"]

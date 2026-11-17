@@ -259,6 +259,8 @@ class TestSarvamMissingFinalRetry:
         svc._missing_final_task = None
         svc._stt_stopping = False
         svc._recorder = None
+        from unittest.mock import AsyncMock
+        svc.push_frame = AsyncMock()
 
         def _create(coro, name=None):
             return asyncio.get_event_loop().create_task(coro)

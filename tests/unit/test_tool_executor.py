@@ -9,7 +9,7 @@ schema, idempotent state changes, and masked traces. Mocked execution
 import pytest
 
 import shared.orchestration.tool_executor as tool_executor_module
-from shared.orchestration.tool_executor import ToolExecutor, validate_args
+from shared.orchestration.tool_executor import ToolExecutor, ToolResult, validate_args
 
 CONNECTION = {
     "id": "api_1", "name": "check_payment_status", "method": "POST",
@@ -242,6 +242,39 @@ async def _async(value):
 
 
 class TestSecrets:
+    def test_persisted_audit_trace_redacts_credentials_and_preserves_masked_io(self):
+        result = ToolResult(tool="lookup", ok=True, status="ok", trace={
+            "request": {"args": {"booking_id": "BK123A", "customer_otp": "654321",
+                                  "password": "do-not-store"}},
+            "response": {"found": True, "access_token": "private", "phone": "******1234"},
+        })
+        event = result.audit_event()
+        assert event["trace"]["request"]["args"]["booking_id"] == "BK123A"
+        assert event["trace"]["response"]["found"] is True
+        assert event["trace"]["response"]["phone"] == "******1234"
+        assert "654321" not in str(event) and "do-not-store" not in str(event)
+        assert "private" not in str(event)
+        assert result.trace["response"]["access_token"] == "private"
+
+    def test_persisted_audit_trace_has_bounded_size(self):
+        import json
+        result = ToolResult(tool="lookup", ok=True, status="ok", trace={
+            "response": {f"field_{i}": "आ" * 10000 for i in range(100)},
+        })
+        event = result.audit_event()
+        assert len(json.dumps(event["trace"], ensure_ascii=False).encode()) <= 16384
+        assert event["trace"]["truncated"] is True
+
+    def test_persisted_audit_masks_camel_case_and_acronym_credentials(self):
+        keys = ["accessToken", "refreshToken", "clientSecret", "customerOTP", "APIKey", "PrivateKey"]
+        result = ToolResult(tool="lookup", ok=True, status="ok", trace={
+            "response": {**dict.fromkeys(keys, "must-not-persist"), "bookingId": "BK123A"},
+        })
+        response = result.audit_event()["trace"]["response"]
+        assert all(response[key] == "***" for key in keys)
+        assert response["bookingId"] == "BK123A"
+        assert result.trace["response"]["accessToken"] == "must-not-persist"
+
     async def test_resolved_secret_never_in_result_or_trace(self, monkeypatch):
         monkeypatch.setenv("LMS_KEY", "super-secret-token")
         _patch_connection(monkeypatch, CONNECTION)

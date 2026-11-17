@@ -243,6 +243,15 @@ def _match_entity_text(text: str, entity: dict[str, Any]) -> tuple[str | None, s
         if surface and surface.lower() in lowered:
             return canonical, "lexicon"
 
+    # Authored identifier constraints are authoritative. Falling through to
+    # the broad built-in after a failed 7-8 digit matcher accepted short IDs
+    # such as 1234. Explicit semantic/unavailable outcomes above still work.
+    if (pattern or patterns) and (
+        data_type in {"identifier", "reference", "account_number", "policy_number", "claim_number", "phone"}
+        or entity.get("preserveAlphanumeric") is True
+    ):
+        return None, ""
+
     # 3. Built-in data-type pattern.
     builtin = _TYPE_PATTERNS.get(data_type)
     if builtin:
@@ -268,7 +277,11 @@ def extract_entity(text: str, entity: dict[str, Any]) -> dict[str, Any]:
 
     alphanumeric = data_type == "identifier" or entity.get("preserveAlphanumeric") is True
     if alphanumeric:
-        from shared.orchestration.identifier_confirmation import spoken_identifier_text
+        from shared.orchestration.identifier_confirmation import identifier_spelling_valid, spoken_identifier_text
+        if not identifier_spelling_valid(text):
+            return {"name": name, "matched": False, "value": None, "maskedValue": None,
+                    "sensitive": bool(entity.get("pii") or entity.get("maskingEnabled")
+                                      or entity.get("masking_enabled")), "method": "", "normalized": False}
         candidate_text = spoken_identifier_text(text)
     elif data_type == "phone" and not (entity.get("regexPattern") or entity.get("regexPatterns")):
         from shared.orchestration.spoken_numbers import spoken_digit_text
@@ -292,7 +305,7 @@ def extract_entity(text: str, entity: dict[str, Any]) -> dict[str, Any]:
 
     # Spoken-number fallback, digit-expecting entities only: the raw
     # transcript may carry the value as digit words or spaced digit groups.
-    if matched_value is None and text and (
+    if matched_value is None and text and not alphanumeric and (
         _expects_digits(entity) or _patterns_expect_digits(entity)
     ):
         from shared.orchestration.spoken_numbers import spoken_digit_text

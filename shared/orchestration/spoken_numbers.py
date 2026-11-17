@@ -245,6 +245,20 @@ def _clean(token: str) -> str:
     return token.strip(_STRIP_PUNCT).lower()
 
 
+def english_identifier_readback(value: str) -> str:
+    """Spell an identifier/phone in English without changing its characters.
+
+    Call this only for a known reference/phone value, never a whole sentence:
+    amounts, quantities and terminal model numbers keep their normal speech.
+    Script digits are normalized without numeric conversion, preserving zeroes.
+    """
+    digits = dict(zip("0123456789", "zero one two three four five six seven eight nine".split()))
+    punctuation = {"+": "plus", "-": "hyphen", "/": "slash", "_": "underscore",
+                   ".": "dot", ":": "colon", "#": "hash"}
+    characters = re.sub(r"\s+", "", normalize_script_digits(str(value))).upper()
+    return ", ".join(digits.get(c, punctuation.get(c, "letter " + c)) for c in characters)
+
+
 def is_number_word(token: str) -> bool:
     """Whether one token is a spoken-number word in any supported form."""
     word = _clean(token)

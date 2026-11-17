@@ -206,6 +206,19 @@ class TurnLatencyTracker:
     def mark_tool_done(self) -> None:
         self.tool_done_at = time.monotonic()
 
+    def mark_tool_span(self, started_at: float, completed_at: float) -> None:
+        """Include a workflow tool's epoch-millisecond span in this turn."""
+        if not started_at or completed_at < started_at:
+            return
+        offset = time.monotonic() - time.time()
+        start, end = started_at / 1000.0 + offset, completed_at / 1000.0 + offset
+        self.tool_started_at = (
+            min(self.tool_started_at, start) if self.tool_started_at is not None else start
+        )
+        self.tool_done_at = (
+            max(self.tool_done_at, end) if self.tool_done_at is not None else end
+        )
+
     def mark_llm_request(self, at: float | None = None) -> None:
         # A pre-first-token retry re-sends the request; the LAST attempt is the
         # one the first token actually belongs to, so this is not idempotent.

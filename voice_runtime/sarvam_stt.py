@@ -49,6 +49,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.sarvam.stt import MODEL_CONFIGS, SarvamSTTService
 from websockets.exceptions import ConnectionClosed
+from voice_runtime.stt_recovery import STTFinalMissingFrame
 
 from shared.providers.stt.sarvam_keyterms import (
     encode_keyterms_query,
@@ -491,6 +492,7 @@ class EndpointedSarvamSTTService(SarvamSTTService):
                 "stt_final_missing", generation=generation,
                 waited_s=round(2 * _MISSING_FINAL_RETRY_S, 2),
             )
+        await self.push_frame(STTFinalMissingFrame(generation=generation))
 
     async def _barge_in_flush_loop(self) -> None:
         while True:

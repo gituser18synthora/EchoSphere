@@ -145,7 +145,7 @@ class IdentifierCapture:
             # Leave room for a separately finalized suffix letter. A numeric
             # prefix can be a valid ID before the caller has finished it.
             if (self.entity.get("preserveAlphanumeric") or self.entity.get("dataType") == "identifier") and not any(c.isalpha() for c in digits):
-                return min(self.pause_window, 0.8)
+                return self.pause_window
             return 0.0
         if self.overflowed(digits) or self.expired():
             return 0.0

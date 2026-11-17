@@ -625,6 +625,7 @@ async def _run_call(
             # re-running teardown on an already-finalized call.
             if recorder.end_reason is not None:
                 return
+            brain.begin_shutdown()
             await worker.cancel()
 
         start_hangup_monitor(
@@ -651,6 +652,8 @@ async def _run_call(
         # The media peer (FreeSWITCH/dialer/browser) closed the socket first:
         # caller hangup or provider-side teardown. Recorded so an unexpected
         # end can be attributed without guessing.
+        if brain.begin_shutdown():
+            recorder.disconnect_reason = "client_disconnected"
         recorder.flush_event_soon("client_disconnected")
         await worker.cancel()
 
@@ -671,6 +674,7 @@ async def _run_call(
             )
             return
         await recorder.flush_event("session_timeout")
+        brain.begin_shutdown()
         await worker.cancel()
 
     def _final_end_reason(default: str) -> str:
@@ -679,12 +683,7 @@ async def _run_call(
         # media_failure), then the pipeline-shape default. A hangup event
         # that lands after finalize still reaches the transcript through the
         # monitor's direct writes — this only decides end_reason.
-        if recorder.transferred:
-            return "transferred"
-        hangup_reason = (recorder.hangup or {}).get("reason")
-        if hangup_reason and hangup_reason != "unknown":
-            return hangup_reason
-        return default
+        return recorder.final_end_reason(default)
 
     def _record_inbound_media_stats() -> None:
         # Telephony ingress evidence (message size, cadence, stalls) on the
@@ -710,8 +709,12 @@ async def _run_call(
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
     # The session was already claimed in _active_sessions at connection time.
+    def _cancel_at_max_duration() -> None:
+        brain.begin_shutdown()
+        asyncio.ensure_future(worker.cancel())
+
     max_duration_handle = asyncio.get_running_loop().call_later(
-        config.max_call_duration, lambda: asyncio.ensure_future(worker.cancel())
+        config.max_call_duration, _cancel_at_max_duration,
     )
     try:
         await runner.run()
