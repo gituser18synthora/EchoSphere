@@ -355,7 +355,7 @@ async def export_conversation_transcript(
     bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
     transcript_doc = await find_transcript_doc(conversation)
-    turns = ui_turns((transcript_doc or {}).get("turns"))
+    turns = ui_turns((transcript_doc or {}).get("turns"), (transcript_doc or {}).get("events"))
     if export_format in _DOCUMENT_FORMATS:
         # Never carries costs, so no costs.view stripping is needed. Rendered
         # before the audit row so a failed render is not logged as exported,

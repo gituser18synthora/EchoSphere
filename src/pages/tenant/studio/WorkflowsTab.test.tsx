@@ -2,7 +2,7 @@
    delete), save payloads, validation, error/empty states, delivery modes,
    rename, import/export parsing and permission gating. */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import WorkflowsTab, {
@@ -47,6 +47,157 @@ beforeEach(() => {
 });
 
 describe("WorkflowsTab — load and render", () => {
+  it("puts the palette above the canvas and remembers the inspector toggle without saving", async () => {
+    const user = userEvent.setup();
+    const first = render(<WorkflowsTab bot={BOT} />);
+    await screen.findByText("Call starts");
+    const palette = screen.getByRole("toolbar", { name: "Add a step" });
+    const canvas = screen.getByRole("application", { name: "Workflow canvas" });
+    expect(palette.closest(".wf-editor-grid")).toBeNull();
+    expect(palette.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Step inspector" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("complementary", { name: "Inspector" })).not.toBeInTheDocument();
+    expect(canvas.closest(".wf-editor-grid")).toHaveClass("wf-inspector-hidden");
+    await user.click(screen.getByRole("button", { name: "Message: Greeting" }));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(screen.getByRole("textbox", { name: "Node label" })).toHaveValue("Greeting");
+    await user.click(screen.getByRole("button", { name: "Hide step inspector" }));
+    expect(localStorage.getItem("echosphere.workflow.inspector")).toBe("hidden");
+    expect(screen.getByRole("button", { name: "Save version" })).toBeDisabled();
+    expect(api.saveWorkflow).not.toHaveBeenCalled();
+    first.unmount();
+    render(<WorkflowsTab bot={BOT} />);
+    await screen.findByText("Call starts");
+    expect(screen.getByRole("button", { name: "Step inspector" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("renders legacy missing and negative positions without changing saved coordinates on label edit", async () => {
+    const legacy = structuredClone(WF);
+    legacy.nodes[0].x = -170; legacy.nodes[0].y = -200;
+    // The Haier repair created some nodes without authored coordinates.
+    delete (legacy.nodes[1] as Partial<typeof legacy.nodes[1]>).x;
+    delete (legacy.nodes[1] as Partial<typeof legacy.nodes[1]>).y;
+    vi.mocked(api.getWorkflow).mockResolvedValue(legacy);
+    const original = structuredClone(legacy);
+    const user = userEvent.setup();
+    const { container } = render(<WorkflowsTab bot={BOT} />);
+    await screen.findByText("Call starts");
+    const svg = container.querySelector(".wf-connections")!;
+    expect(Number(svg.getAttribute("width"))).toBeGreaterThan(0);
+    expect(Number(svg.getAttribute("height"))).toBeGreaterThan(0);
+    expect(svg.getAttribute("viewBox")).not.toMatch(/NaN|undefined|Infinity/);
+    expect(svg.querySelectorAll("[data-edge-id]")).toHaveLength(2);
+    svg.querySelectorAll("path[d]").forEach((path) => expect(path.getAttribute("d")).not.toMatch(/NaN|undefined|Infinity/));
+    for (const node of container.querySelectorAll<HTMLElement>(".wf-node")) {
+      expect(Number.parseFloat(node.style.left)).toBeGreaterThanOrEqual(0);
+      expect(Number.parseFloat(node.style.top)).toBeGreaterThanOrEqual(0);
+    }
+    expect(screen.getByRole("button", { name: "Save version" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Message: Greeting" }));
+    await user.clear(screen.getByLabelText("Node label"));
+    await user.type(screen.getByLabelText("Node label"), "Changed label");
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(api.saveWorkflow).mock.calls[0][1];
+    expect(body.nodes).toEqual(original.nodes.map((node) => node.id === "n2" ? { ...node, label: "Changed label" } : node));
+    expect(body.edges).toEqual(original.edges);
+    expect(legacy).toEqual(original);
+  });
+
+  it("focuses selected connections, paints them last, and keeps saved branch precedence", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<WorkflowsTab bot={BOT} />);
+    await user.click(await screen.findByRole("button", { name: "Start: Call starts" }));
+    const groups = [...container.querySelectorAll("g[data-edge-id]")];
+    expect(groups.map((group) => group.getAttribute("data-edge-id"))).toEqual(["e2", "e1"]);
+    expect(groups.at(-1)).toHaveAttribute("data-active", "true");
+    await user.click(screen.getByRole("button", { name: "Focus connections" }));
+    expect(container.querySelectorAll("g[data-edge-id]")).toHaveLength(1);
+    expect(container.querySelector("g[data-edge-id]")).toHaveAttribute("data-edge-id", "e1");
+    expect(api.saveWorkflow).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Node label"), " updated");
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveWorkflow).mock.calls[0][1].edges).toEqual(WF.edges);
+  });
+
+  it("keeps the graph stable after dragging a negative-position node and saves authored coordinates", async () => {
+    const legacy = structuredClone(WF);
+    legacy.nodes[0].x = -170; legacy.nodes[0].y = -200;
+    vi.mocked(api.getWorkflow).mockResolvedValue(legacy);
+    const user = userEvent.setup();
+    render(<WorkflowsTab bot={BOT} />);
+    const start = await screen.findByRole("button", { name: "Start: Call starts" });
+    const other = screen.getByRole("button", { name: "Message: Greeting" });
+    const otherPosition = { left: other.style.left, top: other.style.top };
+    const startX = Number.parseFloat(start.style.left);
+    const startY = Number.parseFloat(start.style.top);
+    fireEvent(start, new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100, buttons: 1 }));
+    fireEvent(start, new MouseEvent("pointermove", { bubbles: true, clientX: 400, clientY: 400, buttons: 1 }));
+    fireEvent(start, new MouseEvent("pointerup", { bubbles: true, clientX: 400, clientY: 400 }));
+    expect(start.style.left).toBe(`${startX + 300}px`);
+    expect(start.style.top).toBe(`${startY + 300}px`);
+    expect({ left: other.style.left, top: other.style.top }).toEqual(otherPosition);
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(api.saveWorkflow).mock.calls[0][1];
+    expect(body.nodes).toEqual(legacy.nodes.map((node) => node.id === "n1" ? { ...node, x: 130, y: 100 } : node));
+    expect(body.edges).toEqual(legacy.edges);
+  });
+
+  it("keeps untouched legacy steps anchored when another unpositioned step is dragged", async () => {
+    const legacy = structuredClone(WF);
+    for (const node of legacy.nodes.slice(1)) {
+      delete (node as Partial<typeof node>).x;
+      delete (node as Partial<typeof node>).y;
+    }
+    vi.mocked(api.getWorkflow).mockResolvedValue(legacy);
+    const user = userEvent.setup();
+    render(<WorkflowsTab bot={BOT} />);
+    const moved = await screen.findByRole("button", { name: "Message: Greeting" });
+    const untouched = screen.getByRole("button", { name: "End: End call" });
+    const originalPosition = { left: untouched.style.left, top: untouched.style.top };
+    const movedX = Number.parseFloat(moved.style.left);
+    const movedY = Number.parseFloat(moved.style.top);
+    fireEvent(moved, new MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100, buttons: 1 }));
+    fireEvent(moved, new MouseEvent("pointermove", { bubbles: true, clientX: 110, clientY: 100, buttons: 1 }));
+    fireEvent(moved, new MouseEvent("pointerup", { bubbles: true, clientX: 110, clientY: 100 }));
+    expect(moved.style.left).toBe(`${movedX + 10}px`);
+    expect(moved.style.top).toBe(`${movedY}px`);
+    expect({ left: untouched.style.left, top: untouched.style.top }).toEqual(originalPosition);
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1));
+    const savedUntouched = vi.mocked(api.saveWorkflow).mock.calls[0][1].nodes!.find((node) => node.id === "n3");
+    expect(savedUntouched).not.toHaveProperty("x");
+    expect(savedUntouched).not.toHaveProperty("y");
+    expect({ left: untouched.style.left, top: untouched.style.top }).toEqual(originalPosition);
+  });
+
+  it("fits a large graph below 40 percent zoom without changing the workflow", async () => {
+    const large = structuredClone(WF);
+    large.nodes[2].x = 5000; large.nodes[2].y = 3000;
+    vi.mocked(api.getWorkflow).mockResolvedValue(large);
+    const user = userEvent.setup();
+    render(<WorkflowsTab bot={BOT} />);
+    await screen.findByText("Call starts");
+    const canvas = screen.getByRole("application", { name: "Workflow canvas" });
+    Object.defineProperties(canvas, { clientWidth: { value: 800 }, clientHeight: { value: 600 } });
+    await user.click(screen.getByRole("button", { name: "Fit to view" }));
+    const zoomLabel = screen.getByRole("group", { name: "Canvas zoom" }).textContent!;
+    expect(Number.parseInt(zoomLabel)).toBeLessThan(40);
+    const bounds = canvas.firstElementChild as HTMLElement;
+    expect(Number.parseFloat(bounds.style.width)).toBeLessThanOrEqual(800);
+    expect(Number.parseFloat(bounds.style.height)).toBeLessThanOrEqual(600);
+    await user.click(screen.getByRole("button", { name: "Reset zoom to 100%" }));
+    expect(screen.getByRole("button", { name: "Reset zoom to 100%" })).toHaveTextContent("100%");
+    expect(api.saveWorkflow).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Save version" })).toBeDisabled();
+  });
+
   it("renders the saved graph with its nodes", async () => {
     render(<WorkflowsTab bot={BOT} />);
     await screen.findByText("Call starts");
@@ -88,6 +239,71 @@ describe("WorkflowsTab — load and render", () => {
 });
 
 describe("WorkflowsTab — editing", () => {
+  it("docks the inspector, supports keyboard inspection, and preserves advanced legacy data when saving", async () => {
+    const legacy = structuredClone(WF);
+    legacy.nodes[1].config = {
+      text: "Hello caller", responseMode: "exact", custom: { retries: 3, mapping: ["a", "b"] },
+      responseMustInclude: ["account number"], responseDirectives: "Keep the amount unchanged",
+    };
+    legacy.nodes[1].x = 47; legacy.nodes[1].y = 163;
+    legacy.edges = [
+      { id: "same-target-first", from: "n2", to: "n3", label: "yes,haan" },
+      { id: "same-target-default", from: "n2", to: "n3", label: "else" },
+      legacy.edges[0],
+    ];
+    vi.mocked(api.getWorkflow).mockResolvedValue(legacy);
+    const onTest = vi.fn();
+    const user = userEvent.setup();
+    render(<WorkflowsTab bot={BOT} onTest={onTest} />);
+    await screen.findByText("Call starts");
+    const inspector = screen.getByRole("complementary", { name: "Inspector" });
+    expect(inspector.closest(".wf-editor-grid")).not.toBeNull();
+    expect(screen.getByText("Explore your workflow")).toBeInTheDocument();
+    const greeting = screen.getByRole("button", { name: "Message: Greeting" });
+    greeting.focus();
+    await user.keyboard("{Enter}");
+    expect(within(inspector).getByLabelText("Node label")).toHaveValue("Greeting");
+    expect(screen.getByRole("button", { name: "Save version" })).toBeDisabled();
+    expect(api.saveWorkflow).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Test conversation" }));
+    expect(onTest).toHaveBeenCalledTimes(1);
+    await user.clear(within(inspector).getByLabelText("Node label"));
+    await user.type(within(inspector).getByLabelText("Node label"), "Updated greeting");
+    expect(screen.getByRole("button", { name: "Test conversation" })).toBeDisabled();
+    vi.mocked(api.getWorkflow).mockResolvedValue({ ...legacy, version: 4,
+      nodes: legacy.nodes.map((node) => node.id === "n2" ? { ...node, label: "Updated greeting" } : node),
+    });
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(api.saveWorkflow).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(api.saveWorkflow).mock.calls[0][1];
+    expect(body.nodes).toEqual(legacy.nodes.map((node) => node.id === "n2" ? { ...node, label: "Updated greeting" } : node));
+    expect(body.edges).toEqual(legacy.edges);
+    expect(body.status).toBeUndefined();
+    await waitFor(() => expect(screen.getByText("v4")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Message: Updated greeting" })).toBeInTheDocument();
+  });
+
+  it("focuses validation issues without editing the graph and dims unrelated steps", async () => {
+    const invalid = structuredClone(WF);
+    invalid.issues = [{ nodeId: "n2", level: "error", message: "Saved issue" }];
+    vi.mocked(api.getWorkflow).mockResolvedValue(invalid);
+    const scrollTo = vi.fn();
+    const user = userEvent.setup();
+    render(<WorkflowsTab bot={BOT} />);
+    await screen.findByText("Call starts");
+    const canvas = screen.getByRole("application", { name: "Workflow canvas" });
+    canvas.scrollTo = scrollTo;
+    await user.click(screen.getByRole("button", { name: "Greeting" }));
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "smooth" }));
+    expect(screen.getByLabelText("Node label")).toHaveValue("Greeting");
+    expect(screen.getByRole("button", { name: "Save version" })).toBeDisabled();
+    // Select Start: only its immediate neighbour stays prominent.
+    screen.getByRole("button", { name: "Start: Call starts" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "End: End call" })).toHaveClass("wf-node-dimmed");
+    expect(screen.getByRole("button", { name: "Message: Greeting" })).not.toHaveClass("wf-node-dimmed");
+  });
+
   it("adds a node from the palette and saves it", async () => {
     const user = userEvent.setup();
     render(<WorkflowsTab bot={BOT} />);

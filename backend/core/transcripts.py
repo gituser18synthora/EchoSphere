@@ -19,6 +19,7 @@ converts either turn shape into the one the frontend and exporters consume.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 from pathlib import Path
 
 from shared.config import get_settings
@@ -73,6 +74,9 @@ def _runtime_turn(index: int, turn: dict) -> dict:
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )
+    start = _epoch_seconds(turn.get("audioStartTs"))
+    if start is not None and isinstance(ts, (int, float)) and start <= ts:
+        out["audioStartedAt"] = _iso_timestamp(start)
     route = turn.get("route")
     if route:
         out["route"] = str(route)
@@ -97,7 +101,72 @@ def _runtime_turn(index: int, turn: dict) -> dict:
     return out
 
 
-def ui_turns(raw: list | None) -> list[dict]:
+def _epoch_seconds(value) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+        return float(value)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc).timestamp() if parsed.tzinfo is None else parsed.timestamp()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return None
+
+
+def _iso_timestamp(seconds: float) -> str:
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _add_playback_timing(turns: list[dict], events: list | None) -> None:
+    """Use existing timing evidence without changing displayed completion times.
+
+    Old turn_timing events have epoch milliseconds and no transcript id. Only
+    an unambiguous dispatch within one second of the accepted user turn is
+    joined; nearby unrelated/noise events must never shift another turn.
+    """
+    users = [turn for turn in turns if turn.get("speaker") == "user"]
+    matched: set[int] = set()
+    bot_ends: list[float] = []
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        data = event.get("data") if isinstance(event.get("data"), dict) else event
+        if event.get("kind") == "bot_audio_end":
+            end = _epoch_seconds(data.get("audio_end_ts"))
+            if end is not None:
+                bot_ends.append(end)
+        if event.get("kind") != "turn_timing":
+            continue
+        start_ms = _epoch_seconds(data.get("user_speech_start_at"))
+        dispatch_ms = _epoch_seconds(data.get("turn_dispatched_at"))
+        if start_ms is None or dispatch_ms is None or start_ms > dispatch_ms:
+            continue
+        start, dispatched = start_ms / 1000, dispatch_ms / 1000
+        candidates = [turn for turn in users if id(turn) not in matched
+                      and (accepted := _epoch_seconds(turn.get("at"))) is not None
+                      and 0 <= accepted - dispatched <= 1]
+        if len(candidates) != 1:
+            continue
+        turn = candidates[0]
+        matched.add(id(turn))
+        turn.setdefault("audioStartedAt", _iso_timestamp(start))
+    for turn in users:
+        if turn.get("audioStartedAt") or turn.get("playbackAt"):
+            continue
+        accepted = _epoch_seconds(turn.get("at"))
+        if accepted is None:
+            continue
+        # Keep the fallback after the preceding bot's text was queued and
+        # before this user turn was accepted. Never use the current reply.
+        previous_bots = [bot for bot in turns if bot.get("speaker") == "bot"
+                         and (queued := _epoch_seconds(bot.get("at"))) is not None and queued < accepted]
+        previous = max((_epoch_seconds(bot["at"]) for bot in previous_bots), default=None)
+        ends = [end for end in bot_ends if (previous is None or end >= previous) and end <= accepted]
+        if ends:
+            turn["playbackAt"] = _iso_timestamp(max(ends))
+
+
+def ui_turns(raw: list | None, events: list | None = None) -> list[dict]:
     """Map stored turns (either shape) to the UI shape, chronologically."""
     turns: list[dict] = []
     for index, turn in enumerate(raw or []):
@@ -110,6 +179,7 @@ def ui_turns(raw: list | None) -> list[dict]:
         else:
             turns.append(_runtime_turn(index, turn))
     turns.sort(key=lambda t: t.get("turn") or 0)
+    _add_playback_timing(turns, events)
     return turns
 
 
@@ -139,9 +209,28 @@ def recording_descriptor(c: ConversationSession, doc: dict | None) -> dict | Non
     full = resolve_recording_path(info.get("path"))
     if full is None:
         return None
-    return {
+    result = {
         "url": f"/api/v1/conversations/{c.id}/recording",
         "mimeType": info.get("mimeType") or "audio/wav",
         "durationSec": float(info.get("durationSec") or 0),
         "sizeBytes": full.stat().st_size,
     }
+    # New recordings expose their actual sample-zero origin. Older documents
+    # retain a session-time fallback; do not invent missing audio timestamps.
+    for raw, source in (
+        (info.get("startedAt"), "recording"),
+        ((doc or {}).get("started_at"), "session"),
+        (c.started_at, "session"),
+    ):
+        try:
+            start = datetime.fromisoformat(raw.replace("Z", "+00:00")) if isinstance(raw, str) else raw
+            if not isinstance(start, datetime):
+                continue
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            result["startedAt"] = start.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            result["timingSource"] = source
+            break
+        except (ValueError, OverflowError):
+            continue
+    return result

@@ -129,6 +129,9 @@ def seed_and_cleanup():
             "tenant_id": TENANT_A, "bot_id": BOT_A, "channel": "vaani",
             "started_at": _STARTED, "duration_sec": 17,
             "turns": _RUNTIME_TURNS,
+            "events": [{"kind": "turn_timing",
+                        "turn_dispatched_at": (_STARTED.timestamp() + 4.48) * 1000,
+                        "user_speech_start_at": (_STARTED.timestamp() + 2.2) * 1000}],
         },
         {   # legacy generation: no control_plane_id, matched by time window
             "session_id": f"vs_{_SUFFIX}leg",
@@ -182,6 +185,8 @@ class TestTranscriptResolution:
         assert turns[0]["latencyMs"] == 812
         assert turns[0]["at"].endswith("Z") and "T" in turns[0]["at"]
         assert turns[0]["route"] == "workflow"
+        assert turns[1]["audioStartedAt"].endswith("02.200Z")
+        assert turns[1]["at"].endswith("04.500Z")
 
     def test_legacy_doc_matched_by_time_window(self, client, tenant_a_admin,
                                                seed_and_cleanup):

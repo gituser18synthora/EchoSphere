@@ -200,7 +200,7 @@ async def get_conversation(
     # call id the dialer sent on the webhook (callId / CallSid).
     c = _find_conversation(db, user, conversation_id, tenant_id)
     doc = await find_transcript_doc(c)
-    transcript = ui_turns((doc or {}).get("turns"))
+    transcript = ui_turns((doc or {}).get("turns"), (doc or {}).get("events"))
     names = _bot_names(db, [c.bot_id])
     # The session link is what makes the cost auditable. Historical rows
     # predate the column, so fall back to the transcript document, which has

@@ -31,6 +31,8 @@ class TurnRecord:
     kb_used: bool = False
     kb_sources: list[dict] = field(default_factory=list)
     latency_ms: dict = field(default_factory=dict)
+    # Separate from timestamp (accepted/final time shown in the transcript).
+    audio_started_at: float | None = None
 
 
 class SessionRecorder:
@@ -126,7 +128,7 @@ class SessionRecorder:
         self.playout_ledger = PlayoutLedger()
 
     def set_recording(self, *, path: str, duration_sec: float, sample_rate: int,
-                      channels: int, size_bytes: int) -> None:
+                      channels: int, size_bytes: int, started_at: float | None = None) -> None:
         self.recording_info = {
             "path": path,
             "mimeType": "audio/wav",
@@ -135,6 +137,11 @@ class SessionRecorder:
             "channels": channels,
             "sizeBytes": size_bytes,
         }
+        if started_at is not None:
+            self.recording_info["startedAt"] = (
+                datetime.fromtimestamp(started_at, tz=timezone.utc)
+                .isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            )
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
@@ -154,6 +161,8 @@ class SessionRecorder:
             }
             if delivery is not None:
                 row["delivery"] = delivery
+            if turn.audio_started_at is not None:
+                row["audioStartTs"] = turn.audio_started_at
             rows.append(row)
         return rows
 
@@ -702,6 +711,7 @@ class CallRecordingWriter:
                     sample_rate=self._sample_rate,
                     channels=self._channels,
                     size_bytes=self._wav_path.stat().st_size,
+                    started_at=getattr(self.audiobuffer, "started_at", None),
                 )
                 logger.info("call recording saved for %s (%.1fs)",
                             self._recorder.session_id, duration)
@@ -784,6 +794,7 @@ class AlignedStereoRecorder:
         self._user_started = False
         self._playhead = 0            # timeline sample where the far end runs dry
         self._origin: float | None = None   # monotonic time of timeline sample 0
+        self._wall_clock_offset = time.time() - time.monotonic()
         self._gap: list | None = None       # a possible caller-stream gap (see _track_gap)
         self._replay = bytearray()          # gate pre-roll awaiting its place
         self._stopped = False
@@ -791,6 +802,11 @@ class AlignedStereoRecorder:
     @property
     def sample_rate(self) -> int:
         return self._rate
+
+    @property
+    def started_at(self) -> float | None:
+        """Wall-clock time of WAV sample zero, including origin corrections."""
+        return None if self._origin is None else self._wall_clock_offset + self._origin
 
     @staticmethod
     def _interleave(left: bytes, right: bytes) -> bytes:

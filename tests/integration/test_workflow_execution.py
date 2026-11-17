@@ -6,6 +6,7 @@ Live-app harness; all rows uniquely suffixed and removed in teardown.
 """
 
 import uuid
+from copy import deepcopy
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,6 +131,24 @@ def test_save_and_reload_workflow(client, env):
     assert [n["id"] for n in reloaded["nodes"]] == ["n1", "n2", "n3", "n4", "n5", "n6"]
     assert reloaded["edges"][3]["label"] == "true"
     assert reloaded["nodes"][2]["config"]["variable"] == "amount"
+
+
+def test_label_edit_round_trip_preserves_advanced_config_and_branch_order(client, env):
+    doc = deepcopy(WORKFLOW_DOC)
+    doc["nodes"][2]["config"].update({
+        "customSettings": {"attempts": 3, "mapping": ["legacy", "tenant-specific"]},
+        "responseMode": "exact", "responseMustInclude": ["payment"],
+    })
+    doc["nodes"][2].update(x=47, y=263)
+    # Multiple branches can share a target. Their order must survive storage.
+    doc["edges"].append({"id": "e6", "from": "n4", "to": "n5", "label": "else"})
+    saved = _data(client.put(f"{API}/bots/{env['bot_id']}/workflow", headers=env["headers"], json=doc))
+    doc["nodes"][2]["label"] = "Updated amount label"
+    edited = _data(client.put(f"{API}/bots/{env['bot_id']}/workflow", headers=env["headers"], json=doc))
+    reloaded = _data(client.get(f"{API}/bots/{env['bot_id']}/workflow", headers=env["headers"]))
+    assert edited["version"] == saved["version"] + 1
+    assert reloaded["nodes"] == doc["nodes"]
+    assert reloaded["edges"] == doc["edges"]
 
 
 def test_structural_errors_are_rejected(client, env):

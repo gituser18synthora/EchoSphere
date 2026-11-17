@@ -23,6 +23,7 @@ import {
   type TranscriptExportFormat,
 } from "@/services/exportDownload";
 import { formatChatTime } from "@/services/chatTime";
+import { formatRecordingTime, recordingMarkerOffset, recordingOffset } from "@/services/recordingTimeline";
 
 const channelIcon: Record<string, IconName> = { voice: "phone", whatsapp: "whatsapp", web: "monitor", mobile: "smartphone" };
 
@@ -316,7 +317,13 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
   const [transcriptBusy, setTranscriptBusy] = useState(false);
+  const [seekRequest, setSeekRequest] = useState<RecordingSeek | null>(null);
+  const [playhead, setPlayhead] = useState<{ conversationId: string; seconds: number } | null>(null);
   const convId = conv?.id ?? null;
+  useEffect(() => {
+    setSeekRequest(null);
+    setPlayhead(null);
+  }, [convId]);
   // Transcript and recording live on the detail endpoint (Mongo-backed);
   // list rows carry only the relational metadata.
   const detailQ = useAsync<Conversation | null>(
@@ -326,9 +333,19 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
 
   if (!conv) return null;
 
-  const transcript = detailQ.data?.transcript ?? [];
-  const recording = detailQ.data?.recording ?? null;
-  const cost = detailQ.data?.cost ?? null;
+  const detail = detailQ.data?.id === conv.id ? detailQ.data : null;
+  const transcript = detail?.transcript ?? [];
+  const recording = detail?.recording ?? null;
+  const cost = detail?.cost ?? null;
+  const turnOffsets = transcript.map((turn) => recording ? recordingOffset(turn, recording, conv.startedAt, transcript) : null);
+  // Transcript order can differ from timestamp order (overlapping speech).
+  let activeTurn: number | null = null;
+  let activeOffset = -1;
+  if (playhead?.conversationId === conv.id) turnOffsets.forEach((offset, index) => {
+    if (offset !== null && offset <= playhead.seconds && offset >= activeOffset) {
+      activeTurn = index; activeOffset = offset;
+    }
+  });
 
   const qa = conv.qaScore ?? 0;
   const scorecard = [
@@ -429,11 +446,15 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
             transcript scrolls beneath it. */}
         <div className="conversation-recording-dock">
           <RecordingRow
+            key={`${conv.id}:${recording?.url ?? "pending"}`}
             conversationId={conv.id}
             costUsd={showCosts ? conv.costUsd : null}
             money={money}
             recording={recording}
             loading={detailQ.loading}
+            seekRequest={seekRequest?.conversationId === conv.id ? seekRequest : null}
+            onSeekConsumed={(request) => setSeekRequest((current) => current === request ? null : current)}
+            onPosition={(seconds) => setPlayhead({ conversationId: conv.id, seconds })}
           />
         </div>
 
@@ -470,6 +491,9 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
 
         {tab === "transcript" && (
           <section className="conversation-transcript" aria-label="Conversation transcript">
+            {recording && turnOffsets.some((offset) => offset !== null) && (
+              <p className="transcript-playback-help">Select a message to hear its audio. Caller timestamps show transcript completion; playback uses speech onset when available. Older calls may include the preceding bot audio.</p>
+            )}
             {detailQ.loading && (
               <div className="col gap-10 conversation-transcript-loading" aria-label="Loading transcript">
                 {[46, 72, 38].map((w, i) => (
@@ -487,16 +511,30 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
                 body="This call ended without any recorded turns — nothing was transcribed."
               />
             )}
-            {!detailQ.loading && !detailQ.error && transcript.map((s) => (
+            {!detailQ.loading && !detailQ.error && transcript.map((s, index) => {
+              const offset = turnOffsets[index];
+              const markerOffset = recording ? recordingMarkerOffset(s, recording, conv.startedAt) : null;
+              const seekable = recording !== null && offset !== null;
+              const Bubble = seekable ? "button" : "div";
+              return (
               <div key={s.turn} className={`conversation-turn ${s.speaker}`}>
-                <div className={`transcript-bubble ${s.speaker}`}>
+                <Bubble className={`transcript-bubble ${s.speaker}${seekable ? " transcript-seekable" : ""}${activeTurn === index ? " transcript-playing" : ""}`}
+                  {...(seekable ? {
+                    type: "button" as const,
+                    "aria-label": `Play ${s.speaker === "bot" ? "bot" : "user"} message at ${formatRecordingTime(offset)}: ${s.text}`,
+                    "aria-current": activeTurn === index ? "true" as const : undefined,
+                    title: `Play recording from ${formatRecordingTime(offset)}`,
+                    onClick: () => setSeekRequest((previous) => ({
+                      conversationId: conv.id, recordingUrl: recording.url, seconds: offset, sequence: (previous?.sequence ?? 0) + 1,
+                    })),
+                  } : { title: recording ? "Recording timestamp unavailable for this message" : undefined })}>
                   <span className="transcript-text">{s.text}</span>
                   {s.at && (
                     <time className="transcript-bubble-time" dateTime={s.at} title={s.at}>
-                      {formatChatTime(s.at)}
+                      {markerOffset !== null ? <><Icon name="play" size={10} /> {formatRecordingTime(markerOffset)}</> : formatChatTime(s.at)}
                     </time>
                   )}
-                </div>
+                </Bubble>
                 {s.speaker === "bot" && ((s.intent || s.route) || s.latencyMs != null) && (
                   <span className="transcript-meta">
                     {(s.intent || s.route) && <code>{s.intent ?? s.route}</code>}
@@ -506,7 +544,7 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
                   </span>
                 )}
               </div>
-            ))}
+            ); })}
           </section>
         )}
 
@@ -854,13 +892,18 @@ function CostBreakdown({ cost, costUsd, money, loading }: {
 
 /* ---------- call recording ---------- */
 
-function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
+type RecordingSeek = { conversationId: string; recordingUrl: string; seconds: number; sequence: number };
+
+function RecordingRow({ conversationId, costUsd, money, recording, loading, seekRequest, onSeekConsumed, onPosition }: {
   conversationId: string;
   /** Null when the viewer may not see costs — the tag is simply not shown. */
   costUsd: number | null;
   money: DisplayCurrencyState;
   recording: ConversationRecording | null;
   loading: boolean;
+  seekRequest: RecordingSeek | null;
+  onSeekConsumed: (request: RecordingSeek) => void;
+  onPosition: (seconds: number) => void;
 }) {
   const { toast } = useApp();
   const [audioState, setAudioState] = useState<"loading" | "ready" | "error">("loading");
@@ -869,12 +912,46 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
   const [retrySeq, setRetrySeq] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const objectUrlRef = useRef<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const pendingSeek = useRef<RecordingSeek | null>(null);
+  const appliedSeek = useRef<RecordingSeek | null>(null);
+  const [playbackError, setPlaybackError] = useState("");
+
+  const applyPendingSeek = () => {
+    const audio = audioRef.current;
+    const request = pendingSeek.current;
+    if (!audio || !request || request.recordingUrl !== recording?.url || audio.readyState < 1 || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    try {
+      audio.currentTime = Math.min(Math.max(0, request.seconds), Math.max(0, audio.duration - 0.01));
+      pendingSeek.current = null;
+      appliedSeek.current = request;
+      onSeekConsumed(request);
+      setPlaybackError("");
+      onPosition(audio.currentTime);
+      void audio.play()?.catch((error: unknown) => {
+        // Pausing or changing source can intentionally abort a pending play.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (audioRef.current === audio && appliedSeek.current === request) setPlaybackError("Playback could not start. Press Play on the recording.");
+      });
+    } catch {
+      pendingSeek.current = null;
+      onSeekConsumed(request);
+      setPlaybackError("Could not seek to this message. Try the recording controls.");
+    }
+  };
+
+  useEffect(() => {
+    if (!seekRequest || seekRequest.recordingUrl !== recording?.url || seekRequest === appliedSeek.current) return;
+    pendingSeek.current = seekRequest;
+    applyPendingSeek();
+  }, [seekRequest, src]); // Metadata may arrive after the requested message.
 
   // <audio src> cannot carry the Authorization header, so the file is fetched
   // with the JWT and played from an object URL (same auth path as exports).
   useEffect(() => {
     if (!recording) return;
     let cancelled = false;
+    const abort = new AbortController();
     setAudioState("loading");
     setAudioError("");
     void (async () => {
@@ -882,7 +959,7 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
         const headers: Record<string, string> = {};
         const token = getToken();
         if (token) headers.Authorization = `Bearer ${token}`;
-        const resp = await fetch(recording.url, { headers });
+        const resp = await fetch(recording.url, { headers, signal: abort.signal });
         if (!resp.ok) {
           throw new Error(resp.status === 404
             ? "The recording file is no longer available."
@@ -898,6 +975,8 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
         setAudioState("ready");
       } catch (e) {
         if (!cancelled) {
+          if (pendingSeek.current) onSeekConsumed(pendingSeek.current);
+          pendingSeek.current = null;
           setAudioState("error");
           setAudioError(e instanceof Error ? e.message : "Could not load the recording.");
         }
@@ -905,13 +984,14 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
     })();
     return () => {
       cancelled = true;
+      abort.abort();
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
       setSrc(null);
     };
-  }, [recording, recording?.url, retrySeq]);
+  }, [recording?.url, retrySeq]);
 
   const download = async () => {
     if (!recording || downloading) return;
@@ -953,8 +1033,19 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
         {!loading && recording && audioState === "ready" && src && (
           // Native controls provide play/pause, seeking, elapsed/total time
           // and volume; download stays an explicit authorized action.
-          <audio controls controlsList="nodownload" src={src} style={{ width: "100%", height: 36 }} aria-label="Call recording" />
+          <audio ref={audioRef} controls controlsList="nodownload" src={src} style={{ width: "100%", height: 36 }} aria-label="Call recording"
+            onLoadedMetadata={applyPendingSeek}
+            onCanPlay={applyPendingSeek}
+            onTimeUpdate={(event) => onPosition(event.currentTarget.currentTime)}
+            onSeeked={(event) => onPosition(event.currentTarget.currentTime)}
+            onPlay={(event) => { setPlaybackError(""); onPosition(event.currentTarget.currentTime); }}
+            onError={() => {
+              if (pendingSeek.current) onSeekConsumed(pendingSeek.current);
+              pendingSeek.current = null;
+              setAudioError("The recording could not be played."); setAudioState("error");
+            }} />
         )}
+        {playbackError && <span className="t-micro" role="status">{playbackError}</span>}
       </div>
       {!loading && recording && (
         <Button size="sm" variant="ghost" icon="download" busy={downloading} onClick={() => void download()}>

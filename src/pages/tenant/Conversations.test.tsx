@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,7 +54,7 @@ const DETAIL = {
   ...CONVERSATION,
   transcript: [
     { turn: 1, speaker: "bot", text: "Namaste, this is Billing Bot.", at: "2026-07-24T10:00:02.000Z", route: "workflow", latencyMs: 812 },
-    { turn: 2, speaker: "user", text: "I was charged twice.", at: "2026-07-24T10:00:09.000Z" },
+    { turn: 2, speaker: "user", text: "I was charged twice.", at: "2026-07-24T10:00:09.000Z", audioStartedAt: "2026-07-24T10:00:09.000Z" },
     { turn: 3, speaker: "bot", text: "Let me check that for you.", intent: "billing_dispute", confidence: 0.94, latencyMs: 640 },
   ],
   recording: null,
@@ -143,6 +143,7 @@ describe("Tenant conversation review", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     localStorage.clear();
   });
@@ -505,6 +506,142 @@ describe("Tenant conversation review", () => {
     expect(await within(dialog).findByText(/no longer available/)).toBeInTheDocument();
     expect(dialog.querySelector("audio")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("plays both speakers at their recording offsets and highlights manual seeking", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL,
+      transcript: [
+        { ...DETAIL.transcript[0], at: "2026-07-24T10:02:44Z" },
+        { ...DETAIL.transcript[1], at: "2026-07-24T10:03:22Z", audioStartedAt: "2026-07-24T10:03:19Z" },
+        DETAIL.transcript[2],
+      ],
+      recording: { ...RECORDING, durationSec: 300, startedAt: "2026-07-24T10:00:10Z", timingSource: "recording" },
+    } as never);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "audio/wav" }), blob: async () => new Blob(["audio"]) }));
+    URL.createObjectURL = vi.fn(() => "blob:seek");
+    URL.revokeObjectURL = vi.fn();
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    const audio = await waitFor(() => {
+      expect(dialog.querySelector("audio")).not.toBeNull();
+      return dialog.querySelector("audio")!;
+    });
+    Object.defineProperties(audio, { readyState: { value: 1 }, duration: { value: 300 } });
+    fireEvent.loadedMetadata(audio);
+    expect(play).not.toHaveBeenCalled();
+    const caller = within(dialog).getByRole("button", { name: /Play user message at 03:09.00/ });
+    expect(caller.querySelector("time")).toHaveTextContent("03:12.00");
+    expect(caller.querySelector("time")).toHaveAttribute("dateTime", "2026-07-24T10:03:22Z");
+    const bot = within(dialog).getByRole("button", { name: /Play bot message at 02:34.00/ });
+    await user.click(caller);
+    expect(audio.currentTime).toBe(189);
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(caller).toHaveAttribute("aria-current", "true");
+    // Repeated click on the same turn must seek again, including keyboard use.
+    audio.currentTime = 200;
+    caller.focus();
+    await user.keyboard("{Enter}");
+    expect(audio.currentTime).toBe(189);
+    await user.click(bot);
+    expect(audio.currentTime).toBe(154);
+    expect(play).toHaveBeenCalledTimes(3);
+    audio.currentTime = 195;
+    fireEvent.timeUpdate(audio);
+    expect(caller).toHaveAttribute("aria-current", "true");
+    expect(bot).not.toHaveAttribute("aria-current");
+    expect(within(dialog).getByText("Let me check that for you.").closest("button")).toBeNull();
+    expect(dialog.querySelectorAll("audio")).toHaveLength(1);
+  });
+
+  it("queues the latest transcript click until audio metadata arrives and handles blocked playback", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("NotAllowedError"));
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, recording: RECORDING } as never);
+    let finishFetch!: (response: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { finishFetch = resolve; })));
+    URL.createObjectURL = vi.fn(() => "blob:pending-seek");
+    URL.revokeObjectURL = vi.fn();
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await user.click(await within(dialog).findByRole("button", { name: /Play bot message at 00:02.00/ }));
+    await user.click(within(dialog).getByRole("button", { name: /Play user message at 00:09.00/ }));
+    expect(play).not.toHaveBeenCalled();
+    finishFetch({ ok: true, headers: new Headers({ "content-type": "audio/wav" }), blob: async () => new Blob(["audio"]) });
+    const audio = await waitFor(() => {
+      expect(dialog.querySelector("audio")).not.toBeNull();
+      return dialog.querySelector("audio")!;
+    });
+    expect(play).not.toHaveBeenCalled();
+    Object.defineProperties(audio, { readyState: { value: 1 }, duration: { value: 74.5 } });
+    fireEvent.loadedMetadata(audio);
+    expect(audio.currentTime).toBe(9);
+    await within(dialog).findByText(/Playback could not start/);
+    expect(play).toHaveBeenCalledTimes(1);
+    fireEvent.loadedMetadata(audio);
+    expect(play).toHaveBeenCalledTimes(1);
+    await user.click(within(dialog).getByRole("button", { name: "Close panel" }));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:pending-seek");
+  });
+
+  it("does not replay a stale request after a failed load, retry, or drawer reopen", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, recording: RECORDING } as never);
+    let failFetch!: (error: Error) => void;
+    const response = () => ({ ok: true, headers: new Headers({ "content-type": "audio/wav" }), blob: async () => new Blob(["audio"]) });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failFetch = reject; }))
+      .mockImplementation(async () => response()));
+    URL.createObjectURL = vi.fn(() => "blob:retry");
+    URL.revokeObjectURL = vi.fn();
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await user.click(await within(dialog).findByRole("button", { name: /Play user message at/ }));
+    failFetch(new Error("Network unavailable"));
+    await user.click(await within(dialog).findByRole("button", { name: "Retry" }));
+    const audio = await waitFor(() => {
+      expect(dialog.querySelector("audio")).not.toBeNull();
+      return dialog.querySelector("audio")!;
+    });
+    Object.defineProperties(audio, { readyState: { value: 1 }, duration: { value: 74.5 } });
+    fireEvent.loadedMetadata(audio);
+    expect(play).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: /Play user message at/ }));
+    expect(audio.currentTime).toBe(9);
+    expect(play).toHaveBeenCalledTimes(1);
+    await user.click(within(dialog).getByRole("button", { name: "Close panel" }));
+    await user.click(screen.getByText("1m 15s"));
+    const reopened = await screen.findByRole("dialog");
+    const nextAudio = await waitFor(() => {
+      expect(reopened.querySelector("audio")).not.toBeNull();
+      return reopened.querySelector("audio")!;
+    });
+    Object.defineProperties(nextAudio, { readyState: { value: 1 }, duration: { value: 74.5 } });
+    fireEvent.loadedMetadata(nextAudio);
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(nextAudio.currentTime).toBe(0);
+  });
+
+  it("ignores an older play rejection after a newer message has started", async () => {
+    let rejectFirst!: (error: Error) => void;
+    vi.spyOn(HTMLMediaElement.prototype, "play")
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockResolvedValue();
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, recording: RECORDING } as never);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "audio/wav" }), blob: async () => new Blob(["audio"]) }));
+    URL.createObjectURL = vi.fn(() => "blob:play-race");
+    URL.revokeObjectURL = vi.fn();
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    const audio = await waitFor(() => {
+      expect(dialog.querySelector("audio")).not.toBeNull();
+      return dialog.querySelector("audio")!;
+    });
+    Object.defineProperties(audio, { readyState: { value: 1 }, duration: { value: 74.5 } });
+    await user.click(within(dialog).getByRole("button", { name: /Play bot message at/ }));
+    await user.click(within(dialog).getByRole("button", { name: /Play user message at/ }));
+    rejectFirst(new Error("Earlier playback failed"));
+    await waitFor(() => expect(audio.currentTime).toBe(9));
+    expect(within(dialog).queryByText(/Playback could not start/)).not.toBeInTheDocument();
   });
 });
 

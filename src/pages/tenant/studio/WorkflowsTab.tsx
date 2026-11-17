@@ -7,8 +7,7 @@
    server-computed issues, and the SAME saved graph is what the runtime
    workflow engine executes on live calls and in the Testing tab. */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { NodeKind, VoiceBot, Workflow, WorkflowEdge, WorkflowNode } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import { getWorkflow, saveWorkflow } from "@/services/api";
@@ -18,6 +17,7 @@ import {
 } from "@/components/ui";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { buildWorkflowCanvas, WORKFLOW_NODE_WIDTH as NODE_W, WORKFLOW_NODE_HEIGHT as NODE_H } from "./workflowCanvas";
 
 const nodeMeta: Record<NodeKind, { icon: IconName; color: string; label: string; desc: string }> = {
   start: { icon: "play", color: "var(--series-2)", label: "Start", desc: "Where every call enters the flow" },
@@ -35,9 +35,7 @@ const nodeMeta: Record<NodeKind, { icon: IconName; color: string; label: string;
    (handover is excluded: the runtime always speaks it as authored). */
 const SPEAKING_KINDS: NodeKind[] = ["message", "end", "ask", "intent", "knowledge"];
 
-const NODE_W = 178;
-const NODE_H = 54;
-const ZOOM_MIN = 0.4;
+const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 1.5;
 
 type Issue = { nodeId: string; level: "warning" | "error"; message: string };
@@ -168,7 +166,7 @@ export function parseImportedDefinition(raw: string): { nodes: WorkflowNode[]; e
   return { nodes, edges };
 }
 
-export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
+export default function WorkflowsTab({ bot, onTest }: { bot: VoiceBot; onTest?: () => void }) {
   const q = useAsync<Workflow | null>(async () => {
     try {
       return await getWorkflow(bot.id);
@@ -192,6 +190,19 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
   const [past, setPast] = useState<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }[]>([]);
   const [future, setFuture] = useState<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }[]>([]);
   const [zoom, setZoom] = useState(1);
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    try { return localStorage.getItem("echosphere.workflow.inspector") !== "hidden"; }
+    catch { return true; }
+  });
+  const [focusConnections, setFocusConnections] = useState(false);
+  const [dragOrigin, setDragOrigin] = useState<{ offsetX: number; offsetY: number } | null>(null);
+  const [originFloor, setOriginFloor] = useState<{ botId: string; offsetX: number; offsetY: number } | null>(null);
+  const [fallbackAnchors, setFallbackAnchors] = useState<{ botId: string; positions: Map<string, { x: number; y: number }> } | null>(null);
+  const canvasId = `wf-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  useEffect(() => {
+    try { localStorage.setItem("echosphere.workflow.inspector", inspectorOpen ? "shown" : "hidden"); }
+    catch { /* The layout still works when browser storage is unavailable. */ }
+  }, [inspectorOpen]);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [statusConfirm, setStatusConfirm] = useState<"approved" | "draft" | null>(null);
@@ -201,11 +212,6 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  /* The inspector is a draggable floating popup; its position persists for
-     the session and is clamped so the drag handle always stays reachable. */
-  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
-  const popupDrag = useRef<{ dx: number; dy: number } | null>(null);
 
   /* Load the server document into the editable state. Selection survives a
      reload (e.g. after save) when the node still exists. */
@@ -268,6 +274,34 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
     });
   };
 
+  const fallbackPositions = fallbackAnchors?.botId === bot.id ? fallbackAnchors.positions : undefined;
+  const naturalCanvas = useMemo(() => buildWorkflowCanvas(nodes, edges, undefined, fallbackPositions), [nodes, edges, fallbackPositions]);
+  const canvas = useMemo(() => {
+    // Keep the graph in place when a drag removes its leftmost/topmost extent.
+    // Larger bounds may still expand the origin after the gesture finishes.
+    const floor = originFloor?.botId === bot.id ? originFloor : null;
+    const offset = dragOrigin ?? {
+      offsetX: Math.max(naturalCanvas.offsetX, floor?.offsetX ?? 0),
+      offsetY: Math.max(naturalCanvas.offsetY, floor?.offsetY ?? 0),
+    };
+    return offset.offsetX === naturalCanvas.offsetX && offset.offsetY === naturalCanvas.offsetY
+      ? naturalCanvas : buildWorkflowCanvas(nodes, edges, offset, fallbackPositions);
+  }, [nodes, edges, naturalCanvas, dragOrigin, originFloor, fallbackPositions, bot.id]);
+  useEffect(() => {
+    // Legacy steps keep their display position when another step is moved.
+    // These anchors stay local to the editor and never enter the save payload.
+    setFallbackAnchors((previous) => {
+      const existing = previous?.botId === bot.id ? previous : null;
+      const missing = nodes.filter((node) => (!Number.isFinite(node.x) || !Number.isFinite(node.y)) && !existing?.positions.has(node.id));
+      if (existing && missing.length === 0) return previous;
+      const positions = new Map(existing?.positions);
+      for (const node of missing) {
+        const display = canvas.nodeById.get(node.id);
+        if (display) positions.set(node.id, { x: display.x - canvas.offsetX, y: display.y - canvas.offsetY });
+      }
+      return { botId: bot.id, positions };
+    });
+  }, [nodes, canvas, bot.id]);
   const wf = q.data;
   const selectedNode = useMemo(() => nodes.find((n) => n.id === selected) ?? null, [nodes, selected]);
   const selectedEdge = useMemo(() => edges.find((e) => e.id === selectedEdgeId) ?? null, [edges, selectedEdgeId]);
@@ -319,8 +353,8 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
       ...structuredClone(src),
       id: newId("n"),
       label: `${src.label} copy`,
-      x: src.x + 32,
-      y: src.y + 32,
+      x: (canvas.nodeById.get(id)?.x ?? 60) - canvas.offsetX + 32,
+      y: (canvas.nodeById.get(id)?.y ?? 60) - canvas.offsetY + 32,
     };
     setNodes((ns) => [...ns, copy]);
     selectNode(copy.id);
@@ -527,60 +561,17 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
     );
   }
 
-  /* Parallel edges (same from → to, e.g. a refuse-tokens branch AND an else
-     branch to the next rung) would overlap exactly — offset each duplicate so
-     both stay visible and clickable. */
-  const parallelIndex = new Map<string, number>();
-  {
-    const seen = new Map<string, number>();
-    for (const e of edges) {
-      const key = `${e.from}→${e.to}`;
-      const n = seen.get(key) ?? 0;
-      parallelIndex.set(e.id, n);
-      seen.set(key, n + 1);
-    }
-  }
-
-  const edgePath = (from: WorkflowNode, to: WorkflowNode, off = 0) => {
-    const x1 = from.x + NODE_W;
-    const y1 = from.y + NODE_H / 2 + off;
-    const x2 = to.x;
-    const y2 = to.y + NODE_H / 2 + off;
-    if (to.x < from.x + NODE_W && Math.abs(to.y - from.y) > NODE_H) {
-      const vx1 = from.x + NODE_W / 2 + off;
-      const vy1 = from.y + NODE_H;
-      const vx2 = to.x + NODE_W / 2 + off;
-      const vy2 = to.y;
-      return { d: `M${vx1} ${vy1} C ${vx1} ${vy1 + 34}, ${vx2} ${vy2 - 34}, ${vx2} ${vy2}`, lx: (vx1 + vx2) / 2, ly: (vy1 + vy2) / 2 + off };
-    }
-    const mx = (x1 + x2) / 2;
-    return { d: `M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, lx: mx, ly: (y1 + y2) / 2 - 6 };
-  };
-
-  const clampPopup = (x: number, y: number) => ({
-    x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - 140)),
-    y: Math.min(Math.max(8, y), Math.max(8, window.innerHeight - 56)),
-  });
-  /* Until the user drags it, the popup docks to the canvas's top-right corner
-     (never over the toolbar above); afterwards it stays where they put it. */
-  const popupPosition = popupPos ?? (() => {
-    const width = Math.min(380, window.innerWidth - 24);
-    const rect = scrollRef.current?.getBoundingClientRect();
-    if (rect && rect.width > 0) return clampPopup(rect.right - width - 18, Math.max(rect.top + 14, 64));
-    return clampPopup(window.innerWidth - width - 36, 200);
-  })();
-
-  const canvasW = Math.max(660, ...nodes.map((n) => n.x + NODE_W + 60));
-  const canvasH = Math.max(570, ...nodes.map((n) => n.y + NODE_H + 60));
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
   const configText = (key: string): string => String((selectedNode?.config ?? {})[key] ?? "");
   const mustIncludeValue = mustIncludeDraft
     ?? ((selectedNode?.config?.responseMustInclude as string[] | undefined) ?? []).join(", ");
 
-  const setZoomClamped = (z: number) => setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 20) / 20)));
+  const setZoomClamped = (z: number) => setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100)));
   const zoomToFit = () => {
     const el = scrollRef.current;
     if (!el) return;
-    setZoomClamped(Math.min(1, (el.clientWidth - 24) / canvasW, (el.clientHeight - 24) / canvasH));
+    setZoomClamped(Math.floor(Math.min(1, (el.clientWidth - 24) / canvasW, (el.clientHeight - 24) / canvasH) * 100) / 100);
     el.scrollTo({ left: 0, top: 0 });
   };
 
@@ -591,6 +582,27 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
   const showIdleLabels = edges.length <= 24;
   const edgeIsActive = (e: WorkflowEdge) =>
     e.id === selectedEdgeId || (selected !== null && (e.from === selected || e.to === selected));
+
+  // Paint highlighted connections last, above dense background routes. The
+  // saved edge order still controls branch precedence and is never sorted.
+  const visibleEdges = focusConnections && hasSelection ? edges.filter(edgeIsActive) : edges;
+  const renderedEdges = [...visibleEdges.filter((edge) => !edgeIsActive(edge)), ...visibleEdges.filter(edgeIsActive)];
+  const connectedNodes = new Set<string>();
+  for (const edge of edges) {
+    if (edgeIsActive(edge)) { connectedNodes.add(edge.from); connectedNodes.add(edge.to); }
+  }
+  if (selected) connectedNodes.add(selected);
+  const focusNode = (id: string) => {
+    selectNode(id);
+    setInspectorOpen(true);
+    const node = canvas.nodeById.get(id);
+    const viewport = scrollRef.current;
+    if (node && viewport) viewport.scrollTo?.({
+      left: Math.max(0, (node.x + NODE_W / 2) * zoom - viewport.clientWidth / 2),
+      top: Math.max(0, (node.y + NODE_H / 2) * zoom - viewport.clientHeight / 2),
+      behavior: "smooth",
+    });
+  };
 
   const errorCount = issues.filter((i) => i.level === "error").length;
   const warningCount = issues.length - errorCount;
@@ -653,11 +665,22 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
         </div>
       </div>
 
-      <div className="grid wf-editor-grid" style={{ gridTemplateColumns: canEdit ? "176px 1fr" : "1fr", gap: 14, alignItems: "start" }}>
-        {/* Palette */}
+      <div className="wf-studio-heading">
+        <span className="row gap-8"><Icon name="workflow" size={16} /><strong>Canvas Studio</strong></span>
+        <span className="t-micro">Select a step to edit. Follow its highlighted connections to explore the journey.</span>
+        <Button size="sm" icon="filter" aria-pressed={focusConnections}
+          onClick={() => setFocusConnections((value) => !value)}
+          title="Show only the selected step's connections to trace a dense workflow">Focus connections</Button>
+        <Button size="sm" icon={inspectorOpen ? "eye-off" : "eye"} aria-expanded={inspectorOpen}
+          aria-controls={`${canvasId}-inspector`} onClick={() => setInspectorOpen((value) => !value)}
+          title={inspectorOpen ? "Hide the inspector to give the canvas more room" : "Show settings for the selected step"}>Step inspector</Button>
+        {onTest && <Button size="sm" icon="play" disabled={dirty} onClick={onTest}
+          title={dirty ? "Save your changes before testing" : "Open Testing with the saved, active workflow"}>Test conversation</Button>}
+      </div>
+      {/* Palette stays above the graph so every viewport gets its full width. */}
         {canEdit && (
-          <div className="card card-pad-sm col gap-4 wf-palette">
-            <span className="t-label" style={{ padding: "2px 4px" }}>Node palette</span>
+          <div className="card card-pad-sm wf-palette" role="toolbar" aria-label="Add a step">
+            <span className="t-label wf-palette-heading">Add a step</span>
             {(Object.keys(nodeMeta) as NodeKind[])
               .filter((k) => k !== "start" || !startExists)
               .map((k) => (
@@ -678,15 +701,17 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
           </div>
         )}
 
+      <div className={`wf-editor-grid${inspectorOpen ? "" : " wf-inspector-hidden"}`}>
         {/* Canvas */}
         <div className="wf-canvas-wrap">
+          {focusConnections && !hasSelection && !connectFrom && <span className="wf-hint">Select a step to focus its connections</span>}
           {connectFrom && (
             <span className="wf-hint">
               <Icon name="plug" size={12} />
               Click a target node to connect — Esc cancels
             </span>
           )}
-          <div className="wf-canvas" ref={scrollRef} style={{ height: "clamp(460px, calc(100vh - 460px), 700px)", overflow: "auto" }} role="application" aria-label="Workflow canvas">
+          <div className="wf-canvas" ref={scrollRef} role="application" aria-label="Workflow canvas">
             {nodes.length === 0 && (
               <EmptyState
                 icon="workflow"
@@ -697,34 +722,35 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
             )}
             <div style={{ width: canvasW * zoom, height: canvasH * zoom }}>
               <div style={{ position: "relative", width: canvasW, height: canvasH, transform: `scale(${zoom})`, transformOrigin: "0 0" }}>
-                <svg width={canvasW} height={canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+                <svg className="wf-connections" width={canvasW} height={canvasH} viewBox={`0 0 ${canvasW} ${canvasH}`}
+                  style={{ position: "absolute", inset: 0, width: canvasW, height: canvasH, maxWidth: "none", pointerEvents: "none" }} aria-label="Workflow connections">
                   <defs>
-                    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <marker id={`${canvasId}-arrow`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                       <path d="M0 0 L8 4 L0 8 Z" fill="var(--axis-line)" />
                     </marker>
-                    <marker id="arrow-active" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <marker id={`${canvasId}-arrow-active`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                       <path d="M0 0 L8 4 L0 8 Z" fill="var(--brand-500)" />
                     </marker>
                   </defs>
-                  {edges.map((e) => {
-                    const from = nodes.find((n) => n.id === e.from);
-                    const to = nodes.find((n) => n.id === e.to);
-                    if (!from || !to) return null;
-                    const p = edgePath(from, to, Math.min(parallelIndex.get(e.id) ?? 0, 2) * 13);
+                  {renderedEdges.map((e) => {
+                    const p = canvas.edgePaths.get(e.id);
+                    if (!p) return null;
                     const active = edgeIsActive(e);
                     const faded = hasSelection && !active;
                     const summary = edgeLabelSummary(e.label);
                     return (
-                      <g key={e.id} style={{ opacity: faded ? 0.16 : 1, transition: "opacity 0.12s" }}>
+                      <g key={e.id} data-edge-id={e.id} data-active={active || undefined}
+                        style={{ opacity: faded ? 0.12 : 1, transition: "opacity 0.12s" }}>
+                        {active && <path d={p.d} fill="none" stroke="var(--surface)" strokeWidth={5} vectorEffect="non-scaling-stroke" />}
                         <path
                           d={p.d} fill="none"
                           stroke={active ? "var(--brand-500)" : "var(--axis-line)"}
-                          strokeWidth={active ? 2 : 1.6}
-                          markerEnd={active ? "url(#arrow-active)" : "url(#arrow)"}
+                          strokeWidth={active ? 2.4 : 1.5} vectorEffect="non-scaling-stroke"
+                          markerEnd={`url(#${canvasId}-${active ? "arrow-active" : "arrow"})`}
                         />
                         {/* Invisible fat stroke so the connection itself is clickable. */}
                         <path
-                          d={p.d} fill="none" stroke="transparent" strokeWidth={14}
+                          d={p.d} fill="none" stroke="transparent" strokeWidth={14} vectorEffect="non-scaling-stroke"
                           style={{ pointerEvents: "stroke", cursor: "pointer" }}
                           onClick={() => selectEdge(e.id)}
                         >
@@ -746,7 +772,7 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
                     );
                   })}
                 </svg>
-                {nodes.map((n) => {
+                {canvas.nodes.map((n) => {
                   const meta = nodeMeta[n.kind];
                   const nodeIssues = issues.filter((i) => i.nodeId === n.id);
                   const worst = nodeIssues.some((i) => i.level === "error") ? "error" : nodeIssues.length ? "warning" : null;
@@ -755,12 +781,22 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
                   return (
                     <button
                       key={n.id}
-                      className={`wf-node${selected === n.id ? " selected" : ""}${connectFrom === n.id ? " connect-source" : ""}`}
-                      style={{ left: n.x, top: n.y, width: NODE_W, height: NODE_H, touchAction: "none" }}
+                      data-node-id={n.id}
+                      className={`wf-node${selected === n.id ? " selected" : ""}${connectFrom === n.id ? " connect-source" : ""}${hasSelection && !connectedNodes.has(n.id) ? " wf-node-dimmed" : ""}`}
+                      style={{ left: n.x, top: n.y, width: NODE_W, height: NODE_H, touchAction: "none", borderLeftColor: meta.color }}
                       aria-pressed={selected === n.id}
                       aria-label={`${meta.label}: ${n.label}`}
+                      title={`${meta.label} · ${preview || n.label}`}
+                      onClick={(ev) => {
+                        if (ev.detail !== 0) return;
+                        if (connectFrom && connectFrom !== n.id) {
+                          addEdge(connectFrom, n.id); setConnectFrom(null); toast("Nodes connected");
+                        } else selectNode(n.id === selected ? null : n.id);
+                      }}
                       onPointerDown={(ev) => {
                         if (!canEdit) return;
+                        setDragOrigin({ offsetX: canvas.offsetX, offsetY: canvas.offsetY });
+                        setOriginFloor({ botId: bot.id, offsetX: canvas.offsetX, offsetY: canvas.offsetY });
                         dragRef.current = { id: n.id, dx: ev.clientX - n.x * zoom, dy: ev.clientY - n.y * zoom, zoom, moved: false };
                         (ev.target as HTMLElement).setPointerCapture?.(ev.pointerId);
                       }}
@@ -774,9 +810,11 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
                           drag.moved = true;
                           snapshot();
                         }
-                        updateNode(n.id, { x, y });
+                        updateNode(n.id, { x: x - canvas.offsetX, y: y - canvas.offsetY });
                       }}
+                      onPointerCancel={() => { dragRef.current = null; setDragOrigin(null); }}
                       onPointerUp={() => {
+                        setDragOrigin(null);
                         const drag = dragRef.current;
                         dragRef.current = null;
                         if (drag?.moved) return; // it was a drag, not a click
@@ -796,7 +834,7 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
                         {mode === "llm_grounded" && <Icon name="sparkles" size={11} style={{ color: "var(--series-6)", flex: "none" }} aria-label="AI-grounded wording" />}
                         {worst && <Icon name="alert" size={12} style={{ color: worst === "error" ? "var(--viz-critical, #d64545)" : "var(--viz-warning)", flex: "none" }} />}
                       </span>
-                      {preview && <span className="wf-node-sub" title={preview}>{preview}</span>}
+                      <span className="wf-node-sub" title={preview}><span className="wf-node-type">{meta.label}</span>{preview && ` · ${preview}`}</span>
                     </button>
                   );
                 })}
@@ -807,7 +845,7 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
             <button className="btn-icon" style={{ width: 26, height: 26 }} aria-label="Zoom out" title="Zoom out" onClick={() => setZoomClamped(zoom - 0.1)}>
               <Icon name="zoom-out" size={14} />
             </button>
-            <span className="wf-zoom-value t-num">{Math.round(zoom * 100)}%</span>
+            <button className="wf-zoom-value t-num" aria-label="Reset zoom to 100%" title="Reset zoom to 100%" onClick={() => setZoomClamped(1)}>{Math.round(zoom * 100)}%</button>
             <button className="btn-icon" style={{ width: 26, height: 26 }} aria-label="Zoom in" title="Zoom in" onClick={() => setZoomClamped(zoom + 0.1)}>
               <Icon name="zoom-in" size={14} />
             </button>
@@ -816,46 +854,36 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
             </button>
           </div>
         </div>
-      </div>
 
-      {/* Inspector — a draggable floating popup, so the canvas keeps the room.
-          Non-modal: the canvas stays fully interactive while it is open. */}
-      {(selectedNode || selectedEdge) && createPortal(
-        <div className="wf-popup" role="dialog" aria-label="Inspector"
-          style={{ left: popupPosition.x, top: popupPosition.y, maxHeight: Math.max(200, window.innerHeight - popupPosition.y - 12) }}>
-          <div
-            className="wf-popup-head"
-            title="Drag to move"
-            onPointerDown={(ev) => {
-              if ((ev.target as HTMLElement).closest("button")) return;
-              popupDrag.current = { dx: ev.clientX - popupPosition.x, dy: ev.clientY - popupPosition.y };
-              (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
-            }}
-            onPointerMove={(ev) => {
-              if (!popupDrag.current) return;
-              setPopupPos(clampPopup(ev.clientX - popupDrag.current.dx, ev.clientY - popupDrag.current.dy));
-            }}
-            onPointerUp={() => { popupDrag.current = null; }}
-          >
-            <Icon name="grip" size={13} style={{ color: "var(--ink-3)", flex: "none" }} />
+        {/* Docked inspector keeps the canvas visible while editing. */}
+        <aside id={`${canvasId}-inspector`} className="wf-inspector" aria-label="Inspector" hidden={!inspectorOpen}>
+          <div className="wf-inspector-head">
             {selectedNode ? (
               <>
                 <Icon name={nodeMeta[selectedNode.kind].icon} size={14} style={{ color: nodeMeta[selectedNode.kind].color, flex: "none" }} />
                 <span className="t-strong" style={{ fontSize: 13 }}>{nodeMeta[selectedNode.kind].label}</span>
                 <code className="tag" title="Node id">{selectedNode.id}</code>
               </>
-            ) : (
+            ) : selectedEdge ? (
               <>
                 <Icon name="plug" size={14} style={{ color: "var(--brand-500)", flex: "none" }} />
                 <span className="t-strong" style={{ fontSize: 13 }}>Connection</span>
               </>
-            )}
-            <button className="btn-icon" style={{ marginLeft: "auto", width: 24, height: 24, flex: "none" }} aria-label="Close inspector"
-              onClick={() => { setSelected(null); setSelectedEdgeId(null); }}>
+            ) : <span className="t-strong">Step inspector</span>}
+            <button className="btn-icon" style={{ marginLeft: "auto", width: 24, height: 24, flex: "none" }} aria-label="Hide step inspector"
+              onClick={() => setInspectorOpen(false)}>
               <Icon name="x" size={14} />
             </button>
           </div>
-          <div className="wf-popup-body">
+          <div className="wf-inspector-body">
+          {!selectedNode && !selectedEdge && (
+            <div className="wf-inspector-empty">
+              <Icon name="workflow" size={28} />
+              <strong>Explore your workflow</strong>
+              <p>Select a step or connection to view its settings.</p>
+              <span className="t-micro">{canEdit ? "Add steps from the palette, drag to arrange, then save a version." : "You can inspect every step and connection in view-only mode."}</span>
+            </div>
+          )}
           {connectFrom && (
             <Callout tone="info" title="Connecting">
               Click a target node on the canvas, or{" "}
@@ -1150,9 +1178,8 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
             </>
           )}
           </div>
-        </div>,
-        document.body,
-      )}
+        </aside>
+      </div>
 
       {issues.length > 0 && (
         <Callout tone={errorCount ? "critical" : "warning"}
@@ -1160,8 +1187,8 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
           {issues.map((i, ix) => {
             const node = nodes.find((n) => n.id === i.nodeId);
             return (
-              <div key={ix} className="row gap-6" style={{ marginTop: ix ? 4 : 0 }}>
-                <button style={{ fontWeight: 650, textDecoration: "underline" }} onClick={() => selectNode(i.nodeId)}>
+              <div key={ix} className="row gap-6 wf-validation-item" style={{ marginTop: ix ? 4 : 0 }}>
+                <button style={{ fontWeight: 650, textDecoration: "underline" }} onClick={() => focusNode(i.nodeId)}>
                   {node?.label ?? i.nodeId}
                 </button>
                 — {i.message}

@@ -1755,6 +1755,10 @@ export interface TraceStep {
   costUsd?: number;
   /** Wall-clock time of the turn (ISO, up to microsecond precision). */
   at?: string;
+  /** Detected speech onset; separate from the displayed accepted/final time. */
+  audioStartedAt?: string;
+  /** Previous bot audio end when caller speech onset was not captured. */
+  playbackAt?: string;
 }
 
 export interface TestScenario {
@@ -1939,6 +1943,9 @@ export interface ConversationRecording {
   mimeType: string;
   durationSec: number;
   sizeBytes: number;
+  /** Wall-clock origin of the audio timeline; absent on legacy recordings. */
+  startedAt?: string;
+  timingSource?: "recording" | "session";
 }
 
 /* ---------- Monitoring, security, misc ---------- */

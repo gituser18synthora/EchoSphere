@@ -671,6 +671,10 @@ class AlignedRecordingProcessor(FrameProcessor):
         self._wire_stream = None          # (source rate, soxr stream)
         self._wire_last_at = 0.0
 
+    @property
+    def started_at(self) -> float | None:
+        return self._aligner.started_at
+
     def _enqueue(self, chunk: bytes) -> None:
         if not chunk:
             return

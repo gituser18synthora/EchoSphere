@@ -1198,6 +1198,12 @@ class ConversationBrain(FrameProcessor):
         # to talk over the rest of the caller's thought.
         self._physical_speech_active = False
         self._pending_segments: list[str] = []
+        from voice_runtime.transcript_timing import TranscriptSpeechTiming
+        from contextvars import ContextVar
+        self._transcript_timing = TranscriptSpeechTiming()
+        self._turn_audio_start = ContextVar("transcript_audio_start", default=None)
+        self._open_turn_audio_start: float | None = None
+        self._claimed_audio_starts: dict[int, float | None] = {}
         self._pending_language: str | None = None
         self._finalize_grace = max(0.0, float(finalize_grace))
         self._finalize_settle = max(0.0, float(finalize_settle))
@@ -1525,6 +1531,7 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._transcript_timing.speech_started(frame.timestamp, frame.start_secs)
             self._physical_speech_active = True
             self._vad_episode += 1
             self._vad_started_at = time.monotonic()
@@ -1535,6 +1542,7 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._transcript_timing.speech_stopped()
             self._physical_speech_active = False
             self._last_vad_stopped_at = time.monotonic()
             self._last_vad_stop_secs = max(0.0, float(getattr(frame, "stop_secs", 0.0) or 0.0))
@@ -1587,6 +1595,8 @@ class ConversationBrain(FrameProcessor):
             # arrived, without treating unconfirmed audio as presence.
             self._disarm_silence_timer()
             if isinstance(frame, UserStartedSpeakingFrame):
+                if not self._physical_speech_active and not self._transcript_timing.episode_active:
+                    self._transcript_timing.speech_started()
                 self._turn_active = True
                 if self._held_multiword:
                     # A confirmed interruption may reclaim held text only
@@ -1685,6 +1695,8 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, UserStoppedSpeakingFrame):
+            if not self._physical_speech_active:
+                self._transcript_timing.speech_stopped()
             # Real end-of-turn (VAD stop + the pause window). Straggler finals
             # for the tail of the utterance arrive DURING that window, so the
             # debounce only has work to do when one landed just now; otherwise
@@ -1781,6 +1793,8 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, BotStoppedSpeakingFrame):
+            if not self._backchannel_active:
+                self._recorder.add_event("bot_audio_end", audio_end_ts=time.time())
             self._bot_speaking = False
             if self._backchannel_active:
                 self._end_backchannel_window()
@@ -2022,6 +2036,7 @@ class ConversationBrain(FrameProcessor):
         the final-event identity.
         """
         self._note_meaningful_input()
+        self._transcript_timing.accepted_segment(new_buffer=not self._pending_segments)
         self._pending_newest_final_at = time.monotonic()
         provenance = provenance or self._final_provenance(None)
         if self._pending_segments:
@@ -2196,6 +2211,7 @@ class ConversationBrain(FrameProcessor):
         # flush final and the confirmed interruption are one utterance).
         self._held_multiword.append({
             "text": text,
+            "audio_started_at": self._transcript_timing.episode_start,
             "at": time.monotonic(),
             "episode": self._vad_episode if self._physical_speech_active else None,
             # Episode counter at the hold, for a final that landed after its
@@ -2262,8 +2278,11 @@ class ConversationBrain(FrameProcessor):
         self._held_multiword = other
         if same:
             self._cancel_held_continuation_timer()
+            if not self._pending_segments:
+                self._transcript_timing.pending_start = None
             for entry in same:
                 self._pending_segments.append(entry["text"])
+                self._transcript_timing.include(entry.get("audio_started_at"))
             self._recorder.add_event(
                 "stt_held_segment_merged",
                 segments=len(same),
@@ -3795,7 +3814,14 @@ class ConversationBrain(FrameProcessor):
         workflow_turn = self._open_turn_workflow
         self._open_turn_text = self._open_turn_record = None
         self._open_turn_workflow = None
-        return text, record, workflow_turn
+        claimed = (text, record, workflow_turn)
+        # Keep timing with this exact claim, including cancellation before a
+        # TurnRecord exists. Repeated "yes"/IDs must never match by text.
+        self._claimed_audio_starts[id(claimed)] = self._open_turn_audio_start
+        self._open_turn_audio_start = None
+        if len(self._claimed_audio_starts) > 16:
+            del self._claimed_audio_starts[next(iter(self._claimed_audio_starts))]
+        return claimed
 
     async def _rollback_open_turn(
         self, claimed: tuple[str | None, TurnRecord | None, tuple | None] | None = None,
@@ -3812,9 +3838,9 @@ class ConversationBrain(FrameProcessor):
         ``claimed`` is the marker snapshot taken by :meth:`_claim_open_turn`
         BEFORE the awaited cancel; without it the markers are read now.
         """
-        text, record, workflow_turn = (
-            claimed if claimed is not None else self._claim_open_turn()
-        )
+        claimed = claimed if claimed is not None else self._claim_open_turn()
+        text, record, workflow_turn = claimed
+        audio_start = self._claimed_audio_starts.pop(id(claimed), None)
         if workflow_turn is not None and self._workflows is not None:
             # The cancelled turn already advanced the checkpointed workflow
             # (an ask consumed the fragment): rewind it too, or the merged
@@ -3860,6 +3886,7 @@ class ConversationBrain(FrameProcessor):
                         )
                     break
         self._pending_segments.insert(0, text)
+        self._transcript_timing.include(getattr(record, "audio_started_at", None) or audio_start)
         self._recorder.add_event("turn_merged_late_final", text=text)
         await self._notify_client({"type": "turn_rewound", "user_text": text})
 
@@ -3980,6 +4007,7 @@ class ConversationBrain(FrameProcessor):
             await self._cancel_generation("late_transcript_merge")
             await self._rollback_open_turn(claimed)
         text = " ".join(self._pending_segments).strip()
+        audio_started_at = self._transcript_timing.take_start()
         self._pending_segments.clear()
         self._last_buffered_final = None
         # The transcript gate judges SEGMENTS; a recording notice that the
@@ -4014,7 +4042,13 @@ class ConversationBrain(FrameProcessor):
         # A real caller turn supersedes whatever reply a barge-in cut: it is
         # answered, not re-spoken.
         self._interrupted_reply = None
-        text = await self._merge_clarified_fragment(text)
+        clarify = self._clarify_rollback
+        merged = await self._merge_clarified_fragment(text)
+        if merged != text and clarify is not None:
+            fragment_start = getattr(clarify[1], "audio_started_at", None)
+            starts = [start for start in (audio_started_at, fragment_start) if start is not None]
+            audio_started_at = min(starts) if starts else None
+        text = merged
         text = await self._maybe_recover_identifier(text)
         pending_language, self._pending_language = self._pending_language, None
         await self._cancel_generation("new_turn")
@@ -4051,7 +4085,14 @@ class ConversationBrain(FrameProcessor):
         # entry-turn marker rolled the workflow back to before entry, and
         # the merged story re-entered the flow — ticket readout spoken twice).
         self._open_turn_workflow = None
-        self._generation = self.create_task(self._handle_turn(text))
+        self._open_turn_audio_start = audio_started_at
+        # Freeze this utterance's anchor in the generation's task context.
+        # New VAD/final frames may arrive while routing is awaiting a tool.
+        timing_token = self._turn_audio_start.set(audio_started_at)
+        try:
+            self._generation = self.create_task(self._handle_turn(text))
+        finally:
+            self._turn_audio_start.reset(timing_token)
         # A turn that ends WITHOUT speaking (empty reply, provider failure)
         # would otherwise never re-arm the silence ladder; BotStarted cancels
         # this arm again the moment real reply audio begins.
@@ -4599,6 +4640,7 @@ class ConversationBrain(FrameProcessor):
         if text is not None:
             # Fast-path detection: the routed path already recorded the turn.
             self._recorder.add_turn(TurnRecord(role="user", text=text,
+                                               audio_started_at=self._transcript_timing.take_start(),
                                                route=RouteKind.CALL_CONTROL.value))
         self._recorder.flush_event_soon("call_control", action="hangup")
         self._naturalness.set_turn_criticality(True, "call_control")
@@ -4635,6 +4677,7 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(InterruptionFrame())
         if text is not None:
             self._recorder.add_turn(TurnRecord(role="user", text=text,
+                                               audio_started_at=self._transcript_timing.take_start(),
                                                route=RouteKind.CALL_CONTROL.value))
         self._recorder.disposition = "do_not_call"
         self._recorder.call_state = {
@@ -5426,6 +5469,7 @@ class ConversationBrain(FrameProcessor):
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
         turn_timestamp = time.time()
+        audio_started_at = self._turn_audio_start.get()
         self._turn_counter += 1
         self._turn_reply_queued = False
         self._turn_speech_plan = None
@@ -5499,6 +5543,7 @@ class ConversationBrain(FrameProcessor):
                 role="user",
                 text=safe_text,
                 timestamp=turn_timestamp,
+                audio_started_at=audio_started_at,
                 route="guardrail",
             ))
             self._history.append({"role": "user", "content": safe_text})
@@ -5885,6 +5930,7 @@ class ConversationBrain(FrameProcessor):
             role="user",
             text=text,
             timestamp=turn_timestamp,
+            audio_started_at=audio_started_at,
             route=decision.kind.value,
         )
         self._recorder.add_turn(turn)
@@ -6278,6 +6324,8 @@ class ConversationBrain(FrameProcessor):
         transcript, the LLM history and the last-reply marker, and the
         heard-node bookkeeping records the cut so an unheard ask is asked
         again. Unlike a continuation, nothing is re-queued or rewound."""
+        if claimed is not None:
+            self._claimed_audio_starts.pop(id(claimed), None)
         text, record, workflow_turn = claimed if claimed is not None else (None, None, None)
         dropped = False
         turns = self._recorder.turns

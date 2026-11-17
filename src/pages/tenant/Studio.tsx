@@ -160,7 +160,7 @@ export default function Studio() {
           {activeTab === "turn-detection" && <TurnDetectionTab />}
           {activeTab === "intents" && <IntentsTab bot={bot} />}
           {activeTab === "apis" && <ApisTab bot={bot} />}
-          {activeTab === "workflows" && <WorkflowsTab bot={bot} />}
+          {activeTab === "workflows" && <WorkflowsTab bot={bot} onTest={() => navigateToTab("testing")} />}
           {activeTab === "channels" && <ChannelsTab bot={bot} />}
           {activeTab === "testing" && <TestingTab bot={bot} />}
           {activeTab === "analytics" && <AnalyticsTab bot={bot} />}
