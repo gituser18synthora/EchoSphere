@@ -4,6 +4,8 @@ import { Icon } from "@/components/Icon";
 import { PasswordInput } from "@/components/ui";
 import { useApp } from "@/state/AppContext";
 import * as api from "@/services/api";
+import { InitialPasswordForm } from "@/pages/InitialPasswordForm";
+import type { SessionUserInfo } from "@/types/domain";
 import aurexionLogo from "@/assets/brand/Aurexion-logo.svg";
 import aurexionLogoWhite from "@/assets/brand/Aurexion-logo-white.svg";
 import robotMascot from "@/assets/brand/synthora-ai-front-view.png";
@@ -15,6 +17,14 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initialToken, setInitialToken] = useState<string | null>(null);
+
+  const finishSignIn = ({ token, user }: { token: string; user: SessionUserInfo }) => {
+    signIn({ id: user.id, name: user.name, email: user.email, role: user.role,
+      tenantName: user.tenantName ?? undefined, tenantId: user.tenantId, permissions: user.permissions }, token);
+    setPassword(""); setInitialToken(null);
+    navigate(user.role === "super_admin" ? "/admin" : "/t");
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -22,20 +32,9 @@ export default function Login() {
     setBusy(true);
     setError(null);
     try {
-      const { token, user } = await api.login(email.trim(), password);
-      signIn(
-        {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          tenantName: user.tenantName ?? undefined,
-          tenantId: user.tenantId,
-          permissions: user.permissions,
-        },
-        token,
-      );
-      navigate(user.role === "super_admin" ? "/admin" : "/t");
+      const result = await api.login(email.trim(), password);
+      if (result.requiresPasswordChange) { setInitialToken(result.token); setBusy(false); return; }
+      finishSignIn(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
       setBusy(false);
@@ -70,11 +69,12 @@ export default function Login() {
               </div>
             </div>
 
-            <h1 className="auth-title">Welcome back</h1>
+            <h1 className="auth-title">{initialToken ? "Set your password" : "Welcome back"}</h1>
             <p className="auth-subtitle">
               Sign in with your work email. Your role determines your workspace.
             </p>
-            <form className="col gap-12" onSubmit={submit}>
+            {initialToken ? <InitialPasswordForm token={initialToken} currentPassword={password} onComplete={finishSignIn}
+              onCancel={() => { setInitialToken(null); setPassword(""); setError(null); setBusy(false); }} /> : <form className="col gap-12" onSubmit={submit}>
               <label className="col gap-6">
                 <span className="t-section">Email</span>
                 <input
@@ -108,7 +108,7 @@ export default function Login() {
                 {busy ? <span className="spinner" /> : <Icon name="arrow-right" size={15} />}
                 {busy ? "Signing in…" : "Sign in"}
               </button>
-            </form>
+            </form>}
           </div>
         </div>
       </div>

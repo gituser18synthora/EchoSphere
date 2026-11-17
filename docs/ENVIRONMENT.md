@@ -83,6 +83,26 @@ Database schema changes are split by store: MySQL Alembic migrations under
 and Mongo collections/indexes initialized by the shared database layer. See
 [Deployment](DEPLOYMENT.md) and [pgvector](PGVECTOR.md) for commands.
 
+## Monitoring
+
+| Variable | Code default | Purpose |
+| --- | --- | --- |
+| `MONITORING_WORKER_EMBEDDED` | `true` | Run the health collector inside API workers; disable when using a dedicated collector. |
+| `MONITORING_POLL_SECONDS` | `30` | Collection interval; effective minimum 10 seconds. Dashboard polling remains 30 seconds while visible. |
+| `MONITORING_RETENTION_HOURS` | `48` | Stored health-sample retention; effective minimum 24 hours. UI history window is at most 24 hours. |
+| `MONITORING_FAILURE_THRESHOLD` | `2` | Consecutive warning/critical observations before opening an in-app alert. |
+| `MONITORING_AI_LLM_WARNING_MS` / `MONITORING_AI_LLM_CRITICAL_MS` | `1500` / `3000` | Passive LLM first-token p95 thresholds. |
+| `MONITORING_AI_STT_WARNING_MS` / `MONITORING_AI_STT_CRITICAL_MS` | `1000` / `2000` | Passive STT finalization p95 thresholds. |
+| `MONITORING_AI_TTS_WARNING_MS` / `MONITORING_AI_TTS_CRITICAL_MS` | `800` / `1600` | Passive TTS first-byte p95 thresholds. |
+
+Passive latency cards read at most 1,000 recent turn events over 15 minutes.
+At least 3 valid spans are required for threshold classification. Thresholds
+describe measured latency, not provider availability. Set warning below critical.
+The collector uses a MySQL lease to prevent duplicates across API processes,
+stores samples independently of browsers and automatically resolves observed
+recoveries. A dedicated process runs with `python -m backend.workers.monitoring`.
+No external notification delivery is configured by these settings.
+
 ## Vector index, ingestion, and retrieval
 
 | Variable | Code default | Purpose |

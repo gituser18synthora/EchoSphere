@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
+    audit_trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128"
     access_token_expire_minutes: int = 720
 
     mysql_host: str = "localhost"
@@ -83,6 +84,18 @@ class Settings(BaseSettings):
     allow_hard_delete: bool = False
     auto_run_migrations: bool = False
     enable_database_seed: bool = True
+
+    # One collector lease coordinates embedded API workers or a dedicated worker.
+    monitoring_worker_embedded: bool = True
+    monitoring_poll_seconds: float = 30.0
+    monitoring_retention_hours: int = 48
+    monitoring_failure_threshold: int = 2
+    monitoring_ai_llm_warning_ms: float = 1500
+    monitoring_ai_llm_critical_ms: float = 3000
+    monitoring_ai_stt_warning_ms: float = 1000
+    monitoring_ai_stt_critical_ms: float = 2000
+    monitoring_ai_tts_warning_ms: float = 800
+    monitoring_ai_tts_critical_ms: float = 1600
 
     superadmin_email: str = "admin@aurexion.com"
     superadmin_name: str = "Platform Admin"

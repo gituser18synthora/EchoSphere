@@ -72,14 +72,28 @@ async def lifespan(app: FastAPI):
         worker_stop = asyncio.Event()
         worker_task = asyncio.create_task(run_worker(worker_stop))
         logger.info("Embedded ingestion worker started")
-    yield
-    if worker_task and worker_stop:
-        worker_stop.set()
-        try:
-            await asyncio.wait_for(worker_task, timeout=30)
-        except (TimeoutError, asyncio.CancelledError):
-            worker_task.cancel()
-    await Mongo.disconnect()
+    monitor_task: asyncio.Task | None = None
+    monitor_stop: asyncio.Event | None = None
+    if settings.monitoring_worker_embedded and not os.environ.get("ECHOSPHERE_TEST_NULLPOOL"):
+        from backend.workers.monitoring import run_worker as run_monitor
+
+        monitor_stop = asyncio.Event()
+        monitor_task = asyncio.create_task(run_monitor(monitor_stop))
+        logger.info("Embedded monitoring collector started")
+    try:
+        yield
+    finally:
+        for stop in (worker_stop, monitor_stop):
+            if stop:
+                stop.set()
+        for task in (worker_task, monitor_task):
+            if task:
+                try:
+                    await asyncio.wait_for(task, timeout=30)
+                except (TimeoutError, asyncio.CancelledError):
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        await Mongo.disconnect()
 
 
 def create_app() -> FastAPI:
@@ -160,26 +174,9 @@ def create_app() -> FastAPI:
     @app.get("/api/health/ready")
     async def readiness():
         """Readiness: checks every backing service the API depends on."""
-        from sqlalchemy import text as sa_text
+        from shared.db.health import check_backing_services
 
-        from shared.db.mysql import get_engine
-        from shared.db.postgres import pg_health_check
-        from shared.db.redis import redis_health_check
-
-        checks: dict[str, dict] = {}
-        try:
-            with get_engine().connect() as conn:
-                conn.execute(sa_text("SELECT 1"))
-            checks["mysql"] = {"ok": True}
-        except Exception as exc:  # noqa: BLE001
-            checks["mysql"] = {"ok": False, "error": exc.__class__.__name__}
-        checks["postgres"] = await pg_health_check()
-        checks["redis"] = await redis_health_check()
-        try:
-            await Mongo.db().command("ping")
-            checks["mongodb"] = {"ok": True}
-        except Exception as exc:  # noqa: BLE001
-            checks["mongodb"] = {"ok": False, "error": exc.__class__.__name__}
+        checks = await check_backing_services()
         healthy = all(c.get("ok") for c in checks.values())
         return ok({"ready": healthy, "checks": checks})
 

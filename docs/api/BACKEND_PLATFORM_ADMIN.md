@@ -780,18 +780,36 @@ Response `200`: `{ "key": "…", "value": …, "description": "…" }`.
 ### Health metrics
 `GET /api/v1/health-metrics`
 
-Stored platform health snapshot rows. **Auth: JWT bearer. Super Admin only.** No parameters.
+Live service/dependency/host probes plus recorded monitoring history.
+**Auth: JWT bearer. Super Admin only.** Optional `hours` integer (1–24, default 24)
+selects the history window. Current checks are fresh; historical points are
+written by the background collector, not by dashboard requests.
 
 ```json
-{ "success": true, "data": [ { "name": "API latency p95", "status": "ok", "value": "180ms", "target": "<250ms", "spark": [1, 2, 3] } ] }
+{ "success": true, "data": [ { "key": "redis", "name": "Redis", "group": "platform", "status": "good", "value": "2 ms", "target": "localhost:6379", "detail": "Readiness check passed", "spark": [], "checkedAt": "2026-11-13T10:00:00Z", "latencyMs": 2, "historyAvailable": true, "historyWindowHours": 24, "sampleCount": 2, "knownSampleCount": 2, "unknownSampleCount": 0, "uptimePercent": 100, "collectedAt": "2026-11-13T10:00:00Z", "history": [{ "time": "2026-11-13T10:00:00Z", "status": "good", "latencyMs": 2 }] } ] }
 ```
+
+Rows cover runtime services, backing databases, host memory/disk/load and passive
+LLM/STT/TTS latency observations. Provider latency cards use existing recent
+turn telemetry, not synthetic provider calls. Fewer than three spans remain
+neutral. `observations` optionally contains safe numeric/status details.
+`uptimePercent` is the percentage of rated samples that were healthy, not a
+time-weighted SLA. `history` retains the worst status in at most 180 buckets;
+collection gaps are not filled. A history-store error leaves current checks
+available with `historyAvailable=false` and `historyError`.
 
 ### List alerts
 `GET /api/v1/alerts`
 
 Latest 100 platform alerts, newest first. **Auth: JWT bearer.** Any authenticated role — Super Admins see all alerts; tenant members see only alerts with `scope=tenant` for their own tenant.
 
-Query: `status` (`open`|`acknowledged`|`resolved`, optional, pattern-validated).
+Filters: `status` (`open`|`acknowledged`|`resolved`), `severity`, `scope`,
+`search` (title/source literal substring), `tenantId`, `dateFrom`, `dateTo`.
+Dates are UTC days or timezone-aware instants. Add `paginated=true`, `page`
+(default 1) and `pageSize` (1–200, default 20) for pagination; otherwise the
+legacy maximum 100 array response is preserved. Paginated responses add
+`meta.page`, `pageSize`, `total`, `totalPages`, and `counts` with totals for
+open/acknowledged/resolved/all, ignoring only the selected status filter.
 
 ```json
 { "success": true, "data": [ { "id": "alrt_…", "severity": "critical", "title": "TTS provider errors", "source": "voice-runtime", "time": "2026-08-07T06:00:00Z", "status": "open", "scope": "platform" } ] }
@@ -800,7 +818,8 @@ Query: `status` (`open`|`acknowledged`|`resolved`, optional, pattern-validated).
 ### Update alert status
 `PATCH /api/v1/alerts/{alert_id}`
 
-Acknowledge/resolve an alert. **Auth: JWT bearer. Super Admin only** (tenant members can list but not update — see Inconsistencies).
+Acknowledge, resolve or reopen an alert. **Auth: JWT bearer. Super Admin only**
+(tenant members can list/read their own alerts but not update).
 Path parameter: `alert_id` (string, required alert id). No query parameters.
 
 ```json
@@ -810,8 +829,22 @@ Path parameter: `alert_id` (string, required alert id). No query parameters.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | status | string | yes | `open`\|`acknowledged`\|`resolved` |
+| expectedStatus | string | no | Optimistic concurrency check against the current status; same enum. |
+| note | string | no | Optional action context, maximum 2000 characters, recorded in audit history. |
 
-Response `200`: serialized alert. `404` unknown alert.
+Response `200`: serialized alert, including optional `tenantId`, `serviceKey`,
+`acknowledgedBy`/`acknowledgedByName`/`acknowledgedAt` and corresponding
+`resolved*` fields. Actor ids and timestamps persist with audit history.
+`404` unknown/deleted alert; `409` stale expectedStatus. Repeating the same
+status is idempotent. This operation does not send external notifications.
+
+### Alert details
+`GET /api/v1/alerts/{alert_id}`
+
+**Auth: JWT bearer.** The same tenant visibility rules as the list apply.
+Returns the alert plus `history` (newest 200 audit entries with actor, time,
+action, masked previousValue/newValue and optional note), `historyCount` and
+`historyTruncated`. Cross-tenant or private platform alerts return 404.
 
 ### List guardrails
 `GET /api/v1/guardrails`

@@ -36,7 +36,7 @@ router = APIRouter(tags=["Intents & Entities"])
 _ENTITY_KINDS = "^(system|custom|regex|api)$"
 _DATA_TYPES = (
     "text|number|integer|decimal|date|date_range|time|duration|currency|"
-    "percentage|phone|email|account_number|policy_number|claim_number|"
+    "percentage|phone|email|identifier|account_number|policy_number|claim_number|"
     "card_last4|person_name|location|product|list|regex|api"
 )
 # Prohibited authentication secrets must never be collected as entities.

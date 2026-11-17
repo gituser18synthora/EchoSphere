@@ -177,10 +177,18 @@ CONTEXT = {"customer_name": "Rahul Sharma", "docket_number": "WL458921"}
 
 
 async def _turn(engine, text, session, **kw):
-    return await engine.handle_turn_detailed(
+    result = await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
         workflow_name="wf_0a6550d061e6", user_text=text, language="en-IN",
         context_values=CONTEXT, **kw)
+    # Preserve these journey replays by explicitly accepting each ID readback.
+    if result.get("awaitingIdentifierConfirmation"):
+        assert not any("api_lookup" in n for n in result["trace"])
+        result = await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+            workflow_name="wf_0a6550d061e6", user_text="yes", language="en-IN",
+            context_values=CONTEXT)
+    return result
 
 
 async def test_paper_roll_found_reads_back_api_fields(engine, monkeypatch):
@@ -353,10 +361,16 @@ def shape_engine(request, monkeypatch, captured, demo_upgraded):
 async def _drive(engine, finals, session, lang="en-IN"):
     out = []
     for text in finals:
-        out.append(await _turn(engine, text, session, language=lang) if False else
-                   await wfe.get_workflow_engine().handle_turn_detailed(
-                       session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
-                       workflow_name="wf_0a6550d061e6", user_text=text, language=lang, context_values=CONTEXT))
+        wf = wfe.get_workflow_engine()
+        result = await wf.handle_turn_detailed(
+            session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+            workflow_name="wf_0a6550d061e6", user_text=text, language=lang, context_values=CONTEXT)
+        if result.get("awaitingIdentifierConfirmation"):
+            assert not any("api_lookup" in n for n in result["trace"])
+            result = await wf.handle_turn_detailed(
+                session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+                workflow_name="wf_0a6550d061e6", user_text="yes", language=lang, context_values=CONTEXT)
+        out.append(result)
     return out
 
 

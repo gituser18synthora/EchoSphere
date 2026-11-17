@@ -682,6 +682,8 @@ def run_base_seed(db: Session | None = None, *, production: bool | None = None) 
 
         for role_code, perm_codes in ROLE_PERMISSIONS.items():
             role = role_map[role_code]
+            if role.permissions_customized:
+                continue
             for pc in perm_codes:
                 perm = perm_map[pc]
                 exists = db.scalar(

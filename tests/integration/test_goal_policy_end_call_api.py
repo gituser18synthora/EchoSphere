@@ -3,7 +3,7 @@
 goal_policy is one JSON document the generic voice-settings PUT replaces
 whole; the switch has its own endpoint so a UI toggle can never drop the
 bot's goals/safety rules. Covers: merge into the LATEST stored value, default
-OFF, enable/disable, strict body, bot-management permission, cross-tenant
+OFF, enable/disable, strict body, tenant voice-editing permission, cross-tenant
 404, audit row, bot-config cache invalidation, and save-time rejection of an
 invalid endCall through the generic PUT.
 """
@@ -201,12 +201,11 @@ class TestSwitch:
 
 
 class TestAccess:
-    def test_tenant_user_cannot_switch_it(self, client, ws):
-        # tenant_user holds manage_voices (general voice editing) but not
-        # bots.manage — the level this switch requires.
+    def test_tenant_voice_editor_can_switch_it(self, client, ws):
+        # Reuse manage_voices; no separate end-call permission is required.
         r = patch(client, ws, "survey", {"enabled": True}, who="member")
-        assert r.status_code == 403, r.text
-        assert stored_policy(ws["survey"]) == SURVEY_POLICY
+        assert r.status_code == 200, r.text
+        assert stored_policy(ws["survey"]) == {**SURVEY_POLICY, "endCall": {"enabled": True}}
 
     def test_other_tenant_gets_not_found(self, client, ws):
         r = patch(client, ws, "survey", {"enabled": True}, who="foreign_admin")

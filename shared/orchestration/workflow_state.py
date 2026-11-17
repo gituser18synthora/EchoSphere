@@ -64,6 +64,8 @@ class WorkflowState(TypedDict, total=False):
     # identifier, keyed by node id — a caller dictating "six zero … <pause>
     # one zero double one" accumulates across turns instead of failing.
     pending_digits: dict[str, str]
+    # Private caller candidates; absent from exported slots and audit values.
+    pending_identifier_confirmations: dict[str, dict]
     # Per-turn: set when the flow is paused at an ask node collecting a
     # numeric identifier — {node, variable, entity, held_digits}. The brain
     # uses it to run identifier-collection mode (tolerant inter-digit pause

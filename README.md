@@ -176,6 +176,90 @@ Use the super-admin email/password configured through `SUPERADMIN_EMAIL` and
 inspect the seed output/configuration locally rather than copying credentials
 into documentation. API examples use `<EMAIL>` and `<PASSWORD>` placeholders.
 
+Prompt storage uses `MEDIUMTEXT` for `full_prompt` and `compiled_prompt` on
+MySQL/MariaDB so valid multilingual prompts fit the 35,000-character
+authoring limit. Revision `71ca3e5f7b92` widens older `TEXT` columns, preserves
+their attributes and existing content, and skips columns already at
+`MEDIUMTEXT` or `LONGTEXT`. PostgreSQL/SQLite retain their native `TEXT` type.
+The migration requires an online schema inspection; automatic shrinking on
+downgrade is refused to protect existing data and pre-existing larger columns.
+
+## Security administration
+
+The Super Admin **Security** workspace manages platform accounts and tenant
+members, edits existing tenant-role permissions, and searches audit history.
+User creation, role assignment, status changes, and password resets reuse
+existing authenticated APIs. Role-permission editing and audit detail/export
+endpoints extend that API. Permission changes show a review
+step and apply to all accounts assigned that role across organizations.
+Super Admin permissions and self-demotion are protected. Customized role
+grants are preserved when the base seed runs again.
+
+Apply the security schema migration to a **local development database** before
+running the updated application:
+
+```bash
+env/bin/python -m backend.cli migrate
+```
+
+Revision `5e9c3a7b1d2f` adds persistent token revocation, credential versions,
+required initial password changes, and role-permission customization metadata.
+Temporary passwords are shown once for secure manual sharing; the application
+does not send an invitation email. They authorize password change only until
+the account owner chooses a new password. OTP/authenticator setup is deferred.
+
+The bot's **End call after goodbye** switch shares the existing tenant voice
+editing permissions (`manage_voices` or `bots.manage`); it has no separate grant.
+
+Audit search supports UTC date ranges, actor, action, organization and resource
+type. Event details and CSV exports mask sensitive fields. Exports over 5,000
+matching events return an error requiring narrower filters. Audit IP handling
+trusts forwarded chains only from `AUDIT_TRUSTED_PROXY_CIDRS` (default:
+`127.0.0.1/32,::1/128`); a trusted reverse proxy must append the actual peer IP
+or replace untrusted forwarded headers.
+
+## Monitoring
+
+`/admin/monitoring` probes runtime services, MySQL, PostgreSQL/pgvector, Redis,
+MongoDB, host memory, root disk usage and one-minute load average. FreeSWITCH
+checks authenticate over ESL and issue read-only status, call-count and Sofia
+queries. Worker cards include dependency failures, active sessions and the
+process-local LLM outage signal. Separate AI cards show observed STT finalization,
+LLM first-token and TTS first-byte p95 latency from existing `turn_timing` events;
+idle or insufficient observations remain explicitly unconfirmed. No synthetic
+provider requests are sent.
+
+The dashboard refreshes every 30 seconds while visible, retains the last
+successful health result on refresh failure and marks stale data. Alert
+acknowledge/resolve/reopen actions persist through the existing API, with actor,
+time, optional notes, audit history and stale-update conflict handling. Lists
+support filters, counts and pagination. Empty alerts do not imply healthy services.
+
+The embedded collector records health independently of browser activity. A
+database lease coordinates API processes, fences expired collectors and prevents
+duplicate incidents. By default two consecutive warning/critical samples open
+an in-app alert; an observed healthy recovery resolves it. Manually resolved
+incidents stay resolved during the same outage; recovery followed by another
+failure creates a new incident. External on-call notifications are not configured
+or claimed by this UI.
+
+History retains 48 hours by default and displays up to the last 24 hours of actual
+samples. Percentages count healthy observations, not elapsed-time SLA uptime.
+Timeline buckets retain the worst observed status, and collection gaps remain
+blank. History starts when collection is enabled and never backfills invented data.
+`MONITORING_*` settings are listed in `.env.example`; AI latency thresholds are
+configurable operating limits, not provider availability guarantees.
+
+Apply the local schema before starting the updated local backend:
+
+```bash
+env/bin/python -m alembic -c backend/alembic.ini upgrade head
+```
+
+For a dedicated collector, set `MONITORING_WORKER_EMBEDDED=false` and run
+`env/bin/python -m backend.workers.monitoring`. These instructions do not authorize
+production changes or deployment.
+
 ## Tests
 
 ```bash

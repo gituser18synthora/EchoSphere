@@ -311,11 +311,14 @@ class TestIntentNode:
             engine, "sorry, it is seven zero zero one zero zero three",
             session="i-correct", name="correction_flow",
         )
-
+        assert result["awaitingIdentifierConfirmation"] is True
+        assert "order_ref2" not in result["slots"]
+        assert "verify" not in result["trace"]
+        result = await _turn(engine, "yes", session="i-correct", name="correction_flow")
         assert result["done"] is True
         assert result["offScript"] is False
         assert result["slots"]["order_ref2"] == "7001003"
-        assert result["trace"] == ["offer", "verify", "end"]
+        assert result["trace"] == ["offer__identifier_correction", "verify", "end"]
         assert "Verification ran" in result["reply"]
 
         await _turn(engine, "hello", session="i-agent", name="correction_flow")

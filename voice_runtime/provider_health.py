@@ -55,6 +55,28 @@ class ProviderHealth:
         self._voted: OrderedDict[str, bool] = OrderedDict()
         self._streak: list[_Failure] = []
         self.outage: dict | None = None
+        self.last_observed_at: datetime | None = None
+
+    def snapshot(self) -> dict:
+        """Sanitized, process-local passive signal for the health endpoint.
+
+        No provider request is made. An idle process is explicitly unknown;
+        provider reachability is never inferred from worker liveness.
+        """
+        outage = self.outage
+        return {
+            "status": "down" if outage else ("degraded" if self._streak else ("up" if self._voted else "unknown")),
+            "scope": "process",
+            "coverage": "LLM first outcome per call; STT/TTS are not observed",
+            "observed_calls": len(self._voted),
+            "consecutive_failures": len(self._streak),
+            "last_observed_at": self.last_observed_at.isoformat() if self.last_observed_at else None,
+            "outage": {
+                "provider": outage["provider"],
+                "since": outage["since"].isoformat(),
+                "failed_calls": outage["failed_calls"],
+            } if outage else None,
+        }
 
     # ── votes ───────────────────────────────────────────────────────────
     def _vote(self, session_id: str, ok: bool) -> bool:
@@ -63,6 +85,7 @@ class ProviderHealth:
         if key in self._voted:
             return False
         self._voted[key] = ok
+        self.last_observed_at = datetime.now(timezone.utc)
         while len(self._voted) > _VOTES_REMEMBERED:
             self._voted.popitem(last=False)
         return True

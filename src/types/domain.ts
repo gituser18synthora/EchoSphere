@@ -26,6 +26,7 @@ export interface SessionUserInfo {
   permissions: string[];
   status: string;
   lastLoginAt?: string | null;
+  requiresPasswordChange?: boolean;
   passwordChangedAt?: string | null;
 }
 
@@ -38,6 +39,26 @@ export interface RoleInfo {
   permissions: string[];
   permissionCount: number;
   members: number;
+  permissionsCustomized?: boolean;
+}
+
+export interface PermissionInfo {
+  id: string; code: string; name: string; category: string; description: string;
+}
+
+export interface SecurityUserFilters {
+  scope?: "platform" | "tenant" | "all"; tenantId?: string; roleCode?: string;
+  status?: string; search?: string; page?: number; pageSize?: number;
+}
+
+export interface AuditFilters {
+  search?: string; actor?: string; action?: string; tenantId?: string;
+  entityType?: string; dateFrom?: string; dateTo?: string; page?: number; pageSize?: number;
+}
+
+export interface AuditDetail extends AuditEvent {
+  userId?: string | null; tenantId?: string | null;
+  previousValue: unknown; newValue: unknown;
 }
 
 export interface SipTrunk {
@@ -1924,12 +1945,43 @@ export interface ConversationRecording {
 
 export interface PlatformAlert {
   id: string;
-  severity: Severity;
+  severity: Severity | "info";
   title: string;
   source: string;
   time: string;
   status: "open" | "acknowledged" | "resolved";
   scope: "platform" | "ai" | "telephony" | "tenant";
+  tenantId?: string | null;
+  serviceKey?: string | null;
+  acknowledgedBy?: string | null;
+  acknowledgedByName?: string | null;
+  acknowledgedAt?: string | null;
+  resolvedBy?: string | null;
+  resolvedByName?: string | null;
+  resolvedAt?: string | null;
+}
+
+export interface AlertFilters {
+  status?: PlatformAlert["status"];
+  severity?: PlatformAlert["severity"];
+  scope?: PlatformAlert["scope"];
+  search?: string;
+  tenantId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface AlertDetail extends PlatformAlert {
+  historyCount?: number;
+  historyTruncated?: boolean;
+  history: {
+    id: string; actor: string; action: string; time: string;
+    previousValue?: Record<string, unknown> | null;
+    newValue?: Record<string, unknown> | null;
+    note?: string | null;
+  }[];
 }
 
 export interface AuditEvent {
@@ -1955,6 +2007,9 @@ export interface TeamMember {
   lastActive: string;
   botsOwned: number;
   mfa?: boolean;
+  tenantId?: string | null;
+  tenantName?: string | null;
+  lastLoginAt?: string | null;
 }
 
 export interface Integration {
@@ -2095,6 +2150,19 @@ export interface HealthMetric {
   group: string;
   /** Probe outcome, e.g. "http://127.0.0.1:9002/health → 200". */
   detail: string;
+  key?: string;
+  checkedAt?: string;
+  latencyMs?: number | null;
+  observations?: Record<string, unknown>;
+  historyAvailable?: boolean;
+  historyError?: string;
+  historyWindowHours?: number;
+  sampleCount?: number;
+  knownSampleCount?: number;
+  unknownSampleCount?: number;
+  uptimePercent?: number | null;
+  collectedAt?: string | null;
+  history?: { time: string; status: Severity; latencyMs?: number | null }[];
 }
 
 /* ---------- Analytics series ---------- */

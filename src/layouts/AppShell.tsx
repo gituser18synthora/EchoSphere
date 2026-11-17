@@ -125,7 +125,7 @@ export default function AppShell() {
   // handled by the http layer (sign-out + redirect).
   useEffect(() => {
     let cancelled = false;
-    me()
+    const refreshPermissions = () => { me()
       .then((u) => {
         if (cancelled) return;
         updateSessionUser({
@@ -134,8 +134,12 @@ export default function AppShell() {
           permissions: u.permissions,
         });
       })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
+      .catch(() => undefined); };
+    refreshPermissions();
+    window.addEventListener("focus", refreshPermissions);
+    window.addEventListener("echosphere:permissions-changed", refreshPermissions);
+    return () => { cancelled = true; window.removeEventListener("focus", refreshPermissions);
+      window.removeEventListener("echosphere:permissions-changed", refreshPermissions); };
   }, [updateSessionUser]);
   const location = useLocation();
   const navigate = useNavigate();
@@ -411,7 +415,7 @@ export default function AppShell() {
                   </div>
                 </div>
                 <div className="menu-sep" />
-                <button type="button" className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>
+                <button type="button" className="menu-item danger" onClick={() => { void signOut().then(() => navigate("/login")).catch(() => undefined); }}>
                   <Icon name="logout" size={14} /> Log out
                 </button>
               </div>
@@ -492,7 +496,7 @@ export default function AppShell() {
           </nav>
 
           <div className="sidebar-foot">
-            <button type="button" className="nav-item" title={collapsed ? "Sign out" : undefined} onClick={() => { signOut(); navigate("/login"); }}>
+            <button type="button" className="nav-item" title={collapsed ? "Sign out" : undefined} onClick={() => { void signOut().then(() => navigate("/login")).catch(() => undefined); }}>
               <Icon name="logout" size={16} />
               <span className="nav-label">Sign out</span>
             </button>

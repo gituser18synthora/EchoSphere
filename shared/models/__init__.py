@@ -1,7 +1,7 @@
 """Import every model so Base.metadata sees all tables (Alembic autogenerate)."""
 
 from shared.models.base import Base
-from shared.models.auth_models import Permission, Role, RolePermission, User
+from shared.models.auth_models import Permission, Role, RolePermission, User, RevokedToken
 from shared.models.tenancy_models import (
     Invoice,
     Plan,
@@ -72,10 +72,11 @@ from shared.models.compliance_models import CompliancePolicy, ComplianceWording
 from shared.models.collections_models import CustomerCollectionContext
 from shared.models.context_models import RuntimeContextRecord, RuntimeContextSchema
 from shared.models.memory_models import ConversationMemory
+from shared.models.monitoring_models import MonitoringSample, MonitoringServiceState, MonitoringCollectorLease
 
 __all__ = [
     "Base",
-    "Role", "Permission", "RolePermission", "User",
+    "Role", "Permission", "RolePermission", "User", "RevokedToken",
     "Tenant", "TenantApiKey", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
     "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "VoiceCloneAudio",
     "PronunciationDictionary",
@@ -92,4 +93,5 @@ __all__ = [
     "CustomerCollectionContext",
     "RuntimeContextSchema", "RuntimeContextRecord",
     "ConversationMemory",
+    "MonitoringSample", "MonitoringServiceState", "MonitoringCollectorLease",
 ]

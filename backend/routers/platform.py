@@ -1,12 +1,15 @@
 """Platform governance & operations: alerts, health, models, guardrails,
 phone numbers, SIP trunks, reference templates, system settings."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.core.audit import record_audit
+from backend.core.audit import _sanitize, record_audit
+from backend.core.date_filters import parse_date_range
 from backend.core.deps import (
     get_current_user,
     is_super_admin,
@@ -17,9 +20,11 @@ from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.service_health import probe_services
+from backend.core.monitoring import add_recorded_history
 from shared.db.mysql import get_db
 from shared.models import (
     ApprovedModel,
+    AuditLog,
     ChannelConfig,
     Guardrail,
     GuardrailProfile,
@@ -35,6 +40,7 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import (
+    iso,
     serialize_alert,
     serialize_guardrail,
     serialize_guardrail_profile,
@@ -50,26 +56,111 @@ router = APIRouter(tags=["Platform"])
 # ── Alerts ───────────────────────────────────────────────────────────────────
 
 
+def _alert_names(db: Session, rows: list[PlatformAlert]) -> dict[str, str]:
+    ids = {value for row in rows for value in (row.acknowledged_by, row.resolved_by) if value}
+    return dict(db.execute(select(User.id, User.name).where(User.id.in_(ids))).all()) if ids else {}
+
+
+def _alert_payload(row: PlatformAlert, names: dict[str, str]) -> dict:
+    return {
+        **serialize_alert(row),
+        "tenantId": row.tenant_id,
+        "serviceKey": row.service_key,
+        "acknowledgedBy": row.acknowledged_by,
+        "acknowledgedByName": names.get(row.acknowledged_by),
+        "acknowledgedAt": iso(row.acknowledged_at),
+        "resolvedBy": row.resolved_by,
+        "resolvedByName": names.get(row.resolved_by),
+        "resolvedAt": iso(row.resolved_at),
+        "createdAt": iso(row.created_at),
+        "updatedAt": iso(row.updated_at),
+    }
+
+
+def _visible_alerts(user: User, tenant_id: str | None = None):
+    stmt = select(PlatformAlert).where(PlatformAlert.is_deleted.is_(False))
+    if not is_super_admin(user):
+        if not user.tenant_id or (tenant_id and tenant_id != user.tenant_id):
+            raise NotFoundError("Organization")
+        # A tenant id alone is insufficient: platform alerts must remain private.
+        stmt = stmt.where(PlatformAlert.scope == "tenant", PlatformAlert.tenant_id == user.tenant_id)
+    elif tenant_id:
+        stmt = stmt.where(PlatformAlert.tenant_id == tenant_id)
+    return stmt
+
+
 @router.get("/alerts")
 def list_alerts(
     status: str | None = Query(None, pattern="^(open|acknowledged|resolved)$"),
+    severity: str | None = Query(None, pattern="^(good|warning|serious|critical|neutral|info)$"),
+    scope: str | None = Query(None, pattern="^(platform|ai|telephony|tenant)$"),
+    search: str | None = Query(None, max_length=200),
+    tenant_id: str | None = Query(None, alias="tenantId", max_length=40),
+    date_from: str | None = Query(None, alias="dateFrom", max_length=64),
+    date_to: str | None = Query(None, alias="dateTo", max_length=64),
+    paginated: bool = Query(False),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=200),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    stmt = select(PlatformAlert).where(PlatformAlert.is_deleted.is_(False))
-    if not is_super_admin(user):
-        # Tenant members see only alerts scoped to their tenant.
-        stmt = stmt.where(
-            PlatformAlert.scope == "tenant", PlatformAlert.tenant_id == user.tenant_id
-        )
+    stmt = _visible_alerts(user, tenant_id)
+    try:
+        lower, upper = parse_date_range(date_from, date_to)
+    except (ValueError, OverflowError):
+        raise ApiError("Use a valid date or ISO-8601 timestamp.", 422) from None
+    occurred = func.coalesce(PlatformAlert.occurred_at, PlatformAlert.created_at)
+    if severity:
+        stmt = stmt.where(PlatformAlert.severity == severity)
+    if scope:
+        stmt = stmt.where(PlatformAlert.scope == scope)
+    if search and search.strip():
+        value = search.strip()
+        stmt = stmt.where(or_(PlatformAlert.title.contains(value, autoescape=True),
+                              PlatformAlert.source.contains(value, autoescape=True)))
+    if lower:
+        stmt = stmt.where(occurred >= lower)
+    if upper:
+        stmt = stmt.where(occurred <= upper)
+    counts = None
+    if paginated:
+        # Keep the other status totals useful while viewing a selected status.
+        base = stmt.subquery()
+        grouped = dict(db.execute(select(base.c.status, func.count()).group_by(base.c.status)).all())
+        counts = {name: grouped.get(name, 0) for name in ("open", "acknowledged", "resolved")}
+        counts["total"] = sum(grouped.values())
     if status:
         stmt = stmt.where(PlatformAlert.status == status)
-    rows = db.scalars(stmt.order_by(PlatformAlert.occurred_at.desc()).limit(100)).all()
-    return ok([serialize_alert(a) for a in rows])
+    total = (db.scalar(select(func.count()).select_from(stmt.subquery())) or 0) if paginated else None
+    stmt = stmt.order_by(occurred.desc(), PlatformAlert.id.desc())
+    rows = list(db.scalars(stmt.offset((page - 1) * page_size).limit(page_size) if paginated else stmt.limit(100)).all())
+    names = _alert_names(db, rows)
+    meta = {"page": page, "pageSize": page_size, "total": total,
+            "totalPages": max(1, -(-total // page_size)), "counts": counts} if paginated else None
+    return ok([_alert_payload(row, names) for row in rows], meta=meta)
+
+
+@router.get("/alerts/{alert_id}")
+def alert_detail(alert_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.scalar(_visible_alerts(user).where(PlatformAlert.id == alert_id))
+    if row is None:
+        raise NotFoundError("Alert")
+    history_query = select(AuditLog).where(AuditLog.entity_type == "alert", AuditLog.entity_id == row.id)
+    # Old audit rows have no tenant id; the alert access check above still protects them.
+    history_count = db.scalar(select(func.count()).select_from(history_query.subquery())) or 0
+    events = db.scalars(history_query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(200)).all()
+    return ok({**_alert_payload(row, _alert_names(db, [row])),
+        "history": [{"id": event.id, "actor": event.actor_name or "System", "userId": event.user_id,
+                     "action": event.action, "time": iso(event.created_at),
+                     "previousValue": _sanitize(event.previous_value), "newValue": _sanitize(event.new_value),
+                     "note": (event.new_value or {}).get("note")} for event in events],
+        "historyCount": history_count, "historyTruncated": history_count > 200})
 
 
 class AlertUpdateRequest(BaseModel):
     status: str = Field(pattern="^(open|acknowledged|resolved)$")
+    expectedStatus: str | None = Field(None, pattern="^(open|acknowledged|resolved)$")
+    note: str | None = Field(None, max_length=2000)
 
 
 @router.patch("/alerts/{alert_id}")
@@ -80,32 +171,55 @@ def update_alert(
     user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    row = db.get(PlatformAlert, alert_id)
+    row = db.scalar(select(PlatformAlert).where(PlatformAlert.id == alert_id).with_for_update())
     if row is None or row.is_deleted:
         raise NotFoundError("Alert")
-    before = {"status": row.status}
+    if body.expectedStatus is not None and row.status != body.expectedStatus:
+        raise ApiError("This alert has changed. Refresh it before updating its status.", 409)
+    if row.status == body.status:
+        return ok(_alert_payload(row, _alert_names(db, [row])))
+    before = {"status": row.status, "acknowledgedBy": row.acknowledged_by,
+              "acknowledgedAt": iso(row.acknowledged_at), "resolvedBy": row.resolved_by,
+              "resolvedAt": iso(row.resolved_at)}
     row.status = body.status
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if body.status == "acknowledged":
+        row.acknowledged_by, row.acknowledged_at = user.id, now
+        row.resolved_by, row.resolved_at = None, None
+    elif body.status == "resolved":
+        row.resolved_by, row.resolved_at = user.id, now
+    else:
+        row.acknowledged_by, row.acknowledged_at = None, None
+        row.resolved_by, row.resolved_at = None, None
+    after = {"status": row.status, "acknowledgedBy": row.acknowledged_by,
+             "acknowledgedAt": iso(row.acknowledged_at), "resolvedBy": row.resolved_by,
+             "resolvedAt": iso(row.resolved_at)}
+    if body.note and body.note.strip():
+        after["note"] = body.note.strip()
     record_audit(
         db, user=user, action=f"Alert {body.status}", entity_type="alert",
-        entity_id=row.id, target_label=row.title, previous_value=before,
-        new_value={"status": row.status}, request=request,
+        entity_id=row.id, target_label=row.title, tenant_id=row.tenant_id, previous_value=before,
+        new_value=after, request=request,
     )
     db.commit()
-    return ok(serialize_alert(row))
+    return ok(_alert_payload(row, _alert_names(db, [row])))
 
 
 # ── Health ───────────────────────────────────────────────────────────────────
 
 
 @router.get("/health-metrics")
-async def platform_health(user: User = Depends(require_super_admin)):
+async def platform_health(
+    hours: int = Query(24, ge=1, le=24),
+    user: User = Depends(require_super_admin),
+):
     """Live status of the platform's runtime services.
 
     Probed on every request from the hosts/ports in ``.env`` — never read
     back from a stored snapshot, which could only ever report how things
     looked when it was written.
     """
-    return ok(await probe_services())
+    return ok(await add_recorded_history(await probe_services(), hours=hours))
 
 
 # ── Approved models ──────────────────────────────────────────────────────────

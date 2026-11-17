@@ -398,3 +398,43 @@ published workflow v13).
 - Deployment to DEMO / PROD needs: the tenant service running on the box, the
   key in that box's `.env` and service restarts, then the three setup scripts
   with `--base`; and a new release so the published bot pins workflow v11.
+
+## Identifier confirmation (2026-11-16)
+
+DEMO now runs release **v0.1.30**, pinned workflow **v51**, and system prompt
+**v17**. Only this bot's workflow/prompt configuration was published; no live
+platform or merchant-service code was changed and no service was restarted.
+
+Each of the four Terminal ID collection paths now reads back the captured ID
+before merchant lookup. An explicit affirmative proceeds; rejection asks for
+the complete ID again. A complete inline correction is read back again before
+lookup. Prefix and suffix letters are retained, including `A2129007`,
+`1132986A` and `4166725M`; an eight is never silently changed to A. The
+existing missing-ID exit and lookup-not-found retry remain in place.
+`setup/identifier_confirmation.py` contains the idempotent configuration
+transform. Its `identifierConfirmationNode` / `confirmsIdentifier` metadata
+lets the local platform implementation recognize this explicit gate without
+asking the same confirmation twice after a future code rollout.
+
+The platform code is **LOCAL only**. Shared workflow ASK resolution now keeps
+new business-ID/phone candidates in private checkpoint state, reads them back,
+and commits the slot only after explicit confirmation. Entry-utterance and
+secondary captures use the same gate. Phone readback preserves the existing
+masked-slot/audit contract; the full readback candidate is not exported as a
+workflow slot. Amounts, dates and authentication secrets do not acquire this
+identifier gate. Free-form generated replies also receive a common identifier
+confirmation instruction; deterministic enforcement is in workflow ASK
+resolution. No production rollout is authorized by this change.
+
+This is a tenant-independent identifier rule, not a TID/phone whitelist.
+Any custom field can declare `dataType: "identifier"` (available in the
+entity and workflow editors), `semanticType: "identifier"`, or the existing
+`requireConfirmation: true` metadata. Existing generic ID/reference/number
+names also work in snake_case, camelCase or acronym form, including
+`bookingId`, `complaintID`, `customerReferenceNumber` and `ticketNo`. Opaque
+legacy field names need explicit schema metadata; a regex alone does not
+identify a field's business purpose. Authored matchers remain responsible
+for format validation, including all-letter IDs. The readback preserves
+meaningful separators, and unavailable outcomes stay separate from actual
+identifier values. An intent hub's `identifierCorrection` path also stages
+the replacement for confirmation before reaching its verification target.

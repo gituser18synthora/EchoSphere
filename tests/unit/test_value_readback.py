@@ -69,8 +69,12 @@ def test_escape_hatches_win(text, action):
 
 
 async def call(graph, text, session="s", language="en-IN"):
-    return await graph.ainvoke({"user_text": text, "language": language},
-                              {"configurable": {"thread_id": session}})
+    thread = {"configurable": {"thread_id": session}}
+    result = await graph.ainvoke({"user_text": text, "language": language}, thread)
+    # Caller confirms collection before the later on-demand readback scenarios.
+    if result.get("awaiting") in (result.get("pending_identifier_confirmations") or {}):
+        result = await graph.ainvoke({"user_text": "yes", "language": language}, thread)
+    return result
 
 
 @pytest.mark.parametrize("text,language", [
@@ -199,10 +203,15 @@ async def test_engine_context_question_reset_and_export(monkeypatch):
     monkeypatch.setattr(engine, "_get_checkpointer", memory)
 
     async def turn(text, **kwargs):
-        return await engine.handle_turn_detailed(
+        result = await engine.handle_turn_detailed(
             session_id="context", tenant_id="tenant", bot_id="bot", workflow_name="wf",
             user_text=text, language="en-IN", **kwargs,
         )
+        if result.get("awaitingIdentifierConfirmation"):
+            result = await engine.handle_turn_detailed(
+                session_id="context", tenant_id="tenant", bot_id="bot", workflow_name="wf",
+                user_text="yes", language="en-IN")
+        return result
 
     await turn("1234567890")
     result = await turn("confirm my mobile number", pause_for_context=True)

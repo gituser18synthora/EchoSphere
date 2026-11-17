@@ -285,9 +285,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
   const { toast, hasPermission } = useApp();
   const canManage = hasPermission("manage_voices") || hasPermission("bots.manage");
   const noPermTitle = canManage ? undefined : "Requires the manage_voices permission";
-  /* The end-call switch decides when the bot may hang up on a caller: bot
-     management level, not general voice editing (the backend enforces it). */
-  const canManageBot = hasPermission("bots.manage");
+  /* This tenant-level switch uses the same permission as other voice settings. */
 
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
   /* goal_policy.endCall.enabled — saved immediately through its own PATCH
@@ -959,11 +957,11 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                       </span>
                     )}
                   </div>
-                  <span title={canManageBot ? undefined : "Requires the bots.manage permission"}>
+                  <span title={noPermTitle}>
                     <Toggle
                       label="End call after goodbye"
                       checked={endCallOn}
-                      disabled={!canManageBot || goalEngineOffSaved || endCallSaving}
+                      disabled={!canManage || goalEngineOffSaved || endCallSaving}
                       onChange={(enabled) => { void toggleEndCall(enabled); }}
                     />
                   </span>

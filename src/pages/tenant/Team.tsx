@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { inviteUser, listRoles, listTeam, resetUserPassword } from "@/services/api";
+import { inviteUser, listRoles, listTeam, resetUserPassword, updateUser } from "@/services/api";
 import {
-  Avatar, Button, CardSkeleton, Field, MenuButton, Modal, PasswordInput, StatusChip,
+  Avatar, Button, CardSkeleton, ConfirmModal, Field, MenuButton, Modal, PasswordInput, StatusChip,
   type MenuAction,
 } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
@@ -34,6 +34,26 @@ export default function Team() {
   const [err, setErr] = useState("");
   const [pwErr, setPwErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [roleTarget, setRoleTarget] = useState<TeamMember | null>(null);
+  const [roleChoice, setRoleChoice] = useState("");
+  const [roleBusy, setRoleBusy] = useState(false);
+  const [roleError, setRoleError] = useState("");
+  const [statusTarget, setStatusTarget] = useState<TeamMember | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const saveRole = async () => {
+    if (!roleTarget) return;
+    setRoleBusy(true); setRoleError("");
+    try { await updateUser(roleTarget.id, { roleCode: roleChoice }); q.reload(); rolesQ.reload(); setRoleTarget(null); toast("Member role updated."); }
+    catch (e) { setRoleError(e instanceof Error ? e.message : "Could not change the role."); }
+    finally { setRoleBusy(false); }
+  };
+  const saveStatus = async () => {
+    if (!statusTarget) return;
+    setStatusBusy(true);
+    try { await updateUser(statusTarget.id, { status: statusTarget.status === "deactivated" ? "active" : "deactivated" }); q.reload(); setStatusTarget(null); toast("Member status updated."); }
+    catch (e) { toast(e instanceof Error ? e.message : "Could not change member status.", "error"); }
+    finally { setStatusBusy(false); }
+  };
 
   const tenantRoles = (rolesQ.data ?? []).filter((r) => r.scope === "tenant");
   // New members are always added as Tenant User — admin and platform roles
@@ -151,7 +171,7 @@ export default function Team() {
                 const isSelf = m.id === user?.id ||
                   (!!user?.email && m.email.toLowerCase() === user.email.toLowerCase());
                 const actions: (MenuAction | "sep")[] = [
-                  { label: "Change role", icon: "shield", onClick: () => toast(`Role editor opened for ${m.name}`, "info") },
+                  { label: "Change role", icon: "shield", disabled: isSelf, onClick: () => { setRoleTarget(m); setRoleChoice(m.roleCode ?? "tenant_user"); setRoleError(""); } },
                   { label: "Transfer bot ownership", icon: "bot", onClick: () => toast("Ownership transfer requires the receiving member to accept", "info") },
                 ];
                 if (canResetPassword && !isSelf) {
@@ -159,9 +179,7 @@ export default function Team() {
                 }
                 actions.push(
                   "sep",
-                  m.status === "invited"
-                    ? { label: "Resend invite", icon: "mail", onClick: () => toast(`Invite resent to ${m.email}`) }
-                    : { label: "Deactivate", icon: "x-circle", danger: true, onClick: () => toast(`${m.name} deactivated — owned bots need reassignment`, "info") },
+                  { label: m.status === "deactivated" ? "Reactivate" : "Deactivate", icon: "x-circle", danger: m.status !== "deactivated", disabled: isSelf, onClick: () => setStatusTarget(m) },
                 );
                 return <MenuButton actions={actions} />;
               },
@@ -197,6 +215,19 @@ export default function Team() {
           </div>
         )}
       </div>
+
+      <Modal open={!!roleTarget} title="Change member role" onClose={() => { if (!roleBusy) setRoleTarget(null); }}
+        footer={<><Button disabled={roleBusy} onClick={() => setRoleTarget(null)}>Cancel</Button><Button variant="primary" busy={roleBusy} disabled={roleChoice === roleTarget?.roleCode} onClick={() => void saveRole()}>Confirm role change</Button></>}>
+        <div className="col gap-12"><p>Change the role for {roleTarget?.name}. Their available actions will follow the selected role.</p>
+          <p className="field-hint">Only a Super Admin can grant Tenant Admin access.</p>
+          {roleError && <p role="alert" className="field-error">{roleError}</p>}
+          <Field label="Member role"><select className="select" value={roleChoice} onChange={(e) => setRoleChoice(e.target.value)}>
+            {tenantRoles.filter((r) => r.code === "tenant_user" || r.code === roleTarget?.roleCode || user?.role === "super_admin").map((r) => <option key={r.id} value={r.code} disabled={r.code !== "tenant_user" && user?.role !== "super_admin"}>{r.name}</option>)}
+          </select></Field>
+        </div>
+      </Modal>
+      <ConfirmModal open={!!statusTarget} title="Change member status" body={`Change account access for ${statusTarget?.name ?? "this member"}?`} busy={statusBusy} danger={statusTarget?.status !== "deactivated"}
+        onClose={() => { if (!statusBusy) setStatusTarget(null); }} onConfirm={() => void saveStatus()} />
 
       <Modal
         open={inviteOpen} onClose={closeModal}

@@ -1,6 +1,7 @@
 """Audit-trail writer. Values are sanitized — secrets never reach the log."""
 
 from typing import Any
+from ipaddress import ip_address, ip_network
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -11,13 +12,14 @@ from shared.models import AuditLog, User
 _SENSITIVE_KEYS = {
     "password", "password_hash", "secret", "api_key", "apikey", "token",
     "access_token", "refresh_token", "authorization", "credential", "private_key",
+    "cookie", "recovery_code",
 }
 
 
 def _sanitize(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            k: ("***" if any(s in k.lower() for s in _SENSITIVE_KEYS) else _sanitize(v))
+            k: ("***" if any(s in k.lower().replace("-", "_") for s in _SENSITIVE_KEYS) else _sanitize(v))
             for k, v in value.items()
         }
     if isinstance(value, list):
@@ -28,10 +30,22 @@ def _sanitize(value: Any) -> Any:
 def client_ip(request: Request | None) -> str | None:
     if request is None:
         return None
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else None
+    peer = request.client.host if request.client else None
+    if not peer:
+        return None
+    from shared.config import get_settings
+    try:
+        networks = [ip_network(value.strip()) for value in get_settings().audit_trusted_proxy_cidrs.split(",") if value.strip()]
+        if any(ip_address(peer) in network for network in networks):
+            # Walk from the trusted peer towards the client; ignore forged left-most hops.
+            chain = request.headers.get("x-forwarded-for", "").split(",")
+            for value in reversed(chain):
+                address = ip_address(value.strip())
+                if not any(address in network for network in networks):
+                    return str(address)
+    except ValueError:
+        pass
+    return peer
 
 
 def record_audit(

@@ -108,9 +108,15 @@ class IdentifierCapture:
 
     def candidate(self, buffered_text: str) -> str:
         """Workflow-held digits + the digits of the brain's pending buffer."""
-        return (self.held_digits + spoken_digit_sequence(buffered_text or ""))
+        if self.entity.get("preserveAlphanumeric") or self.entity.get("dataType") == "identifier":
+            from shared.orchestration.identifier_confirmation import identifier_sequence
+            return self.held_digits + identifier_sequence(buffered_text or "")
+        return self.held_digits + spoken_digit_sequence(buffered_text or "")
 
     def is_dictation(self, text: str) -> bool:
+        if self.entity.get("preserveAlphanumeric") or self.entity.get("dataType") == "identifier":
+            from shared.orchestration.identifier_confirmation import identifier_dictation
+            return identifier_dictation(text)
         return digits_dominant(text or "")
 
     def matches(self, digits: str) -> bool:
@@ -121,7 +127,7 @@ class IdentifierCapture:
         return bool(extract_entity(digits, dict(self.entity)).get("matched"))
 
     def overflowed(self, digits: str) -> bool:
-        return len(digits) > self.max_digits
+        return sum(c.isdigit() for c in digits) > self.max_digits
 
     def hold_delay(self, buffered_text: str) -> float | None:
         """How long to wait before dispatching the buffered dictation.
@@ -135,6 +141,12 @@ class IdentifierCapture:
         digits = self.candidate(buffered_text)
         if not digits:
             return None
-        if self.matches(digits) or self.overflowed(digits) or self.expired():
+        if self.matches(digits):
+            # Leave room for a separately finalized suffix letter. A numeric
+            # prefix can be a valid ID before the caller has finished it.
+            if (self.entity.get("preserveAlphanumeric") or self.entity.get("dataType") == "identifier") and not any(c.isalpha() for c in digits):
+                return min(self.pause_window, 0.8)
+            return 0.0
+        if self.overflowed(digits) or self.expired():
             return 0.0
         return self.pause_window

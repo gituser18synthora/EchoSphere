@@ -12,6 +12,7 @@ methods. Everything downstream sees a ``User`` either way.
 """
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 import jwt as pyjwt
 from fastapi import Depends, Request
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from shared.errors import ApiError, ForbiddenError
 from shared.db.mysql import get_db
-from shared.models import User
+from shared.models import User, RevokedToken
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -57,12 +58,24 @@ def get_current_user(
     if user is None or user.is_deleted or user.status == "deactivated":
         raise ApiError("Account is not active.", 401)
 
+    if db.get(RevokedToken, sha256(bearer.encode()).hexdigest()) is not None:
+        raise ApiError("Session expired — please sign in again.", 401)
+    if payload.get("version", 0) != user.auth_version:
+        raise ApiError("Session expired — please sign in again.", 401)
+    purpose = payload.get("purpose", "access")
+    if purpose not in ("access", "password_change"):
+        raise ApiError("Invalid session purpose.", 401)
+    if purpose == "password_change" or user.status == "invited" or user.must_change_password:
+        allowed = ("/auth/logout", "/users/me/password")
+        if not any(request.url.path.endswith(path) for path in allowed):
+            raise ApiError("Change your temporary password before continuing.", 403)
+
     # Tokens issued before the last password change are no longer valid —
     # this is how "sign out other sessions" works with stateless JWTs.
     issued_at = payload.get("iat")
     if user.password_changed_at is not None and issued_at is not None:
         changed_ts = user.password_changed_at.replace(tzinfo=timezone.utc).timestamp()
-        if float(issued_at) < changed_ts - 1:  # 1s clock-skew grace
+        if float(issued_at) < changed_ts:
             raise ApiError("Session expired — please sign in again.", 401)
 
     user.last_active_at = datetime.now(timezone.utc)

@@ -1214,11 +1214,13 @@ describe("VoiceTab — End call after goodbye", () => {
     expect(screen.queryByTestId("end-call-engine-off")).not.toBeInTheDocument();
   });
 
-  it("requires bots.manage: a voice editor without it sees the switch read-only", async () => {
+  it("lets a tenant voice editor switch end call without a separate permission", async () => {
     perms.has = (code) => code === "manage_voices";
     render(<VoiceTab bot={BOT} />);
     const toggle = await endCallSwitch();
-    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeDisabled();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenCalledWith("bot_1", true));
     // General voice editing is still available to this role.
     expect(screen.getByRole("switch", { name: "Goal Engine" })).not.toBeDisabled();
   });

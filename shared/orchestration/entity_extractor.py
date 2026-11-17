@@ -13,6 +13,7 @@ from typing import Any
 # Built-in patterns per data_type. Deliberately conservative: false negatives
 # are recoverable in conversation, false positives are not.
 _TYPE_PATTERNS: dict[str, str] = {
+    "identifier": r"(?<![A-Za-z0-9])([A-Za-z]{0,4}\d[A-Za-z0-9]{3,31})(?![A-Za-z0-9])",
     "number": r"-?\d+(?:[.,]\d+)?",
     "integer": r"-?\d+",
     "decimal": r"-?\d+[.,]\d+",
@@ -21,7 +22,7 @@ _TYPE_PATTERNS: dict[str, str] = {
     "duration": r"\b\d+\s?(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\b",
     "currency": r"(?:₹|rs\.?|inr|\$|usd|€|eur)\s?\d+(?:[.,]\d+)*(?:\s?(?:lakhs?|crores?|thousand|k|million|m))?",
     "percentage": r"\b\d+(?:\.\d+)?\s?(?:%|percent)\b",
-    "phone": r"(?:\+?\d{1,3}[\s-]?)?(?:\d[\s-]?){9,11}\d",
+    "phone": r"(?<!\d)(\+?\d{10,15})(?!\d)",
     "email": r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
     "account_number": r"\b\d{9,18}\b",
     "policy_number": r"\b[A-Z]{2,4}[-/]?\d{6,12}\b",
@@ -47,7 +48,7 @@ def _mask_value(value: str, data_type: str) -> str:
 # in the same way when their pattern visibly expects digits.
 _DIGIT_DATA_TYPES = frozenset({
     "number", "integer", "decimal", "currency", "percentage", "phone",
-    "account_number", "policy_number", "claim_number", "card_last4",
+    "account_number", "policy_number", "claim_number", "card_last4", "identifier",
 })
 _DIGIT_PATTERN_HINT = re.compile(r"\\d|\[0-9|\[\^?0-9")
 
@@ -265,8 +266,29 @@ def extract_entity(text: str, entity: dict[str, Any]) -> dict[str, Any]:
     name = entity.get("name", "")
     data_type = entity.get("dataType") or entity.get("data_type") or "text"
 
-    matched_value, method = _match_entity_text(text, entity)
-    normalized = False
+    alphanumeric = data_type == "identifier" or entity.get("preserveAlphanumeric") is True
+    if alphanumeric:
+        from shared.orchestration.identifier_confirmation import spoken_identifier_text
+        candidate_text = spoken_identifier_text(text)
+    elif data_type == "phone" and not (entity.get("regexPattern") or entity.get("regexPatterns")):
+        from shared.orchestration.spoken_numbers import spoken_digit_text
+        candidate_text = spoken_digit_text(text)
+    else:
+        candidate_text = text
+    matched_value, method = _match_entity_text(candidate_text, entity)
+    normalized = candidate_text != text and matched_value is not None
+    if alphanumeric and any(entity.get(key) for key in (
+        "synonymPatterns", "synonym_patterns", "synonyms", "allowedValues", "allowed_values",
+        "regexPattern", "regex_pattern", "regexPatterns", "regex_patterns",
+    )):
+        # Dictation normalization can rewrite ordinary words (Hindi "do"
+        # means two). Keep authored outcomes such as "I do not have it"
+        # recognizable on the original utterance.
+        literal_value, literal_method = _match_entity_text(text, entity)
+        if (literal_method in {"lexicon", "lexicon_pattern"}
+                or (literal_value and literal_value.isalpha()
+                    and literal_value.casefold() == text.strip().casefold())):
+            matched_value, method, normalized = literal_value, literal_method, False
 
     # Spoken-number fallback, digit-expecting entities only: the raw
     # transcript may carry the value as digit words or spaced digit groups.

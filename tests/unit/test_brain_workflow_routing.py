@@ -183,6 +183,9 @@ async def test_local_call_number_clarifications_use_readback_without_llm(monkeyp
     brain = make_brain(workflow_engine=engine, llm=llm)
     brain._active_workflow = "wf_readback"
     await brain._handle_turn("Ek do teen chaar paanch chhah saat aath nau zero")
+    # Complete the mandatory collection confirmation before asking for the
+    # previously supplied number while the OTP step waits.
+    await brain._handle_turn("हाँ सही है")
     for text in [
         "Mera number pehle phir se repeat karo mujhe OTP nahi aaya.",
         "Nahi OTP mujhe nahi aaya aapne kya number note down kiya hai mujhe bata sakti ho",

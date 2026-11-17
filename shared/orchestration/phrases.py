@@ -140,6 +140,24 @@ _PHRASES: dict[str, dict[str, str]] = {
     },
     # A caller dictating a numeric identifier paused partway through; the
     # digits heard so far are held and the ask stays open for the rest.
+    "wf_identifier_confirm": {
+        "en": "I heard your {label} as {value}. Is that correct? Please say yes or no.",
+        "hi": "मैंने आपका {label} {value} सुना है। क्या यह सही है? कृपया हाँ या ना में बताइए।",
+        "ta": "உங்கள் {label} {value} என்று கேட்டேன். இது சரியா? ஆம் அல்லது இல்லை என்று சொல்லுங்கள்.",
+        "ml": "നിങ്ങളുടെ {label} {value} എന്നാണ് കേട്ടത്. ഇത് ശരിയാണോ? അതെ അല്ലെങ്കിൽ അല്ല എന്ന് പറയൂ.",
+    },
+    "wf_phone_recapture": {
+        "en": "Please repeat your complete phone number slowly.",
+        "hi": "ठीक है। कृपया अपना पूरा phone number दोबारा धीरे-धीरे बताइए।",
+        "ta": "உங்கள் முழு phone number-ஐ மீண்டும் மெதுவாகச் சொல்லுங்கள்.",
+        "ml": "നിങ്ങളുടെ മുഴുവൻ phone number വീണ്ടും പതുക്കെ പറയൂ.",
+    },
+    "wf_identifier_recapture": {
+        "en": "Please repeat your complete ID slowly, including any letters.",
+        "hi": "ठीक है। कृपया अपनी पूरी ID, उसमें आने वाले letters के साथ दोबारा धीरे-धीरे बताइए।",
+        "ta": "எழுத்துகள் உட்பட உங்கள் முழு ID-ஐ மீண்டும் மெதுவாகச் சொல்லுங்கள்.",
+        "ml": "അക്ഷരങ്ങൾ ഉൾപ്പെടെ നിങ്ങളുടെ മുഴുവൻ ID വീണ്ടും പതുക്കെ പറയൂ.",
+    },
     "wf_digits_partial": {
         "en": "Okay, I have noted the digits so far — please continue.",
         "hi": "जी, अब तक के अंक नोट कर लिए — कृपया आगे बताइए।",

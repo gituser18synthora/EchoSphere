@@ -930,8 +930,7 @@ def update_voice_settings(
 # replaces WHOLE. A UI switch posting a stale or partial copy would drop the
 # bot's goals/safety rules, so the end-call switch has its own endpoint: the
 # server merges ONLY endCall.enabled into the latest stored value, under a row
-# lock. Bot-management level (not general voice editing): it decides when the
-# bot may hang up on a caller.
+# lock. Uses the existing tenant voice-editing permissions.
 
 
 class EndCallToggleRequest(BaseModel):
@@ -945,7 +944,7 @@ def set_goal_policy_end_call(
     bot_id: str,
     body: EndCallToggleRequest,
     request: Request,
-    user: User = Depends(require_permission("bots.manage")),
+    user: User = Depends(require_permission("manage_voices", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     from shared.orchestration.goal_engine import end_call_enabled, with_end_call_enabled

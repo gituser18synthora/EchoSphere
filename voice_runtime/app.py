@@ -109,11 +109,16 @@ async def root():
 
 @app.get("/health")
 async def health():
+    from voice_runtime.provider_health import provider_health
+
     redis = await redis_health_check()
+    providers = provider_health.snapshot()
     return {
-        "status": "up",
+        "status": "degraded" if not redis.get("ok") or providers["status"] == "down" else "up",
         "active_sessions": len(_active_sessions),
+        "capacity": get_settings().voice_worker_concurrency,
         "redis": redis,
+        "providers": providers,
     }
 
 

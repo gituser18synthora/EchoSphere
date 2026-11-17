@@ -68,3 +68,5 @@ async def create_indexes() -> None:
     await e.create_index([("session_id", 1), ("created_at", 1)])
     await e.create_index([("tenant_id", 1), ("bot_id", 1), ("created_at", -1)])
     await e.create_index([("event_type", 1), ("created_at", -1)])
+    # Passive monitoring reads SessionRecorder's measured turn spans by kind/at.
+    await e.create_index([("kind", 1), ("at", -1)])

@@ -6,7 +6,8 @@
    ============================================================ */
 
 import type {
-  AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent,
+  AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent, AuditDetail, AuditFilters,
+  PermissionInfo, SecurityUserFilters,
   ChannelConfig, ChannelProviderConfig, Conversation, CustomerContext,
   CustomerContextCallState, CustomerContextInput,
   DocumentStatus, DocumentUploadResult, EntityDef,
@@ -14,7 +15,7 @@ import type {
   EffectiveGuardrails, EntityExtraction, Guardrail, GuardrailProfile,
   GuardrailTrigger, HealthMetric, IdentityConfirmationMode, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
-  PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
+  PhoneNumber, PlatformAlert, AlertFilters, AlertDetail, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
   RealCallDefaults, RealCallJob, RealCallPreview, RealCallRequest,
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
   RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
@@ -42,13 +43,36 @@ export {
 
 /* ---------- Auth ---------- */
 export const login = (email: string, password: string) =>
-  http.post<{ token: string; user: SessionUserInfo }>("/auth/login", { email, password });
+  http.post<{ token: string; user: SessionUserInfo; requiresPasswordChange?: boolean }>("/auth/login", { email, password });
 export const logout = () => http.post<{ signedOut: boolean }>("/auth/logout");
 export const me = () => http.get<SessionUserInfo>("/auth/me");
+
+export async function completeInitialPasswordChange(token: string, body: {
+  currentPassword: string; newPassword: string; confirmPassword: string;
+}): Promise<{ token: string; user: SessionUserInfo }> {
+  const response = await fetch("/api/v1/users/me/password", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success === false) throw new Error(payload.message || "Could not change the temporary password.");
+  return payload.data;
+}
+
+function securityQuery(filters: object): string {
+  return new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== undefined && value !== "")
+    .map(([key, value]) => [key, String(value)])).toString();
+}
 
 /* ---------- Tenants (Super Admin) ---------- */
 export const listTenants = async (): Promise<Tenant[]> =>
   (await http.getPaged<Tenant>("/tenants?pageSize=200")).items;
+export const listAllTenants = async (): Promise<Tenant[]> => {
+  const first = await http.getPaged<Tenant>("/tenants?pageSize=200");
+  const items = [...first.items];
+  for (let page = 2; page <= first.meta.totalPages; page++) items.push(...(await http.getPaged<Tenant>(`/tenants?pageSize=200&page=${page}`)).items);
+  return items;
+};
 export const getTenant = (id: string): Promise<Tenant> => http.get(`/tenants/${id}`);
 export const createTenant = (body: {
   name: string; code?: string; domain: string; industry?: string; region?: string;
@@ -637,10 +661,29 @@ export const flagConversation = (id: string, flagged: boolean) =>
 
 /* ---------- Platform ---------- */
 export const listAlerts = (): Promise<PlatformAlert[]> => http.get("/alerts");
-export const updateAlert = (id: string, status: "open" | "acknowledged" | "resolved") =>
-  http.patch<PlatformAlert>(`/alerts/${id}`, { status });
+export type AlertPage = Paged<PlatformAlert> & {
+  meta: Paged<PlatformAlert>["meta"] & { counts?: { open: number; acknowledged: number; resolved: number; total: number } };
+};
+export const listAlertsPage = async (filters: AlertFilters = {}): Promise<AlertPage> => {
+  const { data, meta } = await requestWithMeta<PlatformAlert[]>("GET", `/alerts?${securityQuery({ ...filters, paginated: true })}`);
+  const alertMeta = meta as AlertPage["meta"] | undefined;
+  return { items: data, meta: { page: meta?.page ?? 1, pageSize: meta?.pageSize ?? data.length,
+    total: meta?.total ?? data.length, totalPages: meta?.totalPages ?? 1, counts: alertMeta?.counts } };
+};
+export const getAlert = (id: string): Promise<AlertDetail> => http.get(`/alerts/${encodeURIComponent(id)}`);
+export const updateAlert = (id: string, status: "open" | "acknowledged" | "resolved", extra?: {
+  expectedStatus?: string; note?: string;
+}) => http.patch<PlatformAlert>(`/alerts/${encodeURIComponent(id)}`, { status, ...(extra ?? {}) });
 export const listAudit = async (): Promise<AuditEvent[]> =>
   (await http.getPaged<AuditEvent>("/audit?pageSize=100")).items;
+export const listAuditPage = (filters: AuditFilters): Promise<Paged<AuditEvent>> =>
+  http.getPaged(`/audit?${securityQuery(filters)}`);
+export const getAuditEvent = (id: string): Promise<AuditDetail> => http.get(`/audit/${encodeURIComponent(id)}`);
+export const downloadAuditExport = (filters: AuditFilters) => {
+  const { page: _page, pageSize: _size, ...query } = filters;
+  return downloadFile({ url: `/api/v1/audit/export?${securityQuery(query)}`,
+    fallbackFilename: "echosphere-audit.csv", accept: "text/csv", expectedContentTypes: ["text/csv"] });
+};
 export const listModels = (): Promise<ApprovedModel[]> => http.get("/models");
 export const updateModelStatus = (id: string, status: string) => http.patch<ApprovedModel>(`/models/${id}`, { status });
 export const listGuardrails = (): Promise<Guardrail[]> => http.get("/guardrails");
@@ -679,12 +722,17 @@ export const listPlatformUsers = async (): Promise<TeamMember[]> =>
 /** Add a team member. Without `password` the backend issues a one-time
  *  temporary password (invite flow); with `password` the account is created
  *  active and can sign in immediately (direct-create flow). */
-export const inviteUser = (body: { name: string; email: string; roleCode: string; password?: string }) =>
+export const inviteUser = (body: { name: string; email: string; roleCode: string; tenantId?: string; password?: string }) =>
   http.post<TeamMember & { temporaryPassword?: string }>("/users", body);
-export const updateUser = (id: string, body: { name?: string; roleCode?: string; status?: string }) =>
+export const updateUser = (id: string, body: { name?: string; email?: string; roleCode?: string; status?: string }) =>
   http.patch<TeamMember>(`/users/${id}`, body);
 export const archiveUser = (id: string) => http.delete<{ archived: boolean }>(`/users/${id}`);
 export const listRoles = (): Promise<RoleInfo[]> => http.get("/roles");
+export const listPermissions = (): Promise<PermissionInfo[]> => http.get("/permissions");
+export const listSecurityUsers = (filters: SecurityUserFilters): Promise<Paged<TeamMember>> =>
+  http.getPaged(`/users?${securityQuery(filters)}`);
+export const saveRolePermissions = (id: string, permissionCodes: string[], expectedPermissionCodes: string[]): Promise<RoleInfo> =>
+  http.put(`/roles/${encodeURIComponent(id)}/permissions`, { permissionCodes, expectedPermissionCodes });
 
 /* ---------- Integrations ---------- */
 export const listIntegrations = (): Promise<Integration[]> => http.get("/integrations");

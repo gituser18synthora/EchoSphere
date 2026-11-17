@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.models.base import (
@@ -23,6 +23,7 @@ class Role(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="tenant")  # platform | tenant
     is_system: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    permissions_customized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     permissions: Mapped[list["Permission"]] = relationship(
         secondary="role_permissions", lazy="selectin"
@@ -67,6 +68,8 @@ class User(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     # Tokens issued before this moment are rejected (session invalidation on
     # password change). NULL = never changed.
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auth_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     role_id: Mapped[str] = mapped_column(String(ID_LEN), ForeignKey("roles.id"), nullable=False)
     # NULL for platform (super admin) users; set for tenant members.
     tenant_id: Mapped[str | None] = mapped_column(
@@ -85,3 +88,13 @@ class User(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     role: Mapped[Role] = relationship(lazy="joined")
+
+
+class RevokedToken(Base):
+    """Only a digest is retained; covers legacy JWTs as well as new sessions."""
+
+    __tablename__ = "revoked_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(ID_LEN), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)

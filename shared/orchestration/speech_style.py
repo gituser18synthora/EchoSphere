@@ -24,6 +24,25 @@ EVERYDAY_SPEECH_INSTRUCTION = (
     "for the current conversation; do not recite stock example sentences."
 )
 
+IDENTIFIER_CONFIRMATION_INSTRUCTION = (
+    "\n\n# Caller-provided identifiers\n"
+    "This rule applies to every business identifier, regardless of its name, "
+    "tenant or format, including booking, order, complaint, ticket and custom "
+    "references, as well as phone numbers. After asking for one, repeat the complete value "
+    "and ask whether it is correct before using it, looking it up or moving to "
+    "the next business step. Read digits individually, preserve leading zeroes "
+    "and country codes, preserve meaningful separators, and distinguish letters "
+    "explicitly (for example, letter A). "
+    "Do not silently replace a letter with a similar-sounding digit. Continue only "
+    "after an explicit affirmative answer. A rejection, a new value, or a reply "
+    "containing a correction takes priority over yes: collect the complete corrected "
+    "value and confirm it again. Questions and unclear replies do not confirm a "
+    "value. Reuse a value already confirmed for the same purpose unless it changes. "
+    "When the workflow is already asking this confirmation, use that gate and do "
+    "not add a second confirmation. This rule concerns business identifiers and "
+    "phone numbers; do not read back passwords, OTPs, PINs or card security codes."
+)
+
 
 
 def spoken_reply_instruction(locale: str | None) -> str:
@@ -43,4 +62,4 @@ def spoken_reply_instruction(locale: str | None) -> str:
             "language. Preserve their facts, role and business rules. "
             "Do not output language tags."
         )
-    return language + EVERYDAY_SPEECH_INSTRUCTION
+    return language + EVERYDAY_SPEECH_INSTRUCTION + IDENTIFIER_CONFIRMATION_INSTRUCTION

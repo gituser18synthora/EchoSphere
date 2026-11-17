@@ -927,11 +927,59 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
     nodes_by_id: dict[str, dict] = {
         str(n.get("id")): n for n in definition.get("nodes") or [] if n.get("id")
     }
+    for node_id, node in list(nodes_by_id.items()):
+        config = _node_config(node)
+        if "_externalIdentifierConfirmation" in config:
+            nodes_by_id[node_id] = {**node, "config": {
+                k: v for k, v in config.items() if k != "_externalIdentifierConfirmation"}}
+    # An intent hub's corrected reference must use the same ASK gate before
+    # its verification target. Stable internal nodes also survive reloads.
+    correction_nodes: dict[str, dict] = {}
+    for node_id, node in list(nodes_by_id.items()):
+        correction = _node_config(node).get("identifierCorrection")
+        if node.get("kind") != "intent" or not isinstance(correction, dict):
+            continue
+        variable = str(correction.get("variable") or "").strip()
+        target = str(correction.get("target") or "").strip()
+        correction_id = f"{node_id}__identifier_correction"
+        if not variable or target not in nodes_by_id or correction_id in nodes_by_id:
+            continue
+        correction_node = {"id": correction_id, "kind": "ask", "config": {
+            "variable": variable, "question": "Please repeat the complete ID.",
+            "entity": correction.get("entity"),
+            "entityType": correction.get("entityType") or "text",
+            "pattern": correction.get("pattern"),
+            "allowedValues": correction.get("allowedValues"),
+            "synonyms": correction.get("synonyms"),
+            "requireConfirmation": True,
+        }}
+        correction_nodes[node_id] = correction_node
+        nodes_by_id[correction_id] = correction_node
+    # Existing, explicitly wired confirmation asks replace the automatic gate.
+    # This lets configuration-only rollouts keep one confirmation after the
+    # platform implementation is installed later.
+    for node_id, node in list(nodes_by_id.items()):
+        config = _node_config(node)
+        confirm_id = config.get("identifierConfirmationNode")
+        confirmation = nodes_by_id.get(str(confirm_id), {})
+        if (node.get("kind") == "ask" and confirmation.get("kind") == "ask"
+                and _node_config(confirmation).get("confirmsIdentifier") == config.get("variable")
+                and any(
+                    e.get("from") == node_id and (
+                        e.get("to") == confirm_id
+                        or (nodes_by_id.get(str(e.get("to")), {}).get("kind") == "condition"
+                            and any(hop.get("from") == e.get("to") and hop.get("to") == confirm_id
+                                    for hop in definition.get("edges") or [])))
+                    for e in definition.get("edges") or [])):
+            nodes_by_id[node_id] = {**node, "config": {**config, "_externalIdentifierConfirmation": True}}
     edges_from: dict[str, list[dict]] = {}
     for edge in definition.get("edges") or []:
         src = str(edge.get("from") or "")
         if src and str(edge.get("to") or "") in nodes_by_id:
             edges_from.setdefault(src, []).append(edge)
+    for node_id, correction_node in correction_nodes.items():
+        edges_from[correction_node["id"]] = [{"from": correction_node["id"],
+            "to": str(_node_config(nodes_by_id[node_id])["identifierCorrection"]["target"])}]
     # (edge, tokens, semantic signals) per source node, computed once — and
     # each distinct token classified once for the whole graph (see _edge_meta).
     signal_of: dict[str, str | None] = {}
@@ -1059,8 +1107,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         """Extract an explicitly configured identifier correction.
 
         This is intentionally definition-driven rather than tied to orders:
-        an intent node may accept a corrected identifier and route it back to
-        its verification API without an extra ask/LLM turn. Invalid or stale
+        an intent node may accept a corrected identifier and confirm it before
+        routing back to its verification API. Invalid or stale
         configuration is ignored safely.
         """
         correction = _node_config(node).get("identifierCorrection")
@@ -1070,16 +1118,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         target = str(correction.get("target") or "").strip()
         if not variable or target not in nodes_by_id:
             return None
-        correction_node = {
-            "id": f"{node.get('id') or 'intent'}__identifier_correction",
-            "config": {
-                "entity": correction.get("entity"),
-                "entityType": correction.get("entityType") or "text",
-                "pattern": correction.get("pattern"),
-                "allowedValues": correction.get("allowedValues"),
-                "synonyms": correction.get("synonyms"),
-            },
-        }
+        correction_node = correction_nodes.get(str(node.get("id")))
+        if correction_node is None:
+            return None
         value = _extract_ask_value(correction_node, variable, text)
         return (variable, value, target) if value is not None else None
 
@@ -1091,6 +1132,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         context_values = dict(state.get("context_values") or {})
         node_retries = dict(state.get("node_retries") or {})
         pending_digits = dict(state.get("pending_digits") or {})
+        pending_confirmations = {k: dict(v) for k, v in
+                                 (state.get("pending_identifier_confirmations") or {}).items()}
         audit = list(state.get("audit") or [])
         # Entries appended from here on belong to THIS turn (the audit itself
         # is checkpointed and accumulates across turns).
@@ -1167,7 +1210,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         readback = configured_readback(
             list(nodes_by_id.values()), text, slots, audit, lang,
             state.get("readback_values"),
-        ) if awaiting else None
+        ) if awaiting and awaiting not in pending_confirmations else None
         if readback is not None:
             variable, reply = readback
             audit.append({"action": "value_readback", "node": awaiting, "variable": variable})
@@ -1183,7 +1226,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 "spoken_this_turn": [],
             }
 
-        semantic = state.get("semantic_extraction") if semantic_enabled else None
+        semantic = (state.get("semantic_extraction") if semantic_enabled
+                    and awaiting not in pending_confirmations else None)
         semantic_active = isinstance(semantic, dict)
         semantic_answers = bool(semantic_active and semantic.get("patch"))
         # Slots the semantic extractor DECIDED this turn: only those are shielded
@@ -1224,12 +1268,26 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # hub's own "haan".
         hub_text = ""
 
+        def confirm_entry(node: dict, value, offered: str) -> bool:
+            from shared.orchestration.identifier_confirmation import start_confirmation
+            ctx = _ask.AskContext(
+                node=node, node_id=str(node["id"]), text=offered, signal=signal, lang=lang,
+                slots=slots, audit=audit, pending_digits=pending_digits,
+                node_retries=node_retries, replies=replies, behavior=behavior,
+                ask_question=lambda n, r, l: _question(n, retrying=r, lang=l),
+                unmatched_reply=lambda n, s, l: _unmatched_reply(n, s, l),
+                next_of=_next_of, fallback_target=_fallback_target_of,
+                pending_confirmations=pending_confirmations,
+            )
+            ctx.value = value
+            return start_confirmation(ctx, offered=offered)
+
         # 1. Feed the caller's utterance to the node that was waiting for it.
         if awaiting and awaiting in nodes_by_id:
             node = turn_node(nodes_by_id[awaiting])
             kind = node.get("kind")
             trace.append(awaiting)
-            if not text:
+            if not text and awaiting not in pending_confirmations:
                 replies.append(_question(node, retrying=False, lang=lang))
                 current = None  # stay awaiting
             elif kind == "ask":
@@ -1246,6 +1304,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     next_of=_next_of,
                     fallback_target=_fallback_target_of,
                     provider=provider, semantic=semantic,
+                    pending_confirmations=pending_confirmations,
                 ))
                 current, awaiting = ask.current, ask.awaiting
                 if ask.off_script:
@@ -1272,12 +1331,16 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 correction = _intent_correction(node, text) if chosen is None else None
                 if correction is not None:
                     variable, value, target = correction
-                    slots[variable] = value
                     node_retries.pop(awaiting, None)
                     audit.append({"action": "identifier_corrected",
                                   "node": awaiting, "variable": variable,
                                   "target": target})
-                    current, awaiting = target, None
+                    correction_node = correction_nodes[str(node["id"])]
+                    if confirm_entry(correction_node, value, text):
+                        current, awaiting = None, str(correction_node["id"])
+                    else:
+                        slots[variable] = value
+                        current, awaiting = target, None
                     chosen, why = None, "identifier_correction"
                 if correction is None and chosen is None and why in ("off_script", "no_match"):
                     # The signal said "not an answer" (an LLM 'clarify' on a
@@ -1604,6 +1667,25 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                   "variable": variable,
                                   "context_key": context_key})
                 if existing is not None and str(existing).strip() != "":
+                    # A secondary capture is still caller-provided data. It
+                    # must not bypass confirmation merely because its slot
+                    # was filled before this ask was reached.
+                    from shared.orchestration.identifier_confirmation import identifier_kind
+                    captures = [e for e in audit if e.get("variable") == variable
+                                and e.get("action") in ("slot_filled", "entry_slot_filled",
+                                                        "also_captured", "also_updated", "identifier_corrected")]
+                    if (identifier_kind(node, variable) and captures
+                            and not captures[-1].get("confirmed")
+                            and not config.get("_externalIdentifierConfirmation")):
+                        if confirm_entry(node, existing, text or str(existing)):
+                            awaiting, current = current, None
+                            continue
+                        # A masked secondary value cannot be reconstructed
+                        # safely: ask for it instead of guessing its digits.
+                        slots.pop(variable, None)
+                        _speak(node, _question(node, retrying=False, lang=lang))
+                        awaiting, current = current, None
+                        continue
                     # A related journey or the node's explicitly selected
                     # call-context fact already supplied the value. Reuse it
                     # without asking again; downstream APIs still revalidate.
@@ -1675,6 +1757,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # non-apologetic continuation prompt.
                     entry_value = _extract_ask_value(node, variable, offered)
                     if entry_value is not None:
+                        if confirm_entry(node, entry_value, offered):
+                            entry_text = hub_text = ""
+                            awaiting, current = current, None
+                            continue
                         slots[variable] = entry_value
                         audit.append({"action": "entry_slot_filled",
                                       "node": current, "variable": variable})
@@ -1913,7 +1999,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     _node_config(paused_node).get("variable")
                     or paused_node.get("id")
                 )
-                if _ask_expects_digits(paused_node, paused_variable):
+                if (_ask_expects_digits(paused_node, paused_variable)
+                        and awaiting not in pending_confirmations):
                     awaiting_identifier = {
                         "node": awaiting,
                         "variable": paused_variable,
@@ -1926,10 +2013,18 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "readback_values": retain_readback_values(
                 list(nodes_by_id.values()), slots, audit[turn_audit_start:], text,
                 state.get("pending_digits") or {}, state.get("readback_values") or {},
+                confirmed_values={
+                    str(value["variable"]): value["raw"]
+                    for value in (state.get("pending_identifier_confirmations") or {}).values()
+                    if any(e.get("action") == "identifier_confirmed"
+                           and e.get("variable") == value["variable"]
+                           for e in audit[turn_audit_start:])
+                },
             ),
             "semantic_extraction": None,
             "node_retries": node_retries,
             "pending_digits": pending_digits,
+            "pending_identifier_confirmations": pending_confirmations,
             "audit": audit,
             "trace": trace,
             "current_node": awaiting or current,
@@ -1937,7 +2032,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "handoff_queue": handoff_queue,
             "off_script": off_script,
             "context_response": context_response,
-            "awaiting_prompt": awaiting_prompt,
+            "awaiting_prompt": ("Please confirm the identifier just read back, or repeat the correct one."
+                                if awaiting in pending_confirmations else awaiting_prompt),
             "awaiting_identifier": awaiting_identifier,
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
@@ -2256,6 +2352,7 @@ class WorkflowEngine:
                 "awaiting": None,
                 "node_retries": {},
                 "pending_digits": {},
+                "pending_identifier_confirmations": {},
                 "readback_values": {},
                 "audit": [],
                 "spoken_nodes": [],
@@ -2328,13 +2425,19 @@ class WorkflowEngine:
             # the brain words an off-script reply differently at an
             # anything-else hub than at a pending question.
             "awaitingKind": (
+                "ask" if state.get("awaiting") in (state.get("pending_identifier_confirmations") or {}) else
                 (next((n for n in ((definition or {}).get("nodes") or [])
                        if str(n.get("id")) == str(state.get("awaiting"))), {}) or {}).get("kind")
                 if state.get("awaiting") else None
             ),
             # Expected answer of a paused ask ({kind, options}) — the brain's
             # PendingAsk for its reply prompt, router and Goal Engine state.
-            "awaitingAsk": _awaiting_ask_shape(awaiting_node),
+            "awaitingAsk": ({"kind": "yes_no", "options": ["yes", "no"]}
+                            if state.get("awaiting") in (state.get("pending_identifier_confirmations") or {})
+                            else _awaiting_ask_shape(awaiting_node)),
+            "awaitingIdentifierConfirmation": bool(
+                state.get("awaiting") in (state.get("pending_identifier_confirmations") or {})
+            ),
             # Signals the paused intent hub's edges carry (None elsewhere).
             "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
             "awaitingEdges": _awaiting_edges(definition, awaiting_node),

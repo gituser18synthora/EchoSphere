@@ -1989,7 +1989,7 @@ class ConversationBrain(FrameProcessor):
             and provenance["turn_index"] == previous["turn_index"]
         ):
             return True
-        if self._identifier_capture is not None and digits_dominant(
+        if self._identifier_capture is not None and self._identifier_capture.is_dictation(
             " ".join(self._pending_segments)
         ):
             # While an identifier is being dictated, timing alone is never
@@ -3465,7 +3465,7 @@ class ConversationBrain(FrameProcessor):
         text = (text_override or " ".join(self._pending_segments)).strip()
         if not text:
             return
-        if self._identifier_capture is not None and digits_dominant(text):
+        if self._identifier_capture is not None and self._identifier_capture.is_dictation(text):
             # A dictated identifier is consumed deterministically by the
             # active workflow (see _handle_turn) — no Goal Engine request is
             # spent on it, per fragment or at dispatch.
@@ -3949,6 +3949,9 @@ class ConversationBrain(FrameProcessor):
             )
             return text
         digits = spoken_digit_sequence(recovered_text or "")
+        if capture.entity.get("preserveAlphanumeric") or capture.entity.get("dataType") == "identifier":
+            from shared.orchestration.identifier_confirmation import identifier_sequence
+            digits = identifier_sequence(recovered_text or "")
         if digits and capture.matches(capture.held_digits + digits):
             # The workflow combines its held digits with the turn text, so
             # only the freshly recovered digits are dispatched.
@@ -5544,7 +5547,7 @@ class ConversationBrain(FrameProcessor):
                 self._identifier_capture is not None
                 and self._active_workflow is not None
                 and decision.kind == RouteKind.WORKFLOW
-                and digits_dominant(text)
+                and self._identifier_capture.is_dictation(text)
             ):
                 fast_path = "identifier_capture"
                 self._discard_decision_prefetch("identifier_capture")

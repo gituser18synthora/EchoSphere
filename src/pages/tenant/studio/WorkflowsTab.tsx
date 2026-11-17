@@ -939,7 +939,7 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
                     <span className="field-label">Expected answer type</span>
                     <select className="select" value={configText("entityType") || "text"} aria-label="Expected answer type" disabled={!canEdit}
                       onChange={(e) => updateConfig(selectedNode.id, "entityType", e.target.value)}>
-                      {["text", "number", "currency", "date", "time", "phone", "email"].map((t) => (
+                      {["text", "identifier", "number", "currency", "date", "time", "phone", "email"].map((t) => (
                         <option key={t} value={t}>{t}</option>
                       ))}
                     </select>

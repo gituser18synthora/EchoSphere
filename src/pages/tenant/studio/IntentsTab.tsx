@@ -24,7 +24,7 @@ const normalizePhrase = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " 
 
 const DATA_TYPES = [
   "text", "number", "integer", "decimal", "date", "date_range", "time", "duration",
-  "currency", "percentage", "phone", "email", "account_number", "policy_number",
+  "currency", "percentage", "phone", "email", "identifier", "account_number", "policy_number",
   "claim_number", "card_last4", "person_name", "location", "product", "list", "regex", "api",
 ] as const;
 

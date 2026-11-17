@@ -120,9 +120,17 @@ def _engine(monkeypatch, definition, executor_cls):
 
 
 async def _say(engine, session, text, lang="en-IN"):
-    return await engine.handle_turn_detailed(
+    result = await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
         workflow_name="wf_0a6550d061e6", user_text=text, language=lang, context_values=CONTEXT)
+    # Preserve these journey replays by explicitly accepting each ID readback.
+    if result.get("awaitingIdentifierConfirmation"):
+        assert not any("api_lookup" in n for n in result["trace"])
+        result = await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+            workflow_name="wf_0a6550d061e6", user_text="yes", language=lang,
+            context_values=CONTEXT)
+    return result
 
 
 async def _to_paper_roll_options(engine, session, tid="91379784", lang="en-IN"):

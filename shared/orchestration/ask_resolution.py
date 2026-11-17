@@ -45,14 +45,28 @@ def _ask_entity(node: dict, variable: str) -> dict:
     config = _node_config(node)
     entity = config.get("entity")
     if isinstance(entity, dict) and entity:
-        return {"name": variable, **entity}
-    return {
+        result = {"name": variable, **entity}
+        result["dataType"] = result.get("dataType") or result.get("data_type") or "text"
+        if (result.get("dataType", "text") == "text" and not any(result.get(k) for k in
+                ("regexPattern", "regexPatterns", "allowedValues", "synonyms", "synonymPatterns"))):
+            from shared.orchestration.identifier_confirmation import identifier_kind
+            kind = identifier_kind(node, variable)
+            if kind:
+                result["dataType"] = "phone" if kind == "phone" else "identifier"
+        return result
+    result = {
         "name": variable,
         "dataType": str(config.get("entityType") or config.get("dataType") or "text"),
         "regexPattern": config.get("pattern"),
         "allowedValues": config.get("allowedValues"),
         "synonyms": config.get("synonyms"),
     }
+    if result["dataType"] == "text" and not any(result.get(k) for k in ("regexPattern", "allowedValues", "synonyms")):
+        from shared.orchestration.identifier_confirmation import identifier_kind
+        kind = identifier_kind(node, variable)
+        if kind:
+            result["dataType"] = "phone" if kind == "phone" else "identifier"
+    return result
 
 
 def _ask_is_free_text(node: dict, variable: str) -> bool:
@@ -559,6 +573,8 @@ class AskContext:
     # semantic-slots extension (optional)
     provider: Any = None
     semantic: dict | None = None
+    pending_confirmations: dict = field(default_factory=dict)
+    identifier_confirmed: bool = False
     # derived on construction
     config: dict = field(default_factory=dict)
     variable: str = ""
@@ -711,9 +727,17 @@ def prepare_dictation(ctx: AskContext) -> None:
 
     ctx.dictated = not ctx.handled and ctx.expects_digits and digits_dominant(ctx.text)
     ctx.fresh = spoken_digit_sequence(ctx.text) if ctx.dictated else ""
+    entity = _ask_entity(ctx.node, ctx.variable)
+    if entity.get("preserveAlphanumeric") or entity.get("dataType") == "identifier":
+        from shared.orchestration.identifier_confirmation import identifier_sequence, identifier_dictation
+        sequence = identifier_sequence(ctx.text)
+        ctx.dictated = not ctx.handled and identifier_dictation(ctx.text)
+        ctx.fresh = sequence if ctx.dictated else ""
     ctx.combined = (ctx.buffered + ctx.fresh)[:_MAX_PENDING_DIGITS]
     ctx.max_digits = (identifier_length_bounds(_ask_entity(ctx.node, ctx.variable))[1]
                       if ctx.expects_digits else _MAX_PENDING_DIGITS)
+    if entity.get("preserveAlphanumeric") or entity.get("dataType") == "identifier":
+        ctx.max_digits += 4  # bounded letters do not count as numeric overflow
     ctx.joint_vars = (_joint_yes_no_variables(ctx.config)
                       if not ctx.expects_digits and not ctx.semantic_ask else [])
 
@@ -869,10 +893,15 @@ def outcome_handled(ctx: AskContext) -> bool:
 def outcome_filled(ctx: AskContext) -> bool:
     if ctx.value is None:
         return False
+    from shared.orchestration.identifier_confirmation import start_confirmation
+    if start_confirmation(ctx):
+        return True
     ctx.slots[ctx.variable] = ctx.value
     ctx.pending_digits.pop(ctx.node_id, None)
     prior_retries = ctx.node_retries.pop(ctx.node_id, 0)
     entry = {"action": "slot_filled", "node": ctx.node_id, "variable": ctx.variable}
+    if ctx.identifier_confirmed:
+        entry["confirmed"] = True
     if ctx.accumulated:
         entry["accumulated_digits"] = len(ctx.combined)
     ctx.audit.append(entry)
@@ -1108,6 +1137,12 @@ def resolvers_for(node: dict) -> tuple[Stage, ...]:
 
 def resolve_ask(ctx: AskContext) -> AskContext:
     """Run the pipeline for one ask-node turn; the decision is on the context."""
+    from shared.orchestration.identifier_confirmation import resolve_confirmation
+    if resolve_confirmation(ctx):
+        return ctx
+    if ctx.identifier_confirmed:
+        outcome_filled(ctx)
+        return ctx
     reconcile_question_label(ctx)
     prepare_digits(ctx)
     for handler in PRE_HANDLERS:

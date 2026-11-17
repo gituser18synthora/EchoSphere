@@ -14,6 +14,7 @@ from backend.core.deps import (
     is_super_admin,
     require_permission,
     require_tenant_admin,
+    require_super_admin,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
@@ -27,8 +28,8 @@ from backend.core.security import (
 )
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
-from shared.models import Permission, Role, User, VoiceBot
-from backend.serializers import serialize_role, serialize_team_member
+from shared.models import Permission, Role, User, VoiceBot, Tenant
+from backend.serializers import serialize_role, serialize_team_member, serialize_user_public
 
 router = APIRouter(tags=["Users & Roles"])
 
@@ -47,8 +48,10 @@ def _bots_owned_map(db: Session, user_ids: list[str]) -> dict[str, int]:
 @router.get("/users")
 def list_users(
     request: Request,
-    scope: str = Query("tenant", pattern="^(tenant|platform)$"),
+    scope: str = Query("tenant", pattern="^(tenant|platform|all)$"),
     tenant_id: str | None = Query(None, alias="tenantId"),
+    role_code: str | None = Query(None, alias="roleCode", max_length=50),
+    status: str | None = Query(None, pattern="^(active|invited|deactivated)$"),
     params: PageParams = Depends(page_params),
     # Team data is for team managers only — a tenant_user must not be able to
     # enumerate their organization's members (names, emails, activity).
@@ -58,23 +61,31 @@ def list_users(
     # Service accounts (tenant API tokens) are machine identities: managed
     # from the tenant's API-token card, never listed or edited as team members.
     stmt = select(User).where(User.is_deleted.is_(False), User.is_service_account.is_(False))
-    if scope == "platform":
+    if scope in ("platform", "all"):
         if not is_super_admin(user):
             raise ApiError("Only platform administrators can list platform users.", 403)
-        stmt = stmt.where(User.tenant_id.is_(None))
+        if scope == "platform":
+            stmt = stmt.where(User.tenant_id.is_(None))
+        elif tenant_id:
+            stmt = stmt.where(User.tenant_id == tenant_id)
     else:
         stmt = stmt.where(User.tenant_id == resolve_tenant_id(user, tenant_id))
     if params.search:
         like = f"%{params.search}%"
         stmt = stmt.where(or_(User.name.like(like), User.email.like(like)))
+    if role_code:
+        stmt = stmt.where(User.role.has(Role.code == role_code))
+    if status:
+        stmt = stmt.where(User.status == status)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = db.scalars(
-        stmt.order_by(User.created_at.asc()).offset(params.offset).limit(params.page_size)
+        stmt.order_by(User.created_at.asc(), User.id.asc()).offset(params.offset).limit(params.page_size)
     ).all()
     owned = _bots_owned_map(db, [u.id for u in rows])
+    tenant_names = dict(db.execute(select(Tenant.id, Tenant.name)).all()) if is_super_admin(user) else {}
     return paginated(
-        [serialize_team_member(u, bots_owned=owned.get(u.id, 0)) for u in rows],
+        [{**serialize_team_member(u, bots_owned=owned.get(u.id, 0)), "tenantName": tenant_names.get(u.tenant_id)} for u in rows],
         page=params.page, page_size=params.page_size, total=total,
     )
 
@@ -104,6 +115,8 @@ def create_user(
         if not is_super_admin(user):
             raise ApiError("Only platform administrators can create platform users.", 403)
         tenant_id = None
+        if body.tenant_id:
+            raise ApiError("Platform users cannot belong to an organization.", 422)
     else:
         # Tenant admins add members only as Tenant User — never another admin
         # or any internal role. Platform admins keep full role assignment
@@ -111,6 +124,9 @@ def create_user(
         if not is_super_admin(user) and role.code != TENANT_USER:
             raise ApiError("Team members can only be added as Tenant User.", 403)
         tenant_id = resolve_tenant_id(user, body.tenant_id)
+        tenant = db.get(Tenant, tenant_id)
+        if tenant is None or tenant.is_deleted:
+            raise NotFoundError("Organization")
 
     email = body.email.lower()
     existing = db.scalar(select(User).where(User.email == email))
@@ -133,6 +149,7 @@ def create_user(
         role_id=role.id,
         tenant_id=tenant_id,
         status="invited" if body.password is None else "active",
+        must_change_password=body.password is None,
         created_by=user.id,
     )
     db.add(row)
@@ -223,6 +240,10 @@ def change_my_password(
 
     from backend.core.security import create_access_token, hash_password, verify_password
 
+    user = db.get(User, user.id, with_for_update=True, populate_existing=True)
+    if user.status == "deactivated":
+        raise ApiError("This account has been deactivated.", 403)
+
     if not verify_password(body.current_password, user.password_hash):
         raise ApiError("The current password is incorrect.", 400,
                        errors=[{"field": "currentPassword", "message": "Incorrect password."}])
@@ -236,7 +257,11 @@ def change_my_password(
 
     user.password_hash = hash_password(body.new_password)
     user.password_changed_at = datetime.now(tz.utc)
+    user.auth_version += 1
     user.updated_by = user.id
+    if user.status == "invited":
+        user.status = "active"
+    user.must_change_password = False
     # Never log the password — only the fact that it changed.
     record_audit(
         db, user=user, action="Changed own password", entity_type="user",
@@ -244,8 +269,12 @@ def change_my_password(
         request=request,
     )
     db.commit()
-    token = create_access_token(user_id=user.id, role=user.role.code, tenant_id=user.tenant_id)
+    token = create_access_token(user_id=user.id, role=user.role.code, tenant_id=user.tenant_id, auth_version=user.auth_version)
+    payload = serialize_user_public(user)
+    tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
+    payload["tenantName"] = tenant.name if tenant else None
     return ok({"changed": True, "token": token,
+               "user": payload,
                "message": "Password changed. Other sessions have been signed out."})
 
 
@@ -280,7 +309,7 @@ def admin_reset_password(
 
     from backend.core.security import hash_password
 
-    row = db.get(User, user_id)
+    row = db.get(User, user_id, with_for_update=True, populate_existing=True)
     if row is None or row.is_deleted:
         raise NotFoundError("User")
     if row.tenant_id is not None:
@@ -305,6 +334,7 @@ def admin_reset_password(
             )
         validate_password_policy(body.new_password)
         row.password_hash = hash_password(body.new_password)
+        row.must_change_password = False
         # An explicitly chosen password is a real credential — no forced
         # rotation; invited accounts become active, deactivated stay locked.
         if row.status == "invited":
@@ -315,11 +345,14 @@ def admin_reset_password(
 
         temp_password = secrets.token_urlsafe(12)
         row.password_hash = hash_password(temp_password)
-        row.status = "invited"  # must rotate at next sign-in
+        row.must_change_password = True
+        if row.status != "deactivated":
+            row.status = "invited"
         response = {"reset": True, "sessionsInvalidated": True,
                     "temporaryPassword": temp_password}
 
     row.password_changed_at = datetime.now(tz.utc)
+    row.auth_version += 1
     row.updated_by = user.id
     record_audit(
         db, user=user, action="Reset user password", entity_type="user",
@@ -334,10 +367,25 @@ def admin_reset_password(
 
 class UpdateUserRequest(BaseModel):
     name: str | None = Field(default=None, max_length=150)
+    email: EmailStr | None = None
     role_code: str | None = Field(default=None, alias="roleCode")
     status: str | None = Field(default=None, pattern="^(active|invited|deactivated)$")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+def _protect_user_access(db: Session, row: User, actor: User, *, role_code: str | None = None, status: str | None = None):
+    if row.is_service_account:
+        raise ApiError("Manage this machine identity through its API token.", 400)
+    if row.id == actor.id and (status == "deactivated" or (role_code and role_code != row.role.code)):
+        raise ApiError("You cannot disable or change the role of your own account.", 400)
+    if row.role.code == SUPER_ADMIN and row.status == "active" and (status == "deactivated" or (role_code and role_code != SUPER_ADMIN)):
+        # Serialize administrator removals on one shared row, including concurrent requests.
+        db.scalar(select(Role).where(Role.code == SUPER_ADMIN).with_for_update())
+        remaining = list(db.scalars(select(User.id).where(
+            User.role_id == row.role_id, User.id != row.id, User.status == "active", User.is_deleted.is_(False)).with_for_update()).all())
+        if not remaining:
+            raise ApiError("At least one active Super Admin must remain.", 409)
 
 
 @router.patch("/users/{user_id}")
@@ -356,12 +404,22 @@ def update_user(
     if row.tenant_id is not None:
         assert_tenant_access(user, row.tenant_id)
 
-    before = {"name": row.name, "role": row.role.code, "status": row.status}
+    _protect_user_access(db, row, user, role_code=body.role_code, status=body.status)
+    before = {"name": row.name, "email": row.email, "role": row.role.code, "status": row.status}
     if body.name:
         row.name = body.name
+    if body.email:
+        email = body.email.lower()
+        if db.scalar(select(User.id).where(User.email == email, User.id != row.id)):
+            raise ApiError("A user with this email already exists.", 409)
+        row.email = email
     if body.status:
         if row.id == user.id and body.status == "deactivated":
             raise ApiError("You cannot deactivate your own account.", 400)
+        if row.status == "invited":
+            row.must_change_password = True
+        if body.status == "deactivated" and row.status != "deactivated":
+            row.auth_version = User.auth_version + 1
         row.status = body.status
     if body.role_code:
         role = db.scalar(select(Role).where(Role.code == body.role_code))
@@ -371,21 +429,24 @@ def update_user(
             raise ApiError("Only platform administrators can grant platform roles.", 403)
         if role.scope == "platform" and row.tenant_id is not None:
             raise ApiError("Tenant members cannot hold platform roles.", 422)
+        if role.scope == "tenant" and row.tenant_id is None:
+            raise ApiError("A platform account cannot be assigned a tenant role.", 422)
         # Same rule as creation: a tenant admin cannot promote a member to
         # any role beyond Tenant User (no create-then-promote bypass).
         if role.scope != "platform" and not is_super_admin(user) and role.code != TENANT_USER:
             raise ApiError("Team members can only hold the Tenant User role.", 403)
-        row.role_id = role.id
-        record_audit(
-            db, user=user, action="Changed user role", entity_type="user",
-            entity_id=row.id, target_label=row.email, tenant_id=row.tenant_id,
-            previous_value={"role": before["role"]}, new_value={"role": role.code},
-            request=request,
-        )
+        if row.role_id != role.id:
+            row.role_id = role.id
+            record_audit(
+                db, user=user, action="Changed user role", entity_type="user",
+                entity_id=row.id, target_label=row.email, tenant_id=row.tenant_id,
+                previous_value={"role": before["role"]}, new_value={"role": role.code},
+                request=request,
+            )
     record_audit(
         db, user=user, action="Updated user", entity_type="user", entity_id=row.id,
         target_label=row.email, tenant_id=row.tenant_id, previous_value=before,
-        new_value={"name": row.name, "status": row.status}, request=request,
+        new_value={"name": row.name, "email": row.email, "role": row.role.code, "status": row.status}, request=request,
     )
     db.commit()
     db.refresh(row)
@@ -410,6 +471,7 @@ def delete_user(
         raise NotFoundError("User")
     if row.id == user.id:
         raise ApiError("You cannot delete your own account.", 400)
+    _protect_user_access(db, row, user, status="deactivated")
     if row.is_service_account:
         raise ApiError("This is the tenant's API-token identity — revoke the token instead.", 400)
     if hard:
@@ -456,3 +518,37 @@ def list_permissions(
          "description": p.description or ""}
         for p in perms
     ])
+
+
+class RolePermissionsRequest(BaseModel):
+    permission_codes: list[str] = Field(alias="permissionCodes", max_length=300)
+    expected_permission_codes: list[str] = Field(alias="expectedPermissionCodes", max_length=300)
+    model_config = {"extra": "forbid"}
+
+
+@router.put("/roles/{role_id}/permissions")
+def update_role_permissions(role_id: str, body: RolePermissionsRequest, request: Request,
+                           user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    role = db.scalar(select(Role).where(Role.id == role_id).with_for_update())
+    if role is None:
+        raise NotFoundError("Role")
+    if role.code not in ("tenant_admin", "tenant_user"):
+        raise ApiError("Permissions for this protected system role cannot be changed.", 403)
+    db.expire(role, ["permissions"])
+    before = sorted(p.code for p in role.permissions)
+    if set(before) != set(body.expected_permission_codes):
+        raise ApiError("Permissions changed since you opened this role. Reload before saving.", 409)
+    codes = set(body.permission_codes)
+    permissions = list(db.scalars(select(Permission).where(Permission.code.in_(codes))).all()) if codes else []
+    if {p.code for p in permissions} != codes:
+        raise ApiError("One or more permission codes are unknown.", 422)
+    if any(p.category == "platform" for p in permissions):
+        raise ApiError("Platform permissions cannot be granted to a tenant role.", 403)
+    members = db.scalar(select(func.count()).select_from(User).where(User.role_id == role.id, User.is_deleted.is_(False))) or 0
+    role.permissions = permissions
+    role.permissions_customized = True
+    record_audit(db, user=user, action="Updated role permissions", entity_type="role", entity_id=role.id,
+                 target_label=role.name, previous_value={"permissions": before},
+                 new_value={"permissions": sorted(codes), "affectedMembers": members}, request=request)
+    db.commit()
+    return ok(serialize_role(role, members=members))

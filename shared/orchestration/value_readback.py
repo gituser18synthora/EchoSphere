@@ -86,7 +86,8 @@ def configured_readback(nodes: list[dict], text: str, slots: dict,
 
 
 def retain_readback_values(nodes: list[dict], slots: dict, entries: list[dict],
-                           text: str, pending: dict, previous: dict) -> dict:
+                           text: str, pending: dict, previous: dict,
+                           confirmed_values: dict | None = None) -> dict:
     """Keep only each opted-in field's permitted display value in the session.
 
     Ordinary PII slots stay masked; these values are not exported as slots to
@@ -110,7 +111,7 @@ def retain_readback_values(nodes: list[dict], slots: dict, entries: list[dict],
         if not captures:
             continue
         values.pop(variable, None)
-        offered = text
+        offered = (confirmed_values or {}).get(variable, text)
         if captures[-1].get("accumulated_digits"):
             offered = str(pending.get(node["id"], "")) + spoken_digit_sequence(text)
         entity = _ask_entity(node, variable)

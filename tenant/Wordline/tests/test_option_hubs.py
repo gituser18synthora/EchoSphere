@@ -43,10 +43,18 @@ def after(before) -> dict:
 
 
 async def _say(engine, session, text, signal=None, lang="en-IN"):
-    return await engine.handle_turn_detailed(
+    result = await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
         workflow_name="wf_0a6550d061e6", user_text=text, language=lang, signal=signal,
         context_values={"customer_name": "Rahul Sharma", "docket_number": "WL458921"})
+    # Preserve these journey replays by explicitly accepting each ID readback.
+    if result.get("awaitingIdentifierConfirmation"):
+        assert not any("api_lookup" in n for n in result["trace"])
+        result = await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_ccc488c2c47d", bot_id="bot_a9d4caca70dc",
+            workflow_name="wf_0a6550d061e6", user_text="yes", language=lang,
+            context_values={"customer_name": "Rahul Sharma", "docket_number": "WL458921"})
+    return result
 
 
 async def _at_options(monkeypatch, definition, session):

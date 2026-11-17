@@ -100,6 +100,11 @@ class PlatformAlert(Base, TimestampMixin, SoftDeleteMixin):
         String(20), default="open", nullable=False
     )  # open | acknowledged | resolved
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    service_key: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(ID_LEN), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(ID_LEN), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AuditLog(Base):

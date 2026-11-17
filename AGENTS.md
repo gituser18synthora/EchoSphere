@@ -12,6 +12,26 @@ workspace.**
   completed task and does not authorize future live changes.
 - Keep this restriction in force unless the user explicitly revises it.
 
+# Production server: identity and approval before changes
+
+The user established these rules on 2026-11-13:
+
+- Treat `aurexion-voicebot` (`root@192.168.60.187`, SSH port `2232`) as
+  the production VoiceBot server. It is separate from `echosphere-live`
+  (`192.168.60.123`, SSH port `2232`).
+- The existing local SSH alias uses `~/.ssh/echosphere_production`.
+  Key-based login was verified with read-only commands on 2026-11-13.
+- Read-only investigation is permitted. Before any production change,
+  describe the exact proposed action and obtain the user's explicit approval
+  for that action. This includes configuration, SSH keys/access, files,
+  permissions, packages, service operations, and database writes or migrations.
+- Access to the server, earlier approvals, and rollout documents or runbooks
+  do not authorize future production changes. Verify the target server before
+  any approved action.
+- The standing prohibition on live code changes above remains in force.
+  Make and test code changes only in the local workspace; approval for a
+  configuration or database change does not revise that prohibition.
+
 # User preference: language for prompts and instructions
 
 The user established this standing preference on 2026-11-09:

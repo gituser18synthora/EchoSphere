@@ -777,10 +777,17 @@ def executor(monkeypatch):
 
 
 async def _turn(engine, text, session, workflow="order_support_journey"):
-    return await engine.handle_turn_detailed(
+    result = await engine.handle_turn_detailed(
         session_id=session, tenant_id="t", bot_id="b",
         workflow_name=workflow, user_text=text,
     )
+    # These accumulation replays include the caller accepting the new readback.
+    if result.get("awaitingIdentifierConfirmation"):
+        assert "lookup" not in result["trace"]
+        result = await engine.handle_turn_detailed(
+            session_id=session, tenant_id="t", bot_id="b",
+            workflow_name=workflow, user_text="yes")
+    return result
 
 
 @pytest.mark.asyncio

@@ -939,6 +939,9 @@ def serialize_team_member(u: User, *, bots_owned: int) -> dict:
         "lastActive": iso(u.last_active_at) or "—",
         "botsOwned": bots_owned,
         "mfa": u.mfa_enabled,
+        "tenantId": u.tenant_id,
+        "lastLoginAt": iso(u.last_login_at),
+        "requiresPasswordChange": u.must_change_password or u.status == "invited",
     }
 
 
@@ -952,6 +955,7 @@ def serialize_role(r: Role, *, members: int) -> dict:
         "permissions": [p.code for p in r.permissions],
         "permissionCount": len(r.permissions),
         "members": members,
+        "permissionsCustomized": r.permissions_customized,
     }
 
 

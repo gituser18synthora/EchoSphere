@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 
 from shared.models.base import (
     ID_LEN,
@@ -98,6 +99,11 @@ class Prompt(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
 
 
+# The 35,000-character authoring limit can exceed MySQL TEXT's byte capacity
+# for multilingual prompts. Other database dialects retain portable TEXT.
+_PROMPT_TEXT = Text().with_variant(MEDIUMTEXT(), "mysql", "mariadb")
+
+
 class PromptVersion(Base, TimestampMixin):
     __tablename__ = "prompt_versions"
     __table_args__ = (UniqueConstraint("prompt_id", "version", name="uq_prompt_version"),)
@@ -120,8 +126,8 @@ class PromptVersion(Base, TimestampMixin):
         String(20), default="structured", nullable=False
     )
     structured_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    full_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    compiled_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_prompt: Mapped[str | None] = mapped_column(_PROMPT_TEXT, nullable=True)
+    compiled_prompt: Mapped[str | None] = mapped_column(_PROMPT_TEXT, nullable=True)
     model_compatibility: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 

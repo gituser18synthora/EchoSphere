@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+from uuid import uuid4
 
 from shared.config import get_settings
 from shared.errors import ApiError
@@ -63,15 +64,18 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(*, user_id: str, role: str, tenant_id: str | None) -> str:
+def create_access_token(*, user_id: str, role: str, tenant_id: str | None, purpose: str = "access", auth_version: int = 0) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "role": role,
         "tenant_id": tenant_id,
-        "iat": now,
-        "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+        "iat": now.timestamp(),
+        "jti": uuid4().hex,
+        "purpose": purpose,
+        "version": auth_version,
+        "exp": now + timedelta(minutes=min(settings.access_token_expire_minutes, 15) if purpose == "password_change" else settings.access_token_expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 

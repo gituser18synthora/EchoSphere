@@ -4,6 +4,7 @@ import {
 } from "react";
 import type { Role } from "@/types/domain";
 import { setToken } from "@/services/http";
+import { logout } from "@/services/api";
 
 export interface SessionUser {
   id?: string;
@@ -24,7 +25,7 @@ interface Toast {
 interface AppState {
   user: SessionUser | null;
   signIn: (user: SessionUser, token: string) => void;
-  signOut: () => void;
+  signOut: () => Promise<void>;
   /** Merge fields into the stored session user (e.g. after a profile update). */
   updateSessionUser: (patch: Partial<SessionUser>) => void;
   /** Server-enforced permission code check — UI affordance only, never security. */
@@ -66,7 +67,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_KEY, JSON.stringify(u));
   }, []);
 
-  const signOut = useCallback(() => {
+  const signOut = useCallback(async () => {
+    try { await logout(); }
+    catch (cause) {
+      if ((cause as { status?: number }).status !== 401) {
+        setToasts((current) => [...current, { id: ++toastId.current,
+          message: "Could not sign out on the server. Please try again.", kind: "error" }]);
+        throw cause;
+      }
+    }
     setToken(null);
     setUser(null);
     localStorage.removeItem(USER_KEY);
