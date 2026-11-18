@@ -261,3 +261,50 @@ def repair_prompt_digit_rule(full_prompt: str) -> str:
     if full_prompt.count(DIGIT_RULE_OLD) != 1:
         raise ValueError("Expected exactly one English digit readback rule")
     return full_prompt.replace(DIGIT_RULE_OLD, DIGIT_RULE_NEW)
+
+
+# ── 18 November midday review (18 calls after 06:37 UTC, workflow v55) ──────
+
+# "खुद" between the pronoun and the verb broke every authored raise phrase:
+# only the 5-character "कर दो" matched and lost to the closing edge's "ठीक है".
+RAISE_SELF_PHRASES = (
+    "खुद कर दो/तुम खुद कर दो/आप खुद कर दो/खुद ही कर दो/खुद कर दीजिए/आप खुद कर दीजिए/"
+    "खुद से कर दो/Khud kar do/Tum khud kar do/Aap khud kar do/Khud hi kar do/"
+    "Khud kar dijiye/Aap khud kar dijiye"
+)
+RAISE_TARGET = "n_raise_has_record"
+
+
+def repair_midday_review(definition: dict) -> dict:
+    """Two routing defects seen on workflow v55 (18 November test calls).
+
+    * "Anything else?" answered "जी।" still closed the call (cv_f3800137eb10,
+      06:49:05 UTC). With an ``affirm`` label and no literal token the engine
+      takes the FIRST edge whose tokens carry that signal, and the closing
+      edge ("ठीक है", "fine") came before the yes edge. The yes edge is now the
+      first outgoing edge of every anything-else hub; a literal closing token still wins
+      because the longer token decides ("ठीक है", "नहीं", "thank you").
+    * After the SMS steps "नहीं, मुझे तुम खुद कर दो … ठीक है सर" closed the call
+      (cv_8bd254559c2f, 06:43:03 UTC): no raise phrase contains "खुद", so the
+      closing token "ठीक है" was the longest match. The phrases are added to
+      every edge that leads to the raise-request step.
+    """
+    result = copy.deepcopy(definition)
+    if not all(_edge(result, hub, MORE_HELP_ID) for hub in ANYTHING_ELSE_HUBS):
+        raise ValueError("Expected the yes edge on every anything-else hub (apply repair_evening_review first)")
+    edges = result["edges"]
+    for hub in ANYTHING_ELSE_HUBS:
+        yes = _edge(result, hub, MORE_HELP_ID)
+        first = next(e for e in edges if e.get("from") == hub)
+        if first is not yes:
+            edges.remove(yes)
+            edges.insert(edges.index(first), yes)
+    raise_edges = [e for e in edges if e.get("to") == RAISE_TARGET and "कर दो" in str(e.get("label") or "")]
+    if not raise_edges:
+        raise ValueError("Expected at least one raise-request option edge")
+    for edge in raise_edges:
+        have = set(edge["label"].split("/"))
+        extra = [p for p in RAISE_SELF_PHRASES.split("/") if p not in have]
+        if extra:
+            edge["label"] = edge["label"] + "/" + "/".join(extra)
+    return result

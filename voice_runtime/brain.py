@@ -510,6 +510,19 @@ _SPEECH_START_DEDUP_WINDOW = 1.2
 # window is bounded so a reply that never renders (provider failure) cannot
 # rewind a much later, unrelated turn.
 _UNHEARD_REPLY_MERGE_WINDOW_S = 8.0
+
+# Unheard-reply guard (tenant `unheard_reply_guard_enabled`): how much of a
+# workflow reply must have played before a bare yes/no spoken over it can be
+# an answer to it. In the 18 calls of 2026-11-18 every yes/no that was wrongly
+# consumed came 0.0-1.7 s into the reply ("ठीक है" 1.39 s into a Terminal ID
+# readback, "हाँ, बिल्कुल" 0.9 s into a record confirmation; 2026-11-17: a
+# "नहीं" 1.37 s into the SMS steps closed the call), while every interruption
+# by a caller who had listened came after 7.9 s or more. Two seconds is below
+# the shortest complete question the bot asks and above every early cut seen.
+_REPLY_HEARD_MIN_S = 2.0
+# Generic answers only: a question, a request, an identifier or a correction
+# says something on its own and is handled exactly as before.
+_UNHEARD_BLOCKED_SIGNALS = frozenset({"affirm", "refusal"})
 # Speech that starts within this long after the caller's previous speech ended
 # is a CONTINUATION of the utterance the pipeline answered too early and merges
 # into it; a later start is a new, separate turn even when the previous
@@ -747,6 +760,7 @@ class ConversationBrain(FrameProcessor):
         speaker_consistency=None,
         speaker_tap=None,
         held_segment_guard: bool = False,
+        unheard_reply_guard: bool = False,
         user_speech_timeout: float = 1.2,
         smart_turn_active: bool = False,
     ) -> None:
@@ -1285,6 +1299,13 @@ class ConversationBrain(FrameProcessor):
         # never confirmed a barge-in waits here for the caller to continue
         # with the bot quiet; a timer discards it otherwise.
         self._held_segment_guard = bool(held_segment_guard)
+        # Unheard-reply guard: the workflow reply the caller could not hear
+        # (cut too early, cut before its question, or never synthesized) and
+        # the nodes of the reply repeated last — one repeat per reply.
+        self._unheard_reply_guard = bool(unheard_reply_guard)
+        self._unheard_reply: dict | None = None
+        self._unheard_repeated: tuple[str, ...] = ()
+        self._reply_text = ""
         self._held_multiword: list[dict] = []
         self._held_continuation_task: asyncio.Task | None = None
         # Physical speech episode counter (VAD starts): a held segment may be
@@ -3904,6 +3925,9 @@ class ConversationBrain(FrameProcessor):
                 self._pending_hub_edges = self._open_turn_pending_hub_edges
                 self._pending_exact_ahead = self._open_turn_pending_exact_ahead
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
+                # The reply whose turn was just rewound no longer belongs to
+                # the workflow's position: nothing of it is left to repeat.
+                self._unheard_reply = None
         if not text:
             return
         user_entry = {"role": "user", "content": text}
@@ -4648,6 +4672,7 @@ class ConversationBrain(FrameProcessor):
     def _begin_reply_tracking(self) -> None:
         """A new turn is being answered: forget the previous reply's nodes."""
         self._reply_nodes = []
+        self._reply_text = ""
         self._reply_marker_pushed = False
         self._reply_tts_complete = False
         self._reply_heard = False
@@ -4672,7 +4697,15 @@ class ConversationBrain(FrameProcessor):
         if frame.marker != self._reply_marker or not self._reply_nodes:
             return
         if frame.failed:
-            # No audio ever rendered for the reply: nothing was heard.
+            # No audio ever rendered for the reply (the router already retried
+            # it once): nothing was heard. The conversation must not go on as
+            # if it had been — the caller's next yes/no repeats the reply.
+            self._recorder.add_event(
+                "tts_reply_not_delivered", nodes=list(self._reply_nodes),
+            )
+            self._note_unheard_reply(
+                self._reply_nodes, 0.0, "tts_failed", self._reply_text,
+            )
             self._reply_nodes = []
             return
         self._reply_tts_complete = True
@@ -4718,6 +4751,11 @@ class ConversationBrain(FrameProcessor):
             "marker": self._reply_marker, "nodes": list(self._reply_nodes),
             "played": played,
         }
+        if played < _REPLY_HEARD_MIN_S:
+            self._note_unheard_reply(
+                self._reply_nodes, played, "early_cut", self._reply_text,
+                marker=self._reply_marker,
+            )
         self._reply_nodes = []
         self._reply_heard = False
         self._reply_tts_complete = False
@@ -4727,6 +4765,11 @@ class ConversationBrain(FrameProcessor):
         if not cut or frame.marker != cut["marker"] or not cut["nodes"]:
             return
         sentences = list(frame.sentences or [])
+        texts = [str(text) for text in (getattr(frame, "texts", None) or [])]
+        pending = self._unheard_reply
+        if pending and pending.get("marker") == cut["marker"] and texts:
+            # Cut in its first moments: repeat the wording that was spoken.
+            pending["text"] = " ".join(texts)
         if len(sentences) < 2:
             return                      # a one-sentence reply is heard only in full
         played = float(cut["played"]) + 0.3          # transport latency slack
@@ -4738,6 +4781,19 @@ class ConversationBrain(FrameProcessor):
                 heard += 1
             else:
                 break
+        if (
+            heard < len(sentences) - 1
+            and len(texts) == len(sentences)
+            and float(cut["played"]) >= _REPLY_HEARD_MIN_S
+            and texts[-1].rstrip().endswith("?")
+        ):
+            # The caller listened, but spoke before the closing question had
+            # started ("हांजी, हांजी" during the IVR steps): what they said
+            # cannot answer it. Only the part not played yet is spoken again.
+            self._note_unheard_reply(
+                cut["nodes"], float(cut["played"]), "question_not_started",
+                " ".join(texts[heard:]), marker=cut["marker"],
+            )
         if heard >= len(sentences) - 1:
             for node in cut["nodes"]:
                 if node not in self._heard_nodes:
@@ -4746,6 +4802,84 @@ class ConversationBrain(FrameProcessor):
                 "workflow_reply_heard", nodes=list(cut["nodes"]), partial=True,
                 sentences_heard=heard, sentences_total=len(sentences),
             )
+
+    def _note_unheard_reply(
+        self, nodes, played: float, reason: str, text: str, *, marker: int | None = None,
+    ) -> None:
+        """Remember a workflow reply the caller could not have heard.
+
+        ``tts_failed`` (no audio was ever produced) applies to every bot; the
+        barge-in reasons only with the tenant's guard enabled.
+        """
+        if not nodes or not (text or "").strip():
+            return
+        if reason != "tts_failed" and not self._unheard_reply_guard:
+            return
+        self._unheard_reply = {
+            "nodes": tuple(str(node) for node in nodes), "played": float(played),
+            "reason": reason, "text": text.strip(), "marker": marker,
+            "turn": self._turn_counter,
+        }
+
+    def _take_unheard_reply(self, text: str, signal: str | None) -> dict | None:
+        """The unheard reply THIS turn must not answer, if any (clears it)."""
+        record, self._unheard_reply = self._unheard_reply, None
+        if (
+            record is None
+            or not self._active_workflow
+            or self._closing
+            # Only the caller's very next turn can be the reaction to it.
+            or self._turn_counter != record["turn"] + 1
+            # One repeat per reply: a caller who talks over the repeat as
+            # well is answered on what they said — the call cannot loop.
+            or record["nodes"] == self._unheard_repeated
+            or not self._bare_yes_no_turn(text, signal)
+        ):
+            return None
+        return record
+
+    def _bare_yes_no_turn(self, text: str, signal: str | None) -> bool:
+        """Whether the turn is only a yes/no (or an acknowledgement).
+
+        Such words say nothing by themselves: over a reply the caller did not
+        hear they are a reaction to something else. A turn that names one of
+        the waiting step's options ("नहीं, IVR बताओ"), dictates digits, asks
+        or requests something is the caller's own content and is never held.
+        """
+        from shared.orchestration.ask_resolution import (
+            _BARE_NO_WORDS, _BARE_TOKEN_SPLIT, _BARE_YES_WORDS,
+        )
+        from shared.orchestration.spoken_numbers import spoken_digit_text
+        from shared.orchestration.workflow_engine import _specific_answer_token, _token_in
+
+        lowered = (text or "").lower()
+        if len(re.findall(r"\d", spoken_digit_text(text or ""))) >= 2:
+            return False
+        for edge in self._pending_hub_edges or ():
+            if any(_token_in(token, lowered) and _specific_answer_token(token)
+                   for token in edge.get("tokens") or ()):
+                return False
+        if signal in _UNHEARD_BLOCKED_SIGNALS:
+            return True
+        if signal is not None:
+            return False
+        # No label (classifier timeout): the words themselves decide.
+        words = [word for word in _BARE_TOKEN_SPLIT.split(lowered) if word]
+        return 0 < len(words) <= 6 and any(
+            word in _BARE_YES_WORDS or word in _BARE_NO_WORDS for word in words
+        )
+
+    async def _repeat_unheard_reply(self, record: dict, signal: str | None) -> None:
+        """Speak the unheard reply again; the workflow does not see the turn."""
+        self._unheard_repeated = record["nodes"]
+        self._recorder.add_event(
+            "unheard_reply_not_answered", nodes=list(record["nodes"]),
+            played_s=round(record["played"], 2), reason=record["reason"], signal=signal,
+        )
+        # The repeat is the delivery of these nodes: heard once it plays out.
+        self._reply_nodes = list(record["nodes"])
+        self._reply_text = record["text"]
+        await self._say(record["text"])
 
     async def _maybe_resume_interrupted_reply(self) -> None:
         """Re-speak a reply that a recording notice's audio cut short.
@@ -6134,6 +6268,7 @@ class ConversationBrain(FrameProcessor):
         # decision stage too); the record joins it now that it exists, so a
         # rewind can also drop the transcript entry.
         self._open_turn_record = turn
+        unheard = self._take_unheard_reply(text, signal)
 
         try:
             if decision.kind == RouteKind.CALL_CONTROL:
@@ -6149,6 +6284,11 @@ class ConversationBrain(FrameProcessor):
                 # short acknowledgement, then wait — no LLM turn, no workflow
                 # step consumed or advanced, no callback question.
                 await self._acknowledge_hold(decision)
+            elif unheard is not None:
+                # A bare yes/no spoken over a reply the caller could not hear
+                # is not its answer (and must never close the call): the
+                # workflow keeps its state and the reply is spoken again.
+                await self._repeat_unheard_reply(unheard, signal)
             elif plan is not None and plan.handoff:
                 # Policy-confirmed escalation (e.g. the caller said yes to the
                 # bot's own agent offer, or a dispute chose the agent path).
@@ -7698,6 +7838,9 @@ class ConversationBrain(FrameProcessor):
             self._reply_nodes = [
                 str(node) for node in (result.get("spokenNodes") or []) if node
             ]
+            self._reply_text = reply
+            if tuple(self._reply_nodes) != self._unheard_repeated:
+                self._unheard_repeated = ()
         # A step carrying an approved legal wording reference must be spoken
         # VERBATIM through the fixed-phrase path (where the template
         # substitutes) — never re-delivered by generation, which could

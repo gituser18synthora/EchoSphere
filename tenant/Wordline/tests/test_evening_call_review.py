@@ -227,7 +227,9 @@ CONFIRMATIONS = [
     ("-", "ठीक है", "yes"), ("-", "theek hai", "yes"), ("-", "यही है", "yes"),
     ("-", "बिल्कुल करेक्ट आपने कहा है। यही है।", "yes"),
     ("-", "Okay", None), ("-", "it is", None), ("-", "सही है क्या?", None),
-    ("-", "हाँ लेकिन last में A है", None), ("-", "ठीक नहीं है", None),
+    ("-", "हाँ लेकिन last में A है", None),
+    # 18 Nov: a negated affirmative is a clear no (it was undecided before).
+    ("-", "ठीक नहीं है", "no"),
 ]
 
 

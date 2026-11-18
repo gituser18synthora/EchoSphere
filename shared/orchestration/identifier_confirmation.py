@@ -69,10 +69,39 @@ _PHONETIC = re.compile(
     # word. Including them made the exact spoken `अल्फा।` fail corroboration.
     r"(?P<word>[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+)" + _TOKEN_END, re.I,
 )
+# "A for Alpha" is regularly transcribed "Eight for Alpha": the letter A and
+# the digit eight sound alike on a phone line. The readback then carried an
+# extra 8 and no letter, the caller confirmed it and the lookup failed (DEMO
+# cv_a3a2e9c1d463: "301134 Six, Eight for Alpha." → 30113468). Nobody spells
+# a digit with a word, so a spelling word that starts with A decides.
+_EIGHT_FOR_A = re.compile(
+    _TOKEN_START + r"(?:eight|8|एट|ऐट)(?P<rest>\s+(?:for|as\s+in|फोर|फ़ोर|फॉर|फ़ॉर)\s+"
+    r"(?P<word>[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+))" + _TOKEN_END, re.I,
+)
 _REPEATED_LETTER = re.compile(
     _TOKEN_START + r"(double|triple|डबल|ट्रिपल)\s+(" + _LETTER_TOKEN + r")" + _TOKEN_END, re.I,
 )
 _CONTINUATION = re.compile(r"^\s*(?:and|aur|और)\b[\s,.;।-]*", re.I)
+# "The letter comes at the end": the caller corrects a readback that lost its
+# trailing letter without dictating the whole identifier again. "लास्ट में ए
+# है", "आपने लास्ट में ए नहीं बोला" and "उसके बाद। A for Apple" were each
+# answered with the same re-prompt until the gate gave up and the call was
+# closed (DEMO cv_cd292d6c02cd, cv_a9af6b51d328, 2026-11-18).
+_SUFFIX_POSITION = (
+    r"(?:(?:last|end|ending|aakhir|aakhiri|aakhri|akhir|ant|लास्ट|एंड|आखिर|आख़िर|आखिरी|आख़िरी|अंत)"
+    r"(?:\s+(?:में|मे|mein|me|main|par|pe|पर|पे))?"
+    r"|(?:uske|iske|उसके|इसके)\s+(?:baad|बाद)|after\s+that|at\s+the\s+end)"
+)
+_SUFFIX_LEAD = r"(?:(?:no|nahi|nahin|नहीं|नही|haan|हाँ|हां|ji|जी|sir|सर|aapne|आपने|aur|और|and|but|lekin|लेकिन)[\s,]+)*"
+_SUFFIX_TAIL = (
+    r"(?:\s+(?:भी|bhi))?(?:\s+(?:है|हैं|hai|hain|आता\s+है|aata\s+hai|लगेगा|lagega|"
+    r"(?:नहीं|नही|nahi|nahin)\s+(?:बोला|बोले|कहा|bola|bole|kaha)|छूट\s+गया|रह\s+गया))?"
+)
+_SUFFIX_STATEMENT = re.compile(
+    r"^" + _SUFFIX_LEAD + _SUFFIX_POSITION + r"[\s,]+(?P<letter>.+?)" + _SUFFIX_TAIL + r"$", re.I,
+)
+_SUFFIX_POSITION_ONLY = re.compile(r"^" + _SUFFIX_LEAD + _SUFFIX_POSITION + r"$", re.I)
+_SUFFIX_ACK = re.compile(r"^(?:(?:no|nahi|nahin|नहीं|नही|haan|हाँ|हां|ji|जी|sir|सर)[\s,]*)+$", re.I)
 _REPETITION_PREFIX = re.compile(
     r"^\s*(?:i\s+(?:just\s+)?said|"
     r"maine\s+(?:abhi\s+)?(?:bola|kaha|bataya)(?:\s+(?:na|tha))?|"
@@ -108,7 +137,7 @@ _DICTATION_CONNECTOR = re.compile(
 _COURTESY = r"(?:please|sir|madam|कृपया|प्लीज|सर|मैडम)"
 _DICTATION_COURTESY_START = re.compile(r"^\s*(?:" + _COURTESY + r"[\s,.!;।-]+){1,2}", re.I)
 _DICTATION_COURTESY_END = re.compile(r"(?:[\s,.!;।-]+" + _COURTESY + r"){1,2}[\s,.!;।-]*$", re.I)
-_NEGATIVE = re.compile(r"(?<![\w./_-])(?:no|not|wrong|incorrect|nahi|nahin|nhi|galat|नहीं|नही|गलत|ग़लत|இல்லை|അല്ല)(?![\w/_-])", re.I)
+_NEGATIVE = re.compile(r"(?<![\w./_-])(?:no|not|wrong|incorrect|nahi|nahin|nhi|naahi|galat|नहीं|नही|नाही|गलत|ग़लत|இல்லை|അല്ല)(?![\w/_-])", re.I)
 _CORRECTION = re.compile(r"(?<!\w)(?:but|actually|instead|except|ending|last|first|replace|correction|lekin|लेकिन|आखिरी|आख़िरी|बदलो|बदल|सुधार)(?!\w)", re.I)
 # Natural whole-utterance confirmations. Every token must be on this list and
 # at least one must be a real affirmative (_AFFIRMATIVE), so "it is" or
@@ -128,10 +157,17 @@ _AFFIRMATIVE = re.compile(
     r"हाँ|हां|हा|हाँजी|हांजी|जी|सही|बिल्कुल|बिलकुल|ठीक|बरोबर|बराबर|करेक्ट|राइट|यस|यही|वही|"
     r"ஆமாம்|சரி|അതെ|ശരി)(?!\w)", re.I,
 )
+# A negation always wins over the natural affirmatives accepted by _YES:
+# "theek nahi hai", "sahi nahi hai", "barobar nahi", "yah sahi nahi hai" are
+# a clear no (they used to be neither answer, so the gate only repeated its
+# prompt). Any word outside this list keeps the reply undecided.
 _NO = re.compile(
-    r"^(?:(?:no|not|wrong|incorrect|isn't|isnt|nahi|nahin|nhi|galat|"
-    r"yes|haan|han|ji|okay|ok|it|is|it's|that|that's|this|correct|confirmed|right|hai|sir|"
-    r"नहीं|नही|गलत|ग़लत|हाँ|हां|जी|यह|ये|सही|है|सर|இல்லை|അല്ല)[\s,.!।]*)+$", re.I,
+    r"^(?:(?:no|not|wrong|incorrect|isn't|isnt|nahi|nahin|nhi|naahi|galat|"
+    r"yes|yeah|haan|han|haa|ha|haanji|hanji|ji|okay|ok|it|is|it's|that|that's|this|correct|confirmed|right|"
+    r"perfect|exactly|absolutely|hai|hain|sir|madam|mam|bhai|id|tid|"
+    r"sahi|theek|thik|barobar|barabar|bilkul|ekdum|ekdam|yah|yeh|ye|yahi|yehi|"
+    r"नहीं|नही|नाही|गलत|ग़लत|हाँ|हां|हा|हाँजी|हांजी|जी|यह|ये|यही|सही|ठीक|बरोबर|बराबर|बिल्कुल|बिलकुल|एकदम|"
+    r"है|हैं|सर|मैडम|भाई|आईडी|இல்லை|അല്ല)[\s,.!।]*)+$", re.I,
 )
 
 
@@ -194,6 +230,12 @@ def _letter(value: str) -> str | None:
     return value[0] if value and len(set(value)) == 1 and value[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" else None
 
 
+def _eight_as_letter_a(match: re.Match) -> str:
+    word = match["word"]
+    names_a = word[0].upper() == "A" if word.isascii() else _HINDI_PHONETICS.get(word) == "A"
+    return "A" + match["rest"] if names_a else match[0]
+
+
 def _identifier_spelling(text: str, *, mark_phonetics: bool = False) -> tuple[str, bool]:
     """Resolve spelling *before* number words (Hindi `फोर` also means four)."""
     valid = True
@@ -213,7 +255,8 @@ def _identifier_spelling(text: str, *, mark_phonetics: bool = False) -> tuple[st
         result = " ".join([letter] * count)
         return "\ue000" + result + "\ue001" if mark_phonetics else result
 
-    value = _PHONETIC.sub(replace, str(text or ""))
+    value = _EIGHT_FOR_A.sub(_eight_as_letter_a, str(text or ""))
+    value = _PHONETIC.sub(replace, value)
     value = _REPEATED_LETTER.sub(
         lambda m: " ".join([_letter(m[2])] * (3 if m[1].lower() in {"triple", "ट्रिपल"} else 2)), value,
     )
@@ -271,11 +314,39 @@ def identifier_suffix(text: str) -> str | None:
     if (looks_like_question(text or "") or confirmation_answer(text) is not None
             or not identifier_spelling_valid(text)):
         return None
+    return _plain_suffix(text) or _positional_suffix(text)
+
+
+def _plain_suffix(text: str) -> str | None:
     value = _REPETITION_PREFIX.sub("", (text or "").strip(" \t\r\n,.!।॥"))
     value = _CONTINUATION.sub("", value)
     value = re.sub(r"^(?:letter|लेटर)\s+", "", value, flags=re.I)
     value = spoken_identifier_text(value).strip(" \t\r\n,.!।")
     return value.upper() if re.fullmatch(r"[A-Za-z]", value) else None
+
+
+def _positional_suffix(text: str) -> str | None:
+    """"लास्ट में ए है" / "at the end A for Apple": one letter, one position.
+
+    Every clause must be an acknowledgement, a bare position phrase or the
+    same single letter; anything else (digits, other prose, two different
+    letters) is not a suffix statement.
+    """
+    letters: set[str] = set()
+    positioned = False
+    for clause in (part.strip(" \t\r\n,") for part in re.split(r"[.!।॥]+", text or "")):
+        if not clause or _SUFFIX_ACK.fullmatch(clause):
+            continue
+        if _SUFFIX_POSITION_ONLY.fullmatch(clause):
+            positioned = True
+            continue
+        statement = _SUFFIX_STATEMENT.fullmatch(clause)
+        letter = _plain_suffix(statement["letter"] if statement else clause)
+        if not letter:
+            return None
+        positioned = positioned or bool(statement)
+        letters.add(letter)
+    return letters.pop() if positioned and len(letters) == 1 else None
 
 
 def identifier_suffix_repeated(text: str) -> bool:

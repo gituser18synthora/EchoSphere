@@ -170,3 +170,7 @@ class ReplyTTSInterruptedFrame(SystemFrame):
 
     marker: int = 0
     sentences: list = field(default_factory=list)
+    # The sentence texts exactly as they were sent to synthesis, same order
+    # as ``sentences``: what the brain re-speaks when the caller did not hear
+    # the part of the reply that asks the question.
+    texts: list = field(default_factory=list)

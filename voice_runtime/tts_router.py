@@ -210,6 +210,9 @@ class _Generation:
     flushed: bool = False
     got_audio: bool = False
     fallback_used: bool = False
+    # One same-engine replay after a transient failure that produced no audio
+    # (see _try_retry); never repeated for the same generation.
+    retry_used: bool = False
     watchdog: asyncio.Task | None = None
     audio_bytes: int = 0   # post-resample bytes delivered downstream
     audio_chunks: int = 0
@@ -421,7 +424,15 @@ class StreamingTTSRouter(TTSService):
 
     # ── text sanitization ───────────────────────────────────────────────
     async def _sanitize_transform(self, text: str, aggregation_type) -> str:
-        return sanitize_for_tts(text)
+        return sanitize_for_tts(
+            text,
+            # Tenant opt-in (Turn Detection → tts_english_identifier_digits):
+            # raw identifier digits become English digit words right here,
+            # the last step before the text is synthesized.
+            english_identifier_digits_enabled=bool(
+                getattr(self._recorder, "english_identifier_digits", False)
+            ),
+        )
 
     # ── engine / provider management ────────────────────────────────────
     def _native_breathing(self, engine: dict) -> bool:
@@ -847,7 +858,7 @@ class StreamingTTSRouter(TTSService):
                 # owes this generation a fresh final again.
                 state.midturn_final_seen = False
         except ProviderError as exc:
-            handled = await self._try_fallback(context_id, exc)
+            handled = await self._recover_generation(context_id, exc)
             if not handled:
                 self._log_engine_failure(engine, exc, "synthesis dispatch")
                 yield ErrorFrame(error=f"tts_failure:{exc.category}")
@@ -856,7 +867,7 @@ class StreamingTTSRouter(TTSService):
                 return
         except (ConnectionError, OSError, TimeoutError) as exc:
             error = ProviderError("tts", "upstream", str(exc)[:200])
-            handled = await self._try_fallback(context_id, error)
+            handled = await self._recover_generation(context_id, error)
             if not handled:
                 self._log_engine_failure(engine, error, "synthesis dispatch")
                 yield ErrorFrame(error="tts_failure:upstream")
@@ -962,7 +973,9 @@ class StreamingTTSRouter(TTSService):
                     for i, text in enumerate(state.texts)
                 ]
                 await self.push_frame(
-                    ReplyTTSInterruptedFrame(marker=state.marker, sentences=sentences),
+                    ReplyTTSInterruptedFrame(
+                        marker=state.marker, sentences=sentences, texts=list(state.texts),
+                    ),
                     FrameDirection.UPSTREAM,
                 )
         await super().on_audio_context_interrupted(context_id)
@@ -1082,7 +1095,7 @@ class StreamingTTSRouter(TTSService):
         elif event.kind == "error":
             error = event.error or ProviderError("tts", "upstream", "unknown TTS error")
             if generation and state is not None:
-                handled = await self._try_fallback(context_id, error)
+                handled = await self._recover_generation(context_id, error)
                 if not handled:
                     self._log_engine_failure(state.engine, error, "provider stream")
                     await self.push_error(error_msg=f"tts_failure:{error.category}")
@@ -1266,7 +1279,7 @@ class StreamingTTSRouter(TTSService):
     async def _handle_sentence_dispatch_failure(
         self, context_id: str, state: _Generation, error: ProviderError
     ):
-        handled = await self._try_fallback(context_id, error)
+        handled = await self._recover_generation(context_id, error)
         if not handled:
             self._log_engine_failure(state.engine, error, "sentence dispatch")
             await self.push_error(error_msg=f"tts_failure:{error.category}")
@@ -1319,6 +1332,20 @@ class StreamingTTSRouter(TTSService):
         await self.push_frame(EndWorkerFrame(reason=f"tts_failure:{category}"))
 
     async def _finalize_generation(self, context_id: str, *, failed: bool):
+        silent = self._generations.get(context_id)
+        if silent is not None and not failed and not silent.audio_bytes and silent.texts:
+            # The provider closed the reply without sending any audio and
+            # without an error. Same recovery as a first-audio timeout.
+            if await self._try_retry(context_id, ProviderError(
+                silent.engine.get("provider") or "tts", "upstream",
+                "generation completed with no audio",
+            )):
+                return
+            logger.warning(
+                "tts[%s] generation %s completed with no audio (provider=%s)",
+                self._recorder.session_id if self._recorder else "?",
+                str(context_id)[:8], silent.engine.get("provider"),
+            )
         state = self._generations.pop(context_id, None)
         self._drop_subgenerations(context_id)
         if state is None:
@@ -1392,12 +1419,99 @@ class StreamingTTSRouter(TTSService):
             state.engine.get("provider") or "tts", "timeout",
             "No audio received before the first-audio timeout",
         )
-        handled = await self._try_fallback(context_id, error)
+        handled = await self._recover_generation(context_id, error)
         if not handled:
             await self.push_error(error_msg="tts_failure:timeout")
             await self._finalize_generation(context_id, failed=True)
 
-    # ── fallback ────────────────────────────────────────────────────────
+    # ── retry / fallback ────────────────────────────────────────────────
+    async def _replay_generation(
+        self, context_id: str, state: _Generation, provider: StreamingTTSProvider,
+    ) -> None:
+        """Re-dispatch every sentence of the generation on ``provider``."""
+        state.provider = provider
+        state.got_audio = False
+        # The replay re-dispatches every sentence; the dispatch counter
+        # restarts so exactly one attempt is billed.
+        state.dispatched_chars = 0
+        if self._pause_ms > 0:
+            # Replay every sentence through the same pause-aware
+            # serializer, so the replay gets identical pauses.
+            state.pending = deque(_Sentence(text=t) for t in state.texts)
+            state.active = None
+            state.gap_pending = False  # replay restarts — no leading gap
+            await self._dispatch_next_sentence(context_id, state)
+            if state.flushed and state.watchdog is None:
+                state.watchdog = self.create_task(
+                    self._first_audio_watchdog(context_id)
+                )
+        else:
+            for text in state.texts:
+                await provider.synthesize_stream(text, generation_id=context_id)
+                state.dispatched_chars += len(text)
+            state.midturn_final_seen = False
+            if state.flushed:
+                await provider.flush(context_id)
+                await provider.finish(context_id)
+                state.watchdog = self.create_task(self._first_audio_watchdog(context_id))
+
+    async def _recover_generation(self, context_id: str, error: ProviderError) -> bool:
+        """One same-engine retry first, then the configured fallback engine."""
+        return (await self._try_retry(context_id, error)
+                or await self._try_fallback(context_id, error))
+
+    async def _try_retry(self, context_id: str, error: ProviderError) -> bool:
+        """Replay a reply that produced NO audio once on the same engine.
+
+        A reply whose synthesis timed out or ended without a single audio
+        chunk left the caller in silence while the conversation moved on as
+        if it had been spoken (DEMO cv_8358a2aef66b, 2026-11-17: the Terminal
+        ID readback never played). Most such failures are one bad provider
+        stream: cancelling it drops that connection, and the replay runs on a
+        fresh one. Only transient categories, only while nothing was
+        delivered (a replay after partial audio would repeat words), and only
+        once per reply — a second failure reports the reply as not delivered.
+        """
+        state = self._generations.get(context_id)
+        if (
+            state is None
+            or state.retry_used
+            or state.fallback_used
+            or state.audio_bytes
+            or not state.texts
+            or error.category not in TRANSIENT_ERROR_CATEGORIES
+        ):
+            return False
+        state.retry_used = True
+        logger.warning(
+            "tts[%s] %s produced no audio (%s) — retrying the reply once (context=%s)",
+            self._recorder.session_id if self._recorder else "?",
+            state.engine.get("provider"), error.category, str(context_id)[:8],
+        )
+        try:
+            await state.provider.cancel(state.active or context_id)
+        except (ConnectionError, OSError):
+            pass
+        if state.watchdog is not None:
+            state.watchdog.cancel()
+            state.watchdog = None
+        self._drop_subgenerations(context_id)
+        if self._recorder is not None:
+            self._flush_event_background(
+                "tts_retry",
+                provider=state.engine.get("provider"),
+                model=state.engine.get("model"),
+                category=error.category,
+                chars=sum(len(text) for text in state.texts),
+            )
+        try:
+            provider = await self._get_provider(state.engine, self._current_language)
+            await self._replay_generation(context_id, state, provider)
+        except (ProviderError, ConnectionError, OSError, TimeoutError) as exc:
+            logger.warning("tts-router: retry dispatch failed: %s", exc)
+            return False
+        return True
+
     async def _try_fallback(self, context_id: str, error: ProviderError) -> bool:
         """Switch the generation to the fallback engine for transient failures.
 
@@ -1432,32 +1546,8 @@ class StreamingTTSRouter(TTSService):
         try:
             provider = await self._get_provider(self._fallback_engine, self._current_language)
             state.engine = self._fallback_engine
-            state.provider = provider
             state.fallback_used = True
-            state.got_audio = False
-            # The replay re-dispatches every sentence on the NEW engine; the
-            # dispatch counter restarts so exactly one engine is billed.
-            state.dispatched_chars = 0
-            if self._pause_ms > 0:
-                # Replay every sentence through the same pause-aware
-                # serializer, so the fallback engine gets identical pauses.
-                state.pending = deque(_Sentence(text=t) for t in state.texts)
-                state.active = None
-                state.gap_pending = False  # replay restarts — no leading gap
-                await self._dispatch_next_sentence(context_id, state)
-                if state.flushed and state.watchdog is None:
-                    state.watchdog = self.create_task(
-                        self._first_audio_watchdog(context_id)
-                    )
-            else:
-                for text in state.texts:
-                    await provider.synthesize_stream(text, generation_id=context_id)
-                    state.dispatched_chars += len(text)
-                state.midturn_final_seen = False
-                if state.flushed:
-                    await provider.flush(context_id)
-                    await provider.finish(context_id)
-                    state.watchdog = self.create_task(self._first_audio_watchdog(context_id))
+            await self._replay_generation(context_id, state, provider)
         except (ProviderError, ConnectionError, OSError, TimeoutError) as exc:
             logger.warning("tts-router: fallback dispatch failed: %s", exc)
             return False

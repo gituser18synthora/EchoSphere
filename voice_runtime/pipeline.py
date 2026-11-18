@@ -1302,6 +1302,9 @@ def build_voice_pipeline(
         # Speech heard during a reply that never confirmed a barge-in is
         # held, not dispatched at reply end (tenant opt-in).
         held_segment_guard=turn["held_segment_guard_enabled"] >= 0.5,
+        # A reply cut before the caller could hear its question is repeated
+        # instead of answered by the yes/no spoken over it (tenant opt-in).
+        unheard_reply_guard=turn["unheard_reply_guard_enabled"] >= 0.5,
         # Continuation-vs-new-turn boundary while a reply is unheard derives
         # from the tenant's own pause window (brain._CONTINUATION_GAP_*).
         user_speech_timeout=turn["user_speech_timeout"],
@@ -1432,6 +1435,8 @@ def build_voice_pipeline(
         # barge-in and releases or discards it once the arbiter decides.
         processors.append(playback_duck)
     processors.append(transport.output())
+    # Read by the streaming TTS router's text transform (tenant opt-in).
+    recorder.english_identifier_digits = turn["tts_english_identifier_digits"] >= 0.5
     recorder.transcript_playout_only = turn["transcript_playout_only"] >= 0.5
     if recorder.transcript_playout_only:
         from voice_runtime.transcript_playout import TranscriptPlayoutObserver

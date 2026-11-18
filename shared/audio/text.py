@@ -184,8 +184,62 @@ def verbalize_booking_ids(text: str) -> str:
     return _BOOKING_ID_RE.sub(_replace, text or "")
 
 
-def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
-    """Normalize LLM output into provider-safe, unambiguous spoken text."""
+# ── English digit words for identifiers (opt-in safety net) ─────────────────
+# A raw digit string inside a Hindi sentence is read in Hindi ("नौ आठ आठ
+# शून्य…"), a compact one as a quantity, and "3A" in English — one identifier,
+# three pronunciations in the same reply (DEMO recordings, 2026-11-17/18).
+# Workflow readbacks are already rendered as English digit words upstream;
+# this is the last step before synthesis for whatever still arrives raw: an
+# LLM-worded reply, an address line with its PIN code, authored text.
+#
+# Deliberately conservative about what an identifier is:
+#   * a run of 5-18 digits                       8340294140, 824211
+#   * four or more single digits spaced apart     2 5 4 4 0 8 3A
+#   * a letter/digit token with 5+ digits         WL458921, 2544083A
+# Everything else keeps its natural pronunciation: model numbers ("Linura
+# 7220", "Antera AL9220U" — four digits), durations and percentages ("4
+# घंटे", "80%"), quantities, house and shop numbers, amounts with a currency
+# sign or word, dates, times and decimals.
+_CURRENCY_BEFORE_RE = re.compile(r"(?:₹|\$|rs\.?|inr|रु\.?|रुपये|रुपए)\s*$", re.IGNORECASE)
+_NOT_QUANTITY = r"(?!\s*(?:" + _QUANTITY_SUFFIX + r")(?!\w))"
+_SPACED_DIGITS_RE = re.compile(
+    r"(?<![\w.,/:@-])\d(?:[ ]\d){3,}(?:[ ]?[A-Za-z])?(?![\w@]|[.,/:-]\d)" + _NOT_QUANTITY
+)
+_ALNUM_ID_RE = re.compile(
+    r"(?<![\w.,/:@-])(?=[A-Za-z0-9]*[A-Za-z])(?=(?:[A-Za-z]*\d){5})[A-Za-z0-9]{6,20}(?![\w@]|[./:-]\w)"
+)
+_LONG_DIGITS_RE = re.compile(r"(?<![\w.,/:@-])\d{5,18}(?![\w@]|[.,/:-]\d)" + _NOT_QUANTITY)
+
+
+def english_identifier_digits(text: str) -> str:
+    """Speak identifier-like digit strings as English digit words, one by one.
+
+    ``8340294140`` → ``eight, three, four, zero, …``; ``2 5 4 4 0 8 3A`` →
+    ``two, five, four, four, zero, eight, three, letter A``; ``WL458921`` →
+    ``letter W, letter L, four, five, …``. Text that is already words has no
+    digits left to match, so applying it again changes nothing.
+    """
+    from shared.orchestration.spoken_numbers import english_identifier_readback
+
+    def _spell(match: re.Match[str]) -> str:
+        if _CURRENCY_BEFORE_RE.search(match.string[:match.start()]):
+            return match.group(0)
+        return english_identifier_readback(match.group(0).replace(" ", ""))
+
+    spoken = _SPACED_DIGITS_RE.sub(_spell, text or "")
+    spoken = _ALNUM_ID_RE.sub(_spell, spoken)
+    return _LONG_DIGITS_RE.sub(_spell, spoken)
+
+
+def sanitize_for_tts(
+    text: str, *, ensure_terminal_punct: bool = False, english_identifier_digits_enabled: bool = False,
+) -> str:
+    """Normalize LLM output into provider-safe, unambiguous spoken text.
+
+    ``english_identifier_digits_enabled`` (tenant opt-in, off by default)
+    replaces the label-scoped digit spacing with English digit words for
+    every identifier-like digit string — see ``english_identifier_digits``.
+    """
     if not text:
         return ""
     cleaned = text.replace("\u00a0", " ")
@@ -195,6 +249,10 @@ def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
     cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
     cleaned = re.sub(r" +", " ", cleaned).strip()
     cleaned = verbalize_booking_ids(cleaned)
+    if english_identifier_digits_enabled:
+        # After the label-scoped spacing: "OTP 4821" is "OTP 4 8 2 1" by now
+        # and is spoken as words like every other labelled identifier.
+        cleaned = english_identifier_digits(cleaned)
     if ensure_terminal_punct and cleaned and not _has_terminal_punct(cleaned):
         cleaned = cleaned + _default_terminal_punct(cleaned)
     return cleaned
