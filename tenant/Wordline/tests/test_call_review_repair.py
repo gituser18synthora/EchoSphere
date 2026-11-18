@@ -93,3 +93,25 @@ def test_live_sms_destination_change_preserves_quantity_model_and_amount_text():
     expected = text.replace("575758", "five, seven, five, seven, five, eight")
     assert config["prompt"] == expected
     assert config["textByLanguage"] == {"en": expected, "hi": expected}
+
+
+def test_docket_readback_uses_the_prefilled_slot_the_engine_actually_has():
+    """``docket_number`` is a call-context placeholder, never a workflow slot:
+    a readback group requiring it dropped the whole docket message."""
+    from shared.orchestration.workflow_engine import render_readback
+    from tenant.Wordline.setup.call_review_repair import DOCKET_SLOT
+
+    source = upgrade(original())
+    text = {"en": "Your docket number is {docket_number}. Kindly note it.",
+            "hi": "आपका docket number है {docket_number}। कृपया note कर लीजिए।"}
+    source["nodes"].append({"id": "n_bat_docket", "kind": "message",
+                            "config": {"text": text["en"], "textByLanguage": dict(text)}})
+    staged = stage_dynamic_readbacks(source)
+    assert stage_dynamic_readbacks(staged) == staged
+    config = next(n for n in staged["nodes"] if n["id"] == "n_bat_docket")["config"]
+    assert config["textByLanguage"] == text  # the authored text itself is kept
+    slots = {DOCKET_SLOT: "WL458921"}
+    assert render_readback(config["readback"]["hi"], slots) == (
+        "आपका docket number है letter W, letter L, four, five, eight, nine, two, one। कृपया note कर लीजिए।")
+    assert render_readback(config["readback"]["en"], slots) == (
+        "Your docket number is letter W, letter L, four, five, eight, nine, two, one. Kindly note it.")

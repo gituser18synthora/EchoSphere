@@ -47,6 +47,19 @@ _HINDI_PHONETICS = {
     "एक्सरे": "X", "यांकी": "Y", "याक": "Y", "ज़ूलू": "Z", "जीब्रा": "Z",
 }
 _LETTER_TOKEN = r"(?:" + "|".join(map(re.escape, sorted(_LETTERS, key=len, reverse=True))) + r"|[A-Za-z])"
+# जी names the letter G only when it is being spelled. Beside an
+# acknowledgement ("हाँ जी", "जी हाँ", "जी सर") or opening the utterance before
+# a pause it is the Hindi honorific: "हां जी। 1964939 A for Alpha" was read
+# back as "letter G, one, nine, …" and sent to the lookup as G1964939A (DEMO
+# cv_8358a2aef66b, 2026-11-17). A spelled "जी फॉर गोल्फ" is resolved earlier.
+_ACKNOWLEDGEMENT = r"(?:हाँ|हां|हा|जी|yes|yeah|haan|han|ha|ok|okay|ओके|अच्छा|ठीक\s+है)"
+_JI_AFTER_ACKNOWLEDGEMENT = re.compile(
+    _TOKEN_START + r"(" + _ACKNOWLEDGEMENT + r")[\s,]+जी" + _TOKEN_END, re.I,
+)
+_JI_BEFORE_ACKNOWLEDGEMENT = re.compile(
+    _TOKEN_START + r"जी(?=[\s,]+(?:हाँ|हां|हा|नहीं|नही|सर|मैडम|sir|madam)" + _TOKEN_END + r")", re.I,
+)
+_JI_OPENING = re.compile(r"^\s*जी(?=\s*(?:[,.!।॥]|$))")
 _PHONETIC = re.compile(
     _TOKEN_START + r"(?:(?P<repeat>double|triple|डबल|ट्रिपल)\s+)?"
     r"(?:(?P<echo>" + _LETTER_TOKEN + r")[\s,.;।-]+)?"
@@ -97,12 +110,24 @@ _DICTATION_COURTESY_START = re.compile(r"^\s*(?:" + _COURTESY + r"[\s,.!;।-]+)
 _DICTATION_COURTESY_END = re.compile(r"(?:[\s,.!;।-]+" + _COURTESY + r"){1,2}[\s,.!;।-]*$", re.I)
 _NEGATIVE = re.compile(r"(?<![\w./_-])(?:no|not|wrong|incorrect|nahi|nahin|nhi|galat|नहीं|नही|गलत|ग़लत|இல்லை|അല്ല)(?![\w/_-])", re.I)
 _CORRECTION = re.compile(r"(?<!\w)(?:but|actually|instead|except|ending|last|first|replace|correction|lekin|लेकिन|आखिरी|आख़िरी|बदलो|बदल|सुधार)(?!\w)", re.I)
+# Natural whole-utterance confirmations. Every token must be on this list and
+# at least one must be a real affirmative (_AFFIRMATIVE), so "it is" or
+# "okay" alone never confirms. "हाँ, यह सही है।", "बरोबर." and "ठीक है" were
+# rejected at the Terminal ID readback although the classifier labelled them
+# affirm 0.99 (DEMO cv_c337303f00bb / cv_40ec07f737d3, 2026-11-17).
 _YES = re.compile(
-    r"^(?:(?:yes|yeah|yep|correct|confirmed|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|"
-    r"sahi|hai|hain|bilkul|sir|madam|okay|ok|it|is|it's|that's|that|this|हाँ|हां|हा|हाँजी|हांजी|जी|सही|है|हैं|"
-    r"बिल्कुल|सर|ஆமாம்|சரி|അതെ|ശരി)[\s,.!।]*)+$", re.I,
+    r"^(?:(?:yes|yeah|yep|correct|confirmed|right|absolutely|perfect|exactly|haan|han|haa|ha|haanji|hanji|ji|"
+    r"sahi|hai|hain|bilkul|ekdum|ekdam|theek|thik|barobar|barabar|yahi|yehi|wahi|vahi|yah|yeh|ye|hi|to|"
+    r"aapne|kaha|bola|bataya|sir|madam|mam|ma'am|bhai|okay|ok|it|is|it's|that's|that|this|"
+    r"हाँ|हां|हा|हाँजी|हांजी|जी|सही|है|हैं|बिल्कुल|बिलकुल|एकदम|ठीक|बरोबर|बराबर|करेक्ट|राइट|यस|ओके|"
+    r"यह|ये|यही|वही|ही|तो|आपने|कहा|बोला|बताया|सर|मैडम|भाई|ஆமாம்|சரி|അതെ|ശരി)[\s,.!।]*)+$", re.I,
 )
-_AFFIRMATIVE = re.compile(r"(?<!\w)(?:yes|yeah|yep|correct|confirmed|right|absolutely|haan|han|haa|ha|haanji|hanji|ji|sahi|bilkul|हाँ|हां|हा|हाँजी|हांजी|जी|सही|बिल्कुल|ஆமாம்|சரி|അതെ|ശരി)(?!\w)", re.I)
+_AFFIRMATIVE = re.compile(
+    r"(?<!\w)(?:yes|yeah|yep|correct|confirmed|right|absolutely|perfect|exactly|haan|han|haa|ha|haanji|hanji|ji|"
+    r"sahi|bilkul|theek|thik|barobar|barabar|yahi|yehi|wahi|vahi|"
+    r"हाँ|हां|हा|हाँजी|हांजी|जी|सही|बिल्कुल|बिलकुल|ठीक|बरोबर|बराबर|करेक्ट|राइट|यस|यही|वही|"
+    r"ஆமாம்|சரி|അതെ|ശരി)(?!\w)", re.I,
+)
 _NO = re.compile(
     r"^(?:(?:no|not|wrong|incorrect|isn't|isnt|nahi|nahin|nhi|galat|"
     r"yes|haan|han|ji|okay|ok|it|is|it's|that|that's|this|correct|confirmed|right|hai|sir|"
@@ -200,11 +225,22 @@ def identifier_spelling_valid(text: str) -> bool:
     return _identifier_spelling(text)[1]
 
 
+def _without_honorific_ji(value: str) -> str:
+    """Drop जी where it is an honorific, so it is not read as the letter G."""
+    previous = None
+    while previous != value:  # "हाँ जी जी" needs a second pass
+        previous = value
+        value = _JI_AFTER_ACKNOWLEDGEMENT.sub(lambda m: m[1], value)
+    value = _JI_BEFORE_ACKNOWLEDGEMENT.sub("", value)
+    return _JI_OPENING.sub("", value)
+
+
 def spoken_identifier_text(text: str) -> str:
     """Normalize corroborated dictation without sound-alike substitutions."""
     from shared.orchestration.spoken_numbers import spoken_digit_text
 
     value, _ = _identifier_spelling(text, mark_phonetics=True)
+    value = _without_honorific_ji(value)
     value = spoken_digit_text(value)
     for word, letter in _LETTERS.items():
         value = re.sub(_TOKEN_START + re.escape(word) + _TOKEN_END, letter, value)

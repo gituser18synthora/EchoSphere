@@ -43,6 +43,9 @@ of amounts, quantities, percentages, durations or terminal model numbers such as
 """
 
 
+DOCKET_SLOT = "ctx_docket_number"
+
+
 def repair_workflow(definition: dict) -> dict:
     result = repair_confirmation_nodes(definition)
     for node in result["nodes"]:
@@ -82,9 +85,17 @@ def stage_dynamic_readbacks(definition: dict) -> dict:
             for localized in readback.values():
                 localized["formats"] = {**localized.get("formats", {}), "terminal_id": "identifier"}
         if node.get("id") in {"n_bat_docket", "n_low_docket"}:
+            # The docket reaches the workflow as the prefilled slot
+            # ``ctx_docket_number`` (n_bat_docket_read / n_low_docket_read,
+            # ``prefillFromContext: docket_number``); ``docket_number`` itself
+            # is only a call-context placeholder the runtime fills after the
+            # engine. A group requiring that name never applied, so the whole
+            # docket message was dropped from the reply (offline replay of the
+            # live v54 definition, 2026-11-17).
             config["readback"] = {
-                locale: {"formats": {"docket_number": "identifier"}, "groups": [
-                    {"requires": ["docket_number"], "template": text},
+                locale: {"formats": {DOCKET_SLOT: "identifier"}, "groups": [
+                    {"requires": [DOCKET_SLOT],
+                     "template": text.replace("{docket_number}", "{" + DOCKET_SLOT + "}")},
                 ]}
                 for locale, text in config.get("textByLanguage", {}).items()
             }
@@ -105,3 +116,148 @@ def repair_prompt(full_prompt: str) -> str:
     following = section.find("\n# ")
     remainder = section[following + 1:] if following >= 0 else ""
     return before.rstrip() + "\n\n" + CONFIRMATION_INSTRUCTIONS + ("\n" + remainder if remainder else "")
+
+
+# ── 17 November evening review (25 calls after 13:11 UTC, workflow v54) ─────
+# Pure transforms again: nothing here connects to a service.
+
+MORE_HELP_ID = "n_more_help"
+MORE_HELP = {
+    "en": "Sure Sir, please tell me what else I can help you with.",
+    "hi": "जी Sir, बताइए, मैं आपकी और किस चीज़ में मदद कर सकता हूँ?",
+}
+# Only plain confirmations. "बताइए" / "batao" are deliberately absent: as a
+# literal token they would outrank a named option ("IVR का तरीका बताइए").
+MORE_HELP_YES = (
+    "Yes/Yes please/Yes sir/Yes I need help/Haan/Haan ji/Ha ji/Ji haan/Haan chahiye/"
+    "One more thing/Ek aur cheez/Aur madad chahiye/"
+    "हाँ/हां/हाँ जी/हां जी/जी हाँ/जी हां/हाँ चाहिए/हां चाहिए/एक और चीज़/और मदद चाहिए"
+)
+ANYTHING_ELSE_HUBS = ("n_anything_else", "n_low_anything_else", "n_sms", "n_ivr", "n_both")
+# After one option was explained the caller may still ask for another one.
+OPTION_FOLLOW_UPS = {
+    "n_sms": ("n_ivr", "n_raise_has_record"),
+    "n_ivr": ("n_sms", "n_raise_has_record"),
+    "n_both": ("n_raise_has_record",),
+}
+PAPER_ROLL_DOCKET = "WL458921"
+
+
+def _edge(definition: dict, source: str, target: str) -> dict | None:
+    return next((e for e in definition["edges"]
+                 if e.get("from") == source and e.get("to") == target), None)
+
+
+def _add_edge(definition: dict, edge_id: str, source: str, target: str, label: str) -> None:
+    if _edge(definition, source, target) is None:
+        definition["edges"].append({"id": edge_id, "from": source, "to": target, "label": label})
+
+
+def repair_anything_else_routing(definition: dict) -> dict:
+    """"Anything else?" answered with yes must not end the call.
+
+    The closing edge of these hubs lists "theek hai" / "ठीक है" among its
+    declines. Those tokens classify as ``affirm``, so the engine treated the
+    edge as the hub's affirmative branch and every "Yes" / "हाँ, बताइए" went
+    to the goodbye node (cv_c5a83af7fa57, cv_8358a2aef66b, cv_c6b2d1b8daac).
+    A dedicated yes edge carries a literal token and therefore wins; the
+    closing edge and its tokens stay untouched ("ठीक है" still closes).
+
+    After the SMS or IVR steps the caller could only decline or raise a
+    battery problem: "IVR बताओ" was answered "please call again" and "can you
+    raise the request yourself" ended the call on its "नहीं" (cv_b79eba6aa27f,
+    cv_49d1b4053aa9). The option edges are copied from the verified hub
+    ``n_pr_again``; ``optionHub`` lets a named option beat a generic yes/no.
+    """
+    from shared.orchestration.router import classify_user_signal
+    from shared.orchestration.workflow_engine import _edge_tokens
+
+    result = copy.deepcopy(definition)
+    by_id = {node["id"]: node for node in result["nodes"]}
+    source_hub = by_id.get("n_anything_else")
+    if source_hub is None or not all(name in by_id for name in ANYTHING_ELSE_HUBS):
+        raise ValueError("Expected the five anything-else hubs")
+    if MORE_HELP_ID not in by_id:
+        result["nodes"].append({
+            "id": MORE_HELP_ID, "kind": "intent", "label": "Yes, something else — what do you need?",
+            "x": source_hub.get("x", 0) + 40, "y": source_hub.get("y", 0) + 160,
+            "config": {"prompt": MORE_HELP["en"], "responseMode": "fixed",
+                       "textByLanguage": dict(MORE_HELP)},
+        })
+        for edge in [e for e in result["edges"] if e.get("from") == "n_anything_else"]:
+            label = str(edge.get("label") or "")
+            if edge.get("to") == "n_end":
+                # A second bare "yes" here must be re-asked, never closed.
+                # The engine also splits a phrase at commas ("Theek hai, nahi
+                # chahiye" carries the affirmative token "theek hai").
+                label = "/".join(
+                    phrase for phrase in label.split("/")
+                    if all(classify_user_signal(token) != "affirm" for token in _edge_tokens(phrase))
+                )
+            _add_edge(result, f"e_{MORE_HELP_ID}__{edge['to']}", MORE_HELP_ID, edge["to"], label)
+    for hub in ANYTHING_ELSE_HUBS:
+        _add_edge(result, f"e_{hub}__{MORE_HELP_ID}__yes", hub, MORE_HELP_ID, MORE_HELP_YES)
+    for hub, targets in OPTION_FOLLOW_UPS.items():
+        by_id[hub].setdefault("config", {})["optionHub"] = True
+        for target in targets:
+            template = _edge(result, "n_pr_again", target)
+            if template is None:
+                raise ValueError(f"Expected n_pr_again → {target}")
+            _add_edge(result, f"e_{hub}__{target}__follow_up", hub, target, template["label"])
+    return result
+
+
+def repair_fixed_reference_readbacks(definition: dict) -> dict:
+    """Spell the hard-coded paper-roll docket with the runtime formatter.
+
+    ``n_pr_docket`` carries the docket as literal text, so no slot format can
+    reach it; it was sent to TTS as ``WL458921``. The words come from
+    ``english_identifier_readback`` — the same function the engine applies to
+    typed slots — never from a hand-written table.
+    """
+    from shared.orchestration.spoken_numbers import english_identifier_readback
+
+    result = copy.deepcopy(definition)
+    spoken = english_identifier_readback(PAPER_ROLL_DOCKET)
+    for node in result["nodes"]:
+        if node.get("id") != "n_pr_docket":
+            continue
+        config = node.get("config", {})
+        for key in ("text", "prompt"):
+            if isinstance(config.get(key), str):
+                config[key] = config[key].replace(PAPER_ROLL_DOCKET, spoken)
+        config["textByLanguage"] = {
+            locale: text.replace(PAPER_ROLL_DOCKET, spoken)
+            for locale, text in (config.get("textByLanguage") or {}).items()
+        }
+    return result
+
+
+def repair_evening_review(definition: dict) -> dict:
+    """Everything the deployed runtime (55168b83 and later) already supports."""
+    result = stage_dynamic_readbacks(definition)
+    result = repair_fixed_reference_readbacks(result)
+    return repair_anything_else_routing(result)
+
+
+DIGIT_RULE_OLD = (
+    "destination, say every digit separately in English, including in Hindi replies: zero, one,\n"
+    "two, three, four, five, six, seven, eight, nine. Name alphabetic characters explicitly,\n"
+    "for example letter A. Keep leading zeroes."
+)
+DIGIT_RULE_NEW = (
+    "destination, say every digit separately in English, including in Hindi replies: zero, one,\n"
+    "two, three, four, five, six, seven, eight, nine. Put a comma after every digit and never\n"
+    "group digits into pairs or larger numbers: say six, five, zero, seven, not sixty-five or\n"
+    "six five zero seven. Never write such a value as numerals. Name alphabetic characters\n"
+    "explicitly, for example letter A. Keep leading zeroes."
+)
+
+
+def repair_prompt_digit_rule(full_prompt: str) -> str:
+    """One digit at a time: generated replies grouped them ("four five eight nine, two one")."""
+    if DIGIT_RULE_NEW in full_prompt:
+        return full_prompt
+    if full_prompt.count(DIGIT_RULE_OLD) != 1:
+        raise ValueError("Expected exactly one English digit readback rule")
+    return full_prompt.replace(DIGIT_RULE_OLD, DIGIT_RULE_NEW)

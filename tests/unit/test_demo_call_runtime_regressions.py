@@ -84,6 +84,36 @@ async def test_spelling_cannot_switch_language_but_real_request_can(confirmation
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", [False, True])
+async def test_garbled_spelling_or_partial_digits_cannot_switch_language(confirmation):
+    """DEMO cv_d0e7a288dfa3 (2026-11-17): "A for Apple" was transcribed as
+    "A for S one" / "One is for Apple"; neither validated as dictation, the
+    call flipped to English and the Hindi caller was re-prompted in English."""
+    brain = make_brain()
+    brain._config.languages = ["hi-IN", "en-IN"]
+    if confirmation:
+        brain._pending_identifier_confirmation = True
+    else:
+        capture_for(brain, ALPHANUMERIC)
+    for text in ["A for S one", "Yes 0701014 One is for Apple", "Size Zero Seven Double Nine One Seven"]:
+        await brain._maybe_switch_language(text, "en-IN")
+        assert brain._conversation_language == "hi-IN", text
+    assert {e["reason"] for e in brain._recorder.events_of("language_switch_blocked")} == {"identifier_attempt"}
+    await brain._maybe_switch_language("Can we speak in English please?", "en-IN")
+    assert brain._conversation_language == "en-IN"
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_spelling_marker_outside_identifier_collection_does_not_block_a_switch():
+    brain = make_brain()
+    brain._config.languages = ["hi-IN", "en-IN"]
+    await brain._maybe_switch_language("I am calling for a paper roll request", "en-IN")
+    assert brain._conversation_language == "en-IN"
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_clear_identifier_confirmation_never_spends_a_classifier_call():
     brain = make_brain(workflow_engine=object())
     brain._active_workflow = "wf-1"
@@ -163,20 +193,71 @@ async def test_missing_final_does_not_interrupt_new_speech_or_buffered_digits():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("busy", ["turn", "bot_audio"])
-async def test_missing_final_before_stop_is_deferred_then_recovered_once(busy):
+async def test_missing_final_before_stop_is_deferred_then_recovered_once():
     brain = make_brain()
-    brain._turn_active = busy == "turn"
-    brain._bot_speaking = busy == "bot_audio"
+    brain._turn_active = True
     await frame_in(brain, STTFinalMissingFrame(generation=1))
     assert brain._recorder.turns == []
     assert brain._pending_missing_stt_generation == 1
-    stopped = UserStoppedSpeakingFrame if busy == "turn" else BotStoppedSpeakingFrame
-    await frame_in(brain, stopped())
+    await frame_in(brain, UserStoppedSpeakingFrame())
     assert brain._stt_repeat_prompts == 1
     await frame_in(brain, STTFinalMissingFrame(generation=1))
-    await frame_in(brain, stopped())
+    await frame_in(brain, UserStoppedSpeakingFrame())
     assert brain._stt_repeat_prompts == 1
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_missing_final_while_reply_keeps_playing_never_replaces_the_question():
+    """DEMO cv_c337303f00bb (2026-11-17): a no-transcript episode 1.3 s into
+    the Terminal ID prompt, the ID readback and the bank confirmation made the
+    bot say "tell me a bit more about what you need" the moment each finished."""
+    brain = make_brain()
+    brain._active_workflow = "wf-1"
+    brain._pending_workflow_question = "क्या यह सही है?"
+    brain._bot_speaking = True
+    await frame_in(brain, STTFinalMissingFrame(generation=1))
+    assert brain._pending_missing_stt_generation is None
+    await frame_in(brain, BotStoppedSpeakingFrame())
+    assert brain._stt_repeat_prompts == 0
+    assert [f.text for f in brain._pushed if isinstance(f, TextFrame)] == []
+    assert brain._recorder.events_of("stt_final_missing_ignored") == [
+        {"generation": 1, "reason": "reply_still_playing"}]
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_missing_final_that_cut_a_reply_resumes_that_reply():
+    """DEMO cv_c337303f00bb 13:17:24Z: the docket confirmation was cut after
+    1.15 s by speech that produced no transcript, then replaced by a generic
+    clarification — the caller never heard that the docket had been raised."""
+    brain = make_brain()
+    brain._active_workflow = "wf-1"
+    brain._pending_workflow_question = "क्या मैं आज आपकी किसी और चीज़ में मदद कर सकता हूँ?"
+    brain._interrupted_reply = "सर, आपका service docket successfully raise हो गया है।"
+    await frame_in(brain, STTFinalMissingFrame(generation=7))
+    spoken = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+    assert spoken == ["सर, आपका service docket successfully raise हो गया है।"]
+    assert brain._interrupted_reply is None
+    assert brain._stt_repeat_prompts == 1
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language,workflow,question,expected", [
+    ("hi-IN", "wf-1", "क्या आपके bank का नाम INDIAN BANK है?",
+     "माफ़ कीजिए, समझ नहीं आया। क्या आपके bank का नाम INDIAN BANK है?"),
+    ("en-IN", "wf-1", "Which option?", "Sorry, I didn't catch that. Which option?"),
+    ("hi-IN", None, "", "कृपया दोबारा बोलिए?"),
+])
+async def test_missing_final_reasks_the_pending_question_not_a_generic_clarification(
+        language, workflow, question, expected):
+    brain = make_brain()
+    brain._conversation_language = language
+    brain._active_workflow = workflow
+    brain._pending_workflow_question = question
+    await frame_in(brain, STTFinalMissingFrame(generation=3))
+    assert [f.text for f in brain._pushed if isinstance(f, TextFrame)] == [expected]
     await brain.cleanup()
 
 

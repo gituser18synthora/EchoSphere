@@ -1346,6 +1346,20 @@ def resolve_ask(ctx: AskContext) -> AskContext:
     return ctx
 
 
+def _confirmation_readback(ctx: AskContext, variable: str, value: str) -> str:
+    """The pending identifier in the node's own readback wording, spelled out."""
+    from shared.orchestration.identifier_confirmation import spoken_readback
+
+    readback = ctx.config.get("readback")
+    locale = (ctx.lang or "en").split("-")[0].lower()
+    localized = (readback.get(locale) or readback.get("hi") or {}) if isinstance(readback, dict) else {}
+    template = next((str(field["template"]) for field in localized.get("fields") or []
+                     if isinstance(field, dict) and field.get("variable") == variable
+                     and isinstance(field.get("template"), str) and "{value}" in field["template"]),
+                    "ID {value}.")
+    return template.replace("{value}", spoken_readback(value))
+
+
 def resolve_explicit_identifier_confirmation(ctx: AskContext) -> bool:
     """Apply the common confirmation rules to older, explicitly wired gates.
 
@@ -1377,8 +1391,17 @@ def resolve_explicit_identifier_confirmation(ctx: AskContext) -> bool:
         # Do not let an old permissive synonym pattern or alsoCapture matcher
         # reinterpret a question/invalid partial after the safe parser declined.
         ctx.captured_first = True
+        spoken_before = len(ctx.replies)
         if not outcome_signal_unmatched(ctx):
             outcome_retry(ctx)
+        # "Say yes if that ID is correct" must refer to something the caller
+        # can hear. The first readback is regularly lost — the caller was
+        # still dictating when it started (DEMO cv_40ec07f737d3: played 0.0 s)
+        # or the synthesis returned no audio (cv_8358a2aef66b) — and the fixed
+        # re-prompt alone then asked about an ID that was never spoken.
+        if (previous and ctx.awaiting == ctx.node_id and not ctx.off_script
+                and len(ctx.replies) > spoken_before):
+            ctx.replies.insert(spoken_before, _confirmation_readback(ctx, variable, previous))
         return True
 
     if looks_like_question(ctx.text):

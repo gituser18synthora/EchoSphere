@@ -602,6 +602,12 @@ _MIN_SWITCH_WORDS = 2
 # (voice_runtime.language_evidence) needs the same language detected on two
 # consecutive finals instead (the existing candidate counter).
 _MIN_SWITCH_CONTENT_WORDS = 3
+# "A for Apple" / "B as in boy" / "A is for Apple": a letter being spelled.
+# The recognizer often garbles the word ("A for S one"), so the marker is the
+# single letter plus the connective, not the word that follows.
+_SPELLING_MARKER = re.compile(
+    r"(?<![A-Za-z])[A-Za-z]\s+(?:is\s+)?(?:for|as\s+in)\s+\w", re.I,
+)
 # Background-speech guard (voice_runtime.caller_level): a background-suspect
 # segment is HELD — never a turn on its own, never a trainer of the caller
 # baseline. Repeating quiet speech is not evidence of who spoke it, so there
@@ -4160,6 +4166,16 @@ class ConversationBrain(FrameProcessor):
             return identifier_dictation(text) or identifier_suffix(text) is not None
         return False
 
+    def _identifier_attempt(self, text: str) -> bool:
+        """Digits or a letter spelling while an identifier is being collected
+        or confirmed, whether or not they validate as a complete value."""
+        if self._identifier_capture is None and not self._pending_identifier_confirmation:
+            return False
+        from shared.orchestration.spoken_numbers import spoken_digit_text
+        if _SPELLING_MARKER.search(text or ""):
+            return True
+        return len(re.findall(r"\d", spoken_digit_text(text or ""))) >= 2
+
     def _identifier_confirmation_answer(self, text: str) -> bool:
         if not self._pending_identifier_confirmation:
             return False
@@ -4193,6 +4209,18 @@ class ConversationBrain(FrameProcessor):
             self._reset_language_candidate()
             self._recorder.add_event(
                 "language_switch_blocked", reason="identifier_dictation",
+                current=self._conversation_language,
+            )
+            return
+        if self._identifier_attempt(text):
+            # A dictation the recognizer garbled is still a dictation: "A
+            # for S one" (said: A for Apple) and "Yes 0701014 One is for
+            # Apple" failed validation, so the guard above did not apply and
+            # a Hindi call was re-prompted in English twice (DEMO
+            # cv_d0e7a288dfa3 2026-11-17).
+            self._reset_language_candidate()
+            self._recorder.add_event(
+                "language_switch_blocked", reason="identifier_attempt",
                 current=self._conversation_language,
             )
             return
@@ -4438,6 +4466,20 @@ class ConversationBrain(FrameProcessor):
         if self._closing or generation == self._last_missing_stt_generation:
             return
         self._last_missing_stt_generation = generation
+        if self._bot_speaking and not self._interrupted_reply:
+            # The episode produced no text and did not cut the reply, which
+            # is still playing: the caller is about to hear the complete
+            # question. Asking for a repeat the moment it ends replaced that
+            # question with "tell me a bit more about what you need" (DEMO
+            # cv_c337303f00bb 2026-11-17: right after the Terminal ID prompt,
+            # the ID readback and the bank-name confirmation; five of the
+            # eight repeat requests in 22 calls). Such episodes are mostly
+            # the far-end echo of the reply itself.
+            self._recorder.add_event(
+                "stt_final_missing_ignored", generation=generation,
+                reason="reply_still_playing",
+            )
+            return
         self._pending_missing_stt_generation = generation
         await self._resume_missing_stt_final()
 
@@ -4462,11 +4504,44 @@ class ConversationBrain(FrameProcessor):
             return False
         self._stt_repeat_prompts += 1
         self._disarm_silence_timer()
+        if self._interrupted_reply:
+            # The lost speech's audio cut a reply the caller never heard out
+            # (DEMO cv_c337303f00bb: the docket confirmation was cut after
+            # 1.15 s and replaced by a generic clarification; the caller then
+            # asked whether the ticket had been raised). Nothing was
+            # understood, so the cut reply is what the caller still needs.
+            self._recorder.flush_event_soon(
+                "stt_repeat_requested", attempt=self._stt_repeat_prompts,
+                action="resume_interrupted_reply",
+            )
+            await self._maybe_resume_interrupted_reply()
+            return True
         self._recorder.flush_event_soon(
             "stt_repeat_requested", attempt=self._stt_repeat_prompts,
+            action="reask_pending_question" if self._missing_stt_pending_question()
+            else "ask_repeat",
         )
-        await self._say(canned("clarify", self._conversation_language))
+        await self._say(self._missing_stt_repeat_prompt())
         return True
+
+    def _missing_stt_pending_question(self) -> str:
+        if self._active_workflow and self._pending_workflow_question:
+            return self._pending_workflow_question
+        return ""
+
+    def _missing_stt_repeat_prompt(self) -> str:
+        """What to say when the caller's speech produced no transcript.
+
+        A paused workflow step is re-asked: the generic ``clarify`` phrase
+        ("tell me a bit more about what you need") abandoned the question the
+        caller was answering. Outside a workflow the caller is only asked to
+        repeat — nothing is known about what they said.
+        """
+        language = self._conversation_language
+        question = self._missing_stt_pending_question()
+        if question:
+            return canned("wf_retry_prefix", language) + question
+        return canned("wf_repeat", language)
 
     def _disarm_silence_timer(self) -> None:
         task, self._silence_task = self._silence_task, None
