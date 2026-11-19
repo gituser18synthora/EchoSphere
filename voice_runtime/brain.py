@@ -224,6 +224,8 @@ from voice_runtime.frames import (
     STTTurnResumedFrame,
     SwitchVoiceLanguageFrame,
     TTSFlushHintFrame,
+    WorkflowClosingFrame,
+    WorkflowClosingPlayedFrame,
 )
 from voice_runtime.identifier_capture import (
     IdentifierCapture,
@@ -253,6 +255,10 @@ from voice_runtime.transcript_gate import (
 from voice_runtime.turn_metrics import TurnLatencyTracker
 
 logger = logging.getLogger(__name__)
+
+# After farewell playback, leave enough time for a caller's last question to
+# open a confirmed turn. Raw VAD activity also delays the final commit.
+_WORKFLOW_CLOSE_GRACE_S = 0.75
 
 
 def interim_is_stability_reference(frame) -> bool:
@@ -1388,6 +1394,14 @@ class ConversationBrain(FrameProcessor):
             audio_gate.enable_utterance_retention(_LANGUAGE_RESCUE_RETENTION_SECONDS)
         # Hang-up in progress: nothing may produce speech after this is set.
         self._closing = False
+        self._workflow_close_serial = 0
+        self._pending_workflow_close: tuple[int, str] | None = None
+        self._workflow_close_task: asyncio.Task | None = None
+        self._workflow_farewell_text = ""
+        # The completed flow stays completed when its farewell is interrupted.
+        # Follow-up questions must not replay its terminal nodes or tools.
+        self._completed_workflow: str | None = None
+        self._completed_workflow_id: str | None = None
         # A transfer control has been queued/sent for this call: the normal
         # bot-close path must NOT run (FreeSWITCH owns the call's fate from
         # here — bridge or hangup), and a second transfer is never queued.
@@ -1547,6 +1561,15 @@ class ConversationBrain(FrameProcessor):
             self._on_reply_tts_interrupted(frame)
             return
 
+        if isinstance(frame, WorkflowClosingPlayedFrame):
+            pending = self._pending_workflow_close
+            if pending is not None and frame.token == pending[0] and not self._closing:
+                if self._workflow_close_task is None:
+                    self._workflow_close_task = self.create_task(
+                        self._finish_workflow_close(pending)
+                    )
+            return
+
         if isinstance(frame, TranscriptionFrame):
             # Billable STT audio is tracked for EVERY final — including ones
             # the quality gate rejects or that arrive during hang-up: the
@@ -1603,6 +1626,7 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            self._cancel_workflow_close("caller_interruption")
             self._pending_missing_stt_generation = None
             # One PHYSICAL speech start arrives as up to two frames of
             # DIFFERENT types (InterruptionFrame + UserStartedSpeakingFrame
@@ -1668,6 +1692,7 @@ class ConversationBrain(FrameProcessor):
             unheard_reply_pending = (
                 isinstance(frame, UserStartedSpeakingFrame)
                 and self._open_turn_text is not None
+                and self._completed_workflow is None
                 and not self._reply_audio_started
                 and (self._generation_in_flight() or self._unheard_reply_merge_window_open())
             )
@@ -3637,6 +3662,7 @@ class ConversationBrain(FrameProcessor):
             not self._speculative_reply
             or self._llm is None
             or self._closing
+            or self._completed_workflow is not None
             or self._policy is not None
             or self._active_workflow is not None
             or route.kind not in (RouteKind.CHAT, RouteKind.INTENT)
@@ -4443,6 +4469,7 @@ class ConversationBrain(FrameProcessor):
         self._language_candidate_count = 0
 
     async def _cancel_generation(self, reason: str) -> None:
+        self._cancel_workflow_close(reason)
         generation, self._generation = self._generation, None
         self._discard_kb_prefetch()
         self._discard_speculation("cancelled")
@@ -4480,6 +4507,11 @@ class ConversationBrain(FrameProcessor):
         still needs the reply it cut. A real caller turn clears it when it
         dispatches (``_consume_pending_turn``).
         """
+        if not self._bot_speaking or self._turn_active:
+            # An unconfirmed backchannel held under playback may still be
+            # discarded as filler. Keep its close pending until dispatch;
+            # the buffer already prevents the timer from committing early.
+            self._cancel_workflow_close("caller_transcript")
         self._silence_prompts = 0
         self._stt_repeat_prompts = 0
         self._pending_missing_stt_generation = None
@@ -4526,6 +4558,7 @@ class ConversationBrain(FrameProcessor):
         self._pending_missing_stt_generation = None
         if self._stt_repeat_prompts >= 2:
             return False
+        self._cancel_workflow_close("stt_final_missing")
         self._stt_repeat_prompts += 1
         self._disarm_silence_timer()
         if self._interrupted_reply:
@@ -4578,6 +4611,7 @@ class ConversationBrain(FrameProcessor):
         if (
             self._closing
             or self._transfer_requested
+            or self._pending_workflow_close is not None
             or self._bot_speaking
             or self._turn_active
             or self._pending_segments
@@ -4603,7 +4637,7 @@ class ConversationBrain(FrameProcessor):
 
     async def _on_silence_timeout(self) -> None:
         """No accepted caller input for the configured window."""
-        if self._closing:
+        if self._closing or self._pending_workflow_close is not None:
             return
         if (
             self._bot_speaking
@@ -4915,6 +4949,8 @@ class ConversationBrain(FrameProcessor):
         await self._notify_client({"type": "event", "name": "bot_speaking_started"})
         # Delivery-only: the reply is already in history and the transcript.
         await self._speak_transient(reply)
+        if self._completed_workflow is not None and reply == self._workflow_farewell_text:
+            await self._close_workflow_completed(self._completed_workflow)
 
     async def _begin_hangup(self, text: str | None) -> None:
         """Caller asked to end the call — highest-priority, irreversible.
@@ -5031,17 +5067,105 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(EndWorkerFrame(reason="policy_completed"))
 
     async def _close_workflow_completed(self, workflow_name: str) -> None:
-        """End the voice session after a workflow terminal node's farewell.
-
-        ``end`` means the authored call flow is complete, not merely that the
-        workflow has no next node.  The farewell has already been queued by
-        ``_handle_workflow``; placing ``EndWorkerFrame`` behind it lets the
-        output worker drain the speech before app teardown hangs up the PSTN
-        leg.  Handoffs use their separate transfer lifecycle and never enter
-        this path.
-        """
+        """Keep the farewell interruptible until output and a short grace end."""
         if self._closing or self._transfer_requested:
             return
+        self._cancel_workflow_close("replaced")
+        self._completed_workflow = workflow_name
+        self._workflow_close_serial += 1
+        token = self._workflow_close_serial
+        self._pending_workflow_close = (token, workflow_name)
+        self._workflow_farewell_text = self._last_bot_reply
+        self._disarm_silence_timer()
+        self._recorder.add_event("workflow_closing_started", workflow=workflow_name)
+        # A control frame, ordered behind all TTS contexts and paced output. No
+        # EndWorkerFrame exists yet, so a barge-in can cancel this close.
+        await self.push_frame(WorkflowClosingFrame(token=token))
+
+    def _cancel_workflow_close(self, reason: str) -> None:
+        pending, self._pending_workflow_close = self._pending_workflow_close, None
+        task, self._workflow_close_task = self._workflow_close_task, None
+        if task is not None and not task.done():
+            task.cancel()
+        if pending is not None:
+            self._recorder.add_event(
+                "workflow_closing_cancelled", workflow=pending[1], reason=reason,
+            )
+
+    async def _answer_workflow_closing_followup(
+        self, text: str, decision: RouteDecision, started: float,
+        orchestrated: ConversationDecision | None, tool_instruction: str = "",
+    ) -> None:
+        """Answer a last question without replaying the completed workflow."""
+        self._unheard_reply = None
+        facts = collected_facts_block(getattr(self._recorder, "workflow_slots", {}) or {})
+        self._recorder.add_event(
+            "workflow_closing_followup", workflow=self._completed_workflow,
+        )
+        # Use the validated decision, never punctuation in generated speech,
+        # to decide whether the bot is still waiting for caller input. On a
+        # failed/disabled decision engine, stay open rather than guessing.
+        close_after_reply = bool(
+            orchestrated is not None
+            and not orchestrated.needs_clarification
+            and orchestrated.next_action in ("answer", "answer_from_knowledge", "end_call")
+        )
+        await self._generate_reply(
+            text, decision, started,
+            extra_system=(
+                "\n\n# Caller continued before disconnect\n"
+                "The workflow has completed, but the call is still connected. "
+                "The caller continued during the farewell: listen and respond "
+                "to this new turn even if an earlier instruction says to stay "
+                "silent after closing. Do not restart the workflow, repeat its "
+                "questions or side effects. Report a new action only when "
+                "the current turn's tool results confirm it. Answer "
+                "only from the conversation, verified caller context, collected "
+                "facts below and retrieved knowledge; never invent timings or "
+                "promises. "
+                + (
+                    "Answer the concern briefly, then close politely without "
+                    "asking another question."
+                    if close_after_reply else
+                    "The caller's turn is not ready for closing. Invite their "
+                    "unasked question or collect the information the decision "
+                    "requires. If you can already answer, answer briefly and "
+                    "ask whether they need anything else. Wait for their reply "
+                    "without saying goodbye."
+                )
+                + facts
+                + tool_instruction
+            ),
+        )
+        if close_after_reply:
+            await self._close_workflow_completed(self._completed_workflow)
+
+    async def _finish_workflow_close(self, pending: tuple[int, str]) -> None:
+        await asyncio.sleep(_WORKFLOW_CLOSE_GRACE_S)
+        while self._pending_workflow_close == pending:
+            if self._closing or self._transfer_requested:
+                return
+            if (
+                self._physical_speech_active or self._turn_active
+                or self._pending_segments or self._finalize_pending()
+                or self._generation_in_flight() or self._bot_speaking
+                or (
+                    self._last_vad_stopped_at is not None
+                    and not self._episode_final_in()
+                    and time.monotonic() - self._last_vad_stopped_at < _SMART_TURN_FINAL_WAIT_S
+                )
+            ):
+                # Let the normal barge-in/STT gates resolve the speech first.
+                # Raw VAD/noise alone does not cancel the closing intent.
+                await asyncio.sleep(0.05)
+                continue
+            break
+        if self._pending_workflow_close != pending:
+            return
+        # Commit atomically before the first await. A stale playback fence or
+        # timer from a previously interrupted farewell can never close a turn.
+        self._pending_workflow_close = None
+        self._workflow_close_task = None
         self._closing = True
         self._disarm_silence_timer()
         disposition = self._policy.disposition() if self._policy else None
@@ -5050,7 +5174,7 @@ class ConversationBrain(FrameProcessor):
         self._recorder.disposition = disposition
         self._recorder.flush_event_soon(
             "call_completed_by_workflow",
-            workflow=workflow_name,
+            workflow=pending[1],
             disposition=disposition,
         )
         await self.push_frame(EndWorkerFrame(reason="workflow_completed"))
@@ -5591,6 +5715,7 @@ class ConversationBrain(FrameProcessor):
         """
         was_open = not self._closing
         self._closing = True
+        self._cancel_workflow_close("shutdown")
         self._pending_missing_stt_generation = None
         return was_open
 
@@ -5791,6 +5916,9 @@ class ConversationBrain(FrameProcessor):
         started = time.perf_counter()
         turn_timestamp = time.time()
         audio_started_at = self._turn_audio_start.get()
+        completed_followup = (
+            self._completed_workflow is not None and self._active_workflow is None
+        )
         self._turn_counter += 1
         self._turn_reply_queued = False
         self._turn_speech_plan = None
@@ -5886,7 +6014,8 @@ class ConversationBrain(FrameProcessor):
             # Retrieval runs concurrently with the decision stage below; the
             # embedding + pgvector round trip is otherwise pure serial time.
             self._start_kb_prefetch(text)
-        self._start_extraction_ahead(text, decision)
+        if not completed_followup:
+            self._start_extraction_ahead(text, decision)
         # Business understanding of the COMPLETED turn: deterministic platform
         # commands were already decided above (and hang-up/DNC even earlier,
         # per segment). Everything else runs Stage A — ONE structured Goal
@@ -6038,6 +6167,24 @@ class ConversationBrain(FrameProcessor):
             decision, active_workflow=self._active_workflow,
             allow_affirm_entry=not self._workflow_ever_routed,
         )
+        if completed_followup and decision.kind == RouteKind.WORKFLOW:
+            # The terminal workflow is already committed. A closing
+            # interruption is a question about that outcome, not permission
+            # to re-enter the flow or repeat its API side effects.
+            if decision.action in (self._completed_workflow, self._completed_workflow_id):
+                decision = replace(
+                    decision,
+                    kind=(RouteKind.KNOWLEDGE if orchestrated is not None
+                          and orchestrated.next_action == "answer_from_knowledge"
+                          else RouteKind.CHAT),
+                    reason="workflow_closing_followup",
+                )
+            else:
+                # An explicitly routed different journey is new work. Keep
+                # normal intent/tool handling and let that flow own its close.
+                completed_followup = False
+                self._completed_workflow = None
+                self._completed_workflow_id = None
         if (
             decision.kind == RouteKind.CHAT and signal == "affirm"
             and decision.reason != "identity_explicit_reask"
@@ -6139,7 +6286,10 @@ class ConversationBrain(FrameProcessor):
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
             self._goal_session.apply(orchestrated)
-            if not workflow_owns_turn and not self._transfer_requested and signal != "hold":
+            if (
+                not workflow_owns_turn and not completed_followup
+                and not self._transfer_requested and signal != "hold"
+            ):
                 # Opt-in close (goal_policy.endCall). A workflow that owns the
                 # turn keeps its own terminal nodes as the only close, and a
                 # hold ("ek minute rukiye") is answered by the hold branch
@@ -6268,7 +6418,7 @@ class ConversationBrain(FrameProcessor):
         # decision stage too); the record joins it now that it exists, so a
         # rewind can also drop the transcript entry.
         self._open_turn_record = turn
-        unheard = self._take_unheard_reply(text, signal)
+        unheard = None if completed_followup else self._take_unheard_reply(text, signal)
 
         try:
             if decision.kind == RouteKind.CALL_CONTROL:
@@ -6314,6 +6464,11 @@ class ConversationBrain(FrameProcessor):
                 # domain phrase.
                 await self._redirect_off_goal(
                     orchestrated, plan, decision, text, started
+                )
+            elif completed_followup:
+                await self._answer_workflow_closing_followup(
+                    text, decision, started, orchestrated,
+                    tool_instruction + (plan.instruction if plan is not None else ""),
                 )
             elif plan is not None and plan.scripted_reply and (
                 plan.scripted_final or not tool_instruction
@@ -6582,7 +6737,7 @@ class ConversationBrain(FrameProcessor):
                 "configuration_level": plan_t.get("configuration_level"),
                 "naturalness_processing_ms": round(self._naturalness_ms, 3),
             }, ensure_ascii=False))
-            if plan is not None and plan.close_after_reply:
+            if plan is not None and plan.close_after_reply and not completed_followup:
                 # Executor-side completion gate: a close is honored only when
                 # the structured state + tool results say the goal is genuinely
                 # done — a polite goodbye sentence alone never completes a call.
@@ -7018,6 +7173,18 @@ class ConversationBrain(FrameProcessor):
             )
             if pending.kind == "choice" and pending.options:
                 state["options_offered"] = list(pending.options)
+        if self._completed_workflow is not None and self._active_workflow is None:
+            state["workflow_stage"] = f"completed:{self._completed_workflow}"
+            state["call_connected"] = True
+            state["closing_interrupted"] = True
+            state["pending_question"] = (
+                "The workflow is complete; the caller continued before disconnect. "
+                "Do not repeat its terminal node. If the caller only asks to "
+                "ask something, choose clarify with needs_clarification=true. "
+                "For a concrete follow-up question choose answer or "
+                "answer_from_knowledge. A genuinely new action keeps its "
+                "configured intent/tool route."
+            )
         return state
 
     _DIRECT_SPEAK_PLAN_ACTIONS = frozenset({
@@ -7733,6 +7900,9 @@ class ConversationBrain(FrameProcessor):
                 self._runtime_context.prompt_section()
             )
         self._active_workflow = None if result["done"] else workflow_name
+        if result.get("status") == "done" and result["done"]:
+            self._completed_workflow = workflow_name
+            self._completed_workflow_id = result.get("workflowId") or workflow_name
         self._pending_workflow_question = (
             str(result.get("nodePrompt") or "") if not result["done"] else ""
         )

@@ -2097,6 +2097,55 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
     return graph.compile(checkpointer=checkpointer)
 
 
+# Checkpoint connections. The saver serialises its own operations, so one
+# connection carries the load; the second lets a replacement come up while a
+# dead one is being discarded.
+_CHECKPOINT_POOL_MAX = 2
+# How long a turn waits for a usable connection before it fails. Kept well
+# under the workflow turn timeout so a database outage is reported as an
+# error on that turn instead of ending the workflow as timed out.
+_CHECKPOINT_POOL_TIMEOUT_S = 3.0
+_CHECKPOINT_POOL_OPEN_TIMEOUT_S = 10.0
+
+
+async def _open_postgres_checkpointer(conninfo: str):
+    """Open the PostgreSQL checkpointer on a self-healing connection pool.
+
+    The saver used to hold ONE connection for the life of the process. When
+    the server dropped it (PostgreSQL crash recovery on a full disk, a
+    pooler restart, an admin kill), every later workflow turn of every call
+    failed with ``OperationalError: the connection is closed`` until the
+    service was restarted. The pool verifies a connection when a turn takes
+    it and replaces a dead one, so the next turn works as soon as the
+    database accepts connections again.
+
+    Connection options are the ones ``AsyncPostgresSaver.from_conn_string``
+    uses, so queries behave exactly as before.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    pool = AsyncConnectionPool(
+        conninfo,
+        min_size=1,
+        max_size=_CHECKPOINT_POOL_MAX,
+        timeout=_CHECKPOINT_POOL_TIMEOUT_S,
+        open=False,
+        check=AsyncConnectionPool.check_connection,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        name="workflow-checkpoints",
+    )
+    try:
+        await pool.open(wait=True, timeout=_CHECKPOINT_POOL_OPEN_TIMEOUT_S)
+        saver = AsyncPostgresSaver(pool)
+        await saver.setup()
+    except BaseException:
+        await pool.close()
+        raise
+    return pool, saver
+
+
 class WorkflowEngine:
     """Runs LangGraph workflows with PostgreSQL-backed checkpoints."""
 
@@ -2104,7 +2153,7 @@ class WorkflowEngine:
         self._checkpointer = None
         self._graphs: dict[str, Any] = {}
         self._lock = asyncio.Lock()
-        self._saver_cm = None
+        self._checkpoint_pool = None
         # thread_id → (graph, state values BEFORE the last turn). A late
         # transcript merge rewinds the brain's turn; the checkpointed
         # workflow state must rewind with it (cv_30327c49bb47: the cancelled
@@ -2120,8 +2169,6 @@ class WorkflowEngine:
                 return self._checkpointer
             settings = get_settings()
             try:
-                from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
                 pg_user = quote(str(settings.postgres_user), safe="")
                 pg_password = quote(str(settings.postgres_password), safe="")
                 conninfo = (
@@ -2129,10 +2176,9 @@ class WorkflowEngine:
                     f"@{settings.postgres_host}:{settings.postgres_port}"
                     f"/{settings.postgres_database}"
                 )
-                self._saver_cm = AsyncPostgresSaver.from_conn_string(conninfo)
-                saver = await self._saver_cm.__aenter__()
-                await saver.setup()
-                self._checkpointer = saver
+                self._checkpoint_pool, self._checkpointer = (
+                    await _open_postgres_checkpointer(conninfo)
+                )
                 logger.info("workflow checkpoints: PostgreSQL")
             except Exception:  # noqa: BLE001 - degrade, never block calls
                 logger.exception("Postgres checkpointer unavailable; using in-memory saver")
@@ -2570,12 +2616,12 @@ class WorkflowEngine:
         return True
 
     async def aclose(self) -> None:
-        if self._saver_cm is not None:
+        if self._checkpoint_pool is not None:
             try:
-                await self._saver_cm.__aexit__(None, None, None)
+                await self._checkpoint_pool.close()
             except Exception:  # noqa: BLE001
                 pass
-            self._saver_cm = None
+            self._checkpoint_pool = None
             self._checkpointer = None
             self._graphs.clear()
 

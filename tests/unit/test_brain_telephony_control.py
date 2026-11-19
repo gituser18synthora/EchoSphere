@@ -6,6 +6,8 @@ barge-in — never racing ahead of the still-rendering TTS audio. Workflow
 queue. Dialer call-context variables become reference data in the system
 prompt."""
 
+import asyncio
+
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndWorkerFrame,
@@ -16,6 +18,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from shared.bot_config import ResolvedBotConfig
 from shared.orchestration.router import RouteDecision, RouteKind
 from voice_runtime.brain import ConversationBrain
+from voice_runtime.frames import WorkflowClosingFrame, WorkflowClosingPlayedFrame
 
 
 class _RecorderStub:
@@ -131,6 +134,13 @@ class TestDeferredTransferControls:
             "yes", 0.0,
         )
         assert brain._pending_controls == []
+        assert not any(isinstance(f, EndWorkerFrame) for f in brain._pushed)
+        assert not brain._closing
+        assert "call_completed_by_workflow" not in [kind for kind, _ in brain._recorder.events]
+        fence = next(f for f in brain._pushed if isinstance(f, WorkflowClosingFrame))
+        brain.create_task = asyncio.create_task
+        await brain.process_frame(WorkflowClosingPlayedFrame(token=fence.token), FrameDirection.UPSTREAM)
+        await brain._workflow_close_task
         endings = [f for f in brain._pushed if isinstance(f, EndWorkerFrame)]
         assert len(endings) == 1
         assert endings[0].reason == "workflow_completed"

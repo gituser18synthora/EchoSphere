@@ -1435,6 +1435,9 @@ def build_voice_pipeline(
         # barge-in and releases or discards it once the arbiter decides.
         processors.append(playback_duck)
     processors.append(transport.output())
+    from voice_runtime.closing import ClosingPlaybackObserver
+
+    processors.append(ClosingPlaybackObserver())
     # Read by the streaming TTS router's text transform (tenant opt-in).
     recorder.english_identifier_digits = turn["tts_english_identifier_digits"] >= 0.5
     recorder.transcript_playout_only = turn["transcript_playout_only"] >= 0.5

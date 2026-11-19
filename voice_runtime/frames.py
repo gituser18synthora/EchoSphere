@@ -1,13 +1,13 @@
 """Custom pipeline frames used between the brain and the TTS router.
 
-DataFrames so they queue in-order with the token TextFrames they relate to.
+Delivery markers queue in order with speech; completion notices travel upstream.
 """
 
 import asyncio
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from pipecat.frames.frames import DataFrame, OutputAudioRawFrame, SystemFrame
+from pipecat.frames.frames import DataFrame, OutputAudioRawFrame, SystemFrame, TTSStoppedFrame
 
 
 @dataclass
@@ -174,3 +174,22 @@ class ReplyTTSInterruptedFrame(SystemFrame):
     # as ``sentences``: what the brain re-speaks when the caller did not hear
     # the part of the reply that asks the question.
     texts: list = field(default_factory=list)
+
+
+@dataclass
+class WorkflowClosingFrame(TTSStoppedFrame):
+    """Ordered farewell fence that flushes the transport's final partial PCM.
+
+    A stop-control frame so segmented TTS services that omit their own stop
+    still drain their audio and report bot-stopped before acknowledging it.
+    This frame carries no hangup command and remains interruptible.
+    """
+
+    token: int = 0
+
+
+@dataclass
+class WorkflowClosingPlayedFrame(SystemFrame):
+    """Upstream acknowledgement after the farewell leaves the output queue."""
+
+    token: int = 0

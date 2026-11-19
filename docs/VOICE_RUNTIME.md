@@ -182,6 +182,18 @@ its in-flight generation (retrieval + LLM stream) immediately and flushes a
 `generation_cancelled` event; the streaming TTS router additionally cancels
 provider-side synthesis and rejects audio for cancelled generations.
 
+Workflow terminal-node farewells remain interruptible. The brain queues a
+`WorkflowClosingFrame` behind TTS; `ClosingPlaybackObserver`, after the output
+transport, acknowledges when that fence leaves the paced audio queue. Only
+after 750 ms without caller activity does the brain commit the hangup and emit
+`call_completed_by_workflow`. Confirmed speech or an accepted caller turn cancels
+the pending close, including stale playback acknowledgements. Raw VAD delays
+commit while speech or its bounded final-transcript wait is pending. Follow-up
+questions retain conversation facts without replaying the completed workflow;
+new configured workflow/tool intents keep their usual routing. The validated
+decision determines whether to wait for more caller input or close after the
+answer. Explicit caller hangup and do-not-call requests still end immediately.
+
 Conversation history is capped at 20 turns (`_HISTORY_MAX_TURNS`).
 
 ## Timeouts and limits
