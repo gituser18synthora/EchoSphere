@@ -13,6 +13,7 @@ import pytest
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    Frame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
@@ -138,6 +139,6 @@ class TestLiveCutOffReproduction:
         await s.process_frame(BotStartedSpeakingFrame())
         await s.process_frame(VADUserStartedSpeakingFrame())
         clock.t += 1.05
-        result = await s.process_frame(interim("hmm"))        # any frame past the window
+        result = await s.process_frame(Frame())
         assert result == ProcessFrameResult.STOP
         assert fired[0][0].startswith("sustained VAD speech")

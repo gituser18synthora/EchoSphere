@@ -31,9 +31,13 @@ mid-utterance:
   being chopped) no longer applies, and without this the caller's opening
   words waited on the transcript for nothing.
 
-A one-word backchannel ("हाँ", "hmm") still never silences the bot: it
-neither reaches ``min_words`` nor sustains VAD speech for the fallback
-window.
+A recognized pure hum or recording notice never word-confirms, and it
+suppresses the duration fallback for that speech episode until substantive
+text arrives. Before STT identifies speech, the bounded VAD fallback still
+allows callers using providers without interims to interrupt. A final below
+``min_words`` can also confirm with caller VAD evidence when the brain
+identifies a reply to an already-heard question or a request for attention;
+acquiring the floor is separate from accepting a business answer.
 
 Hybrid / provisional mode (``provisional_duck=True``): the arbiters above
 decide too late to be gentle and too early to be sure. In provisional mode a
@@ -77,7 +81,8 @@ from pipecat.turns.user_start.base_user_turn_start_strategy import (
     BaseUserTurnStartStrategy,
 )
 
-from voice_runtime.announcements import meaningful_speech_words, speech_word_count, speech_words
+from shared.orchestration.router import is_bare_hmm
+from voice_runtime.announcements import meaningful_speech_words, strip_recording_announcement
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,26 @@ _SUPPRESSION_RECHECK_S = 0.5
 _INTERIM_VAD_MIN_S = 0.3
 _INTERIM_STABLE_UPDATES = 2
 _INTERIM_HISTORY = 8
+# Endpointed STT can deliver its final after VAD has stopped. Only a recent
+# gated caller episode may qualify the context-aware short-final exception;
+# an orphan/echo final must not acquire the floor by containing "yes".
+_SHORT_FINAL_VAD_LOOKBACK_S = 2.0
+
+
+def _non_substantive_transcript(text: str) -> bool:
+    """Positive evidence of a hum, notice or punctuation, not missing STT.
+
+    Once the provider has identified a pure hum, the duration fallback must
+    not turn that same hum into an interruption on the next audio frame.
+    A later content-bearing partial/final restores the ordinary fallback.
+    """
+    remainder, notice = strip_recording_announcement(text)
+    return bool(
+        (notice and not remainder)
+        or (remainder.strip() and (
+            is_bare_hmm(remainder) or not meaningful_speech_words(remainder)
+        ))
+    )
 
 
 async def _call_hook(hook, *args) -> None:
@@ -142,6 +167,10 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         on_suppressed: Evidence hook ``(arbiter, sustained_seconds, verdict,
             enforced)`` called when a confirmation was (or in shadow mode,
             would have been) withheld as background speech.
+        short_final_context: Optional synchronous ``(text) -> str | None``
+            callback. "answer" or "attention" permits a final below the word
+            threshold when the brain knows its question context and a recent
+            gated VAD episode exists. Interims never use this exception.
     """
 
     def __init__(
@@ -151,12 +180,13 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         on_confirmed=None, speech_classifier=None, enforce_background: bool = True,
         on_suppressed=None, require_transcript: bool = False,
         meaningful_words: int = 2, start_protection: bool = False,
-        caller_reference_ready=None, **kwargs
+        caller_reference_ready=None, short_final_context=None, **kwargs
     ):
         self._require_transcript = bool(require_transcript)
         self._meaningful_words = max(1, int(meaningful_words))
         self._start_protection = bool(start_protection)
         self._reference_ready = caller_reference_ready
+        self._short_final_context = short_final_context
         super().__init__(**kwargs)
         self._min_words = max(1, int(min_words))
         self._vad_fallback_secs = max(0.0, float(vad_fallback_secs))
@@ -166,6 +196,8 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         self._on_provisional_change = on_provisional_change
         self._bot_speaking = False
         self._vad_speech_since: float | None = None
+        self._last_vad_stopped_at: float | None = None
+        self._non_substantive = False
         self._provisional = False
         # Evidence hook: the gateway log used to be the only place the
         # confirmation reason existed, so a call's barge-ins could not be
@@ -196,6 +228,8 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         transport state, not per-turn state — a barge-in turn starts
         precisely while the bot is still speaking."""
         self._vad_speech_since = None
+        self._last_vad_stopped_at = None
+        self._non_substantive = False
         self._last_suppressed_at = None
         self._provisional = False
         self._interim_words = []
@@ -211,7 +245,7 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         (``_INTERIM_VAD_MIN_S``), and the interim's first ``min_words`` words
         did not change since the previous interim of this speech episode.
         """
-        words = tuple(meaningful_speech_words(text or "") if self._require_transcript else speech_words(text or ""))
+        words = tuple(meaningful_speech_words(text or ""))
         threshold = self._meaningful_words if self._require_transcript else self._min_words
         if len(words) < threshold:
             self._interim_words.append(words)
@@ -226,7 +260,7 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         if previous != head:
             return None
         return (
-            f"interim transcript ({len(words)} words >= {self._min_words}, "
+            f"interim transcript ({len(words)} words >= {threshold}, "
             f"stable over {_INTERIM_STABLE_UPDATES} updates, VAD {sustained:.1f}s)"
         )
 
@@ -234,6 +268,26 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         if self._vad_speech_since is None:
             return None
         return time.monotonic() - self._vad_speech_since
+
+    def _short_final_reason(self, text: str) -> str | None:
+        # The explicitly opted-in transcript-only mode retains its configured
+        # meaningful-word floor. Context does not weaken that noise policy.
+        if self._require_transcript or self._short_final_context is None:
+            return None
+        recent_vad = self._vad_speech_since is not None or (
+            self._last_vad_stopped_at is not None
+            and time.monotonic() - self._last_vad_stopped_at <= _SHORT_FINAL_VAD_LOOKBACK_S
+        )
+        if not recent_vad:
+            return None
+        try:
+            context = self._short_final_context(text)
+        except Exception:  # noqa: BLE001 — a failed hint cannot cancel audio
+            logger.debug("barge-in short-final context unavailable", exc_info=True)
+            return None
+        if context not in ("answer", "attention"):
+            return None
+        return f"contextual short final ({context})"
 
     async def _begin_provisional(self) -> None:
         if self._provisional:
@@ -294,6 +348,8 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
     async def _confirm(self, why: str) -> ProcessFrameResult:
         sustained = self._sustained()
         self._vad_speech_since = None
+        self._last_vad_stopped_at = None
+        self._non_substantive = False
         self._last_suppressed_at = None
         was_provisional = self._provisional
         await self._end_provisional(resumed=False)
@@ -319,8 +375,12 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         """
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            self._last_vad_stopped_at = None
+            self._non_substantive = False
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            self._last_vad_stopped_at = None
+            self._non_substantive = False
             self._interim_words = []
             if self._vad_speech_since is not None:
                 # The caller began speaking over the bot's final syllables and
@@ -337,6 +397,8 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
                 return ProcessFrameResult.STOP
             if self._vad_speech_since is None:
                 self._vad_speech_since = time.monotonic()
+                self._last_vad_stopped_at = None
+                self._non_substantive = False
                 self._last_suppressed_at = None
                 self._interim_words = []     # stability is judged per speech episode
             if self._provisional_duck and not self._require_transcript and not self._startup_hold() and not self._background_suspect_live_for_pause():
@@ -346,12 +408,21 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             # VAD start begins a fresh window. In hybrid mode the paused
             # reply resumes.
             sustained = self._sustained()
+            self._last_vad_stopped_at = (
+                time.monotonic() if self._vad_speech_since is not None else None
+            )
             self._vad_speech_since = None
             self._last_suppressed_at = None
             self._interim_words = []
             await self._end_provisional(resumed=True, sustained=sustained)
         elif isinstance(frame, InterimTranscriptionFrame):
             if self._bot_speaking:
+                if _non_substantive_transcript(frame.text or ""):
+                    self._non_substantive = True
+                    self._interim_words = []
+                    return ProcessFrameResult.CONTINUE
+                if meaningful_speech_words(frame.text or ""):
+                    self._non_substantive = False
                 why = self._interim_confirms(frame.text or "")
                 if why is not None:
                     if self._background_suspect("transcript"):
@@ -359,9 +430,14 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
                     return await self._confirm(why)
         elif isinstance(frame, TranscriptionFrame):
             if self._bot_speaking:
+                if _non_substantive_transcript(frame.text or ""):
+                    self._non_substantive = True
+                    return ProcessFrameResult.CONTINUE
+                if meaningful_speech_words(frame.text or ""):
+                    self._non_substantive = False
                 # A telephony recording notice is not the caller interrupting:
                 # only the words left after stripping it count toward the gate.
-                words = len(meaningful_speech_words(frame.text or "")) if self._require_transcript else speech_word_count(frame.text or "")
+                words = len(meaningful_speech_words(frame.text or ""))
                 threshold = self._meaningful_words if self._require_transcript else self._min_words
                 if words >= threshold:
                     if self._background_suspect("transcript"):
@@ -369,11 +445,16 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
                     return await self._confirm(
                         f"transcript ({words} words >= {threshold})"
                     )
+                if words:
+                    why = self._short_final_reason(frame.text or "")
+                    if why is not None and not self._background_suspect("short_transcript"):
+                        return await self._confirm(why)
 
         window = self._sustain_window
         if (
             self._bot_speaking
             and not self._require_transcript
+            and not self._non_substantive
             and window > 0
             and self._vad_speech_since is not None
             and time.monotonic() - self._vad_speech_since >= window

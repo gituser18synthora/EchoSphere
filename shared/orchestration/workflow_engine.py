@@ -1362,6 +1362,24 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 if _node_config(node).get("alsoCapture"):
                     _apply_also_capture(node, text, slots, audit, awaiting)
                     captured_here = True
+                correction_variable = str(
+                    _node_config(node).get("correctionCaptureVariable") or ""
+                ).strip()
+
+                def captured_correction() -> bool:
+                    # An authored router may also collect contextual facts.
+                    # Only a fresh match of its designated routing variable
+                    # may override the selected intent; a stored route or an
+                    # unrelated status capture is not a new routing decision.
+                    return any(
+                        entry.get("action") in _HUB_CAPTURE_ACTIONS
+                        and (not correction_variable or (
+                            entry.get("node") == awaiting
+                            and entry.get("variable") == correction_variable
+                        ))
+                        for entry in audit[turn_audit_start:]
+                    )
+
                 # An explicitly supported answer (especially a human-agent
                 # request) wins over incidental digits in the same sentence.
                 # Treat digits as a correction only when no normal intent
@@ -1391,10 +1409,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     if not captured_here:
                         _apply_also_capture(node, text, slots, audit, awaiting)
                         captured_here = True
-                    if any(
-                        entry.get("action") in _HUB_CAPTURE_ACTIONS
-                        for entry in audit[turn_audit_start:]
-                    ):
+                    if captured_correction():
                         # An edge labelled "correction" is the author's
                         # declared destination for a changed answer at THIS
                         # hub (cv_ee8fe14ab6d3: "इन्वर्टर पर नहीं रखा था, गार्ड
@@ -1429,10 +1444,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         if not captured_here:
                             _apply_also_capture(node, text, slots, audit, awaiting)
                             captured_here = True
-                        if any(
-                            entry.get("action") in _HUB_CAPTURE_ACTIONS
-                            for entry in audit[turn_audit_start:]
-                        ):
+                        if captured_correction():
                             chosen, why = declared, "correction_edge"
                 fixed_reply = (
                     _unmatched_reply(node, signal if why == "off_script" else None, lang)

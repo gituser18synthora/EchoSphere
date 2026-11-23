@@ -43,6 +43,19 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   and amend the bot's prompt and summary policy. These helpers do not run in the
   per-call runtime or add model requests. Contact-match precedence is stored in
   ordered capture arrays because MySQL JSON objects may reorder dictionary keys.
+- `setup/haier_service_need_repair.py` — pure transform for the same Studio bot's
+  service-requirement question and clarification. Explicit service refusals take
+  the existing no-service cancellation branch; existing postponement and special
+  cases retain their authored routes. The helper uses the existing capture and
+  correction contracts and does not change shared routing code. Apply and publish
+  through the API of the intended local environment after validation.
+- `setup/haier_call_audit_repair.py` — local configuration repair for the
+  23 November call review. It scopes technician contact and service status to
+  the caller's actual statement, separates pending work from completed work,
+  and requires explicit re-dispatch consent. Unknown replies clarify instead
+  of agreeing. Ordered capture arrays preserve priority after MySQL JSON
+  storage; real interpreter replays cover corrections and unrelated branches.
+  The helper does not publish to DEMO or deploy runtime code.
 - `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
   validated configuration through the existing DEMO API only. Unchanged prompts
   and summary settings are retained. It never deploys server code or restarts

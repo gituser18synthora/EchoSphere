@@ -1345,6 +1345,14 @@ def build_voice_pipeline(
         # the turn processor only defers to those external signals.
         user_turn_strategies = ExternalUserTurnStrategies()
     else:
+        async def set_provisional_playback(active: bool) -> None:
+            if playback_duck is not None:
+                await playback_duck.set_provisional(active)
+                # A provisional pause is silent time, not question playback.
+                # On commit the pause stays active until the interruption
+                # consumes its timing; the next reply resets the markers.
+                brain._note_reply_playback_pause(active)
+
         # Barge-in policy: while the bot is quiet VAD starts the user turn
         # (fast path, unchanged); while it is SPEAKING an interruption must be
         # confirmed by a transcript of >= barge_in_min_words words — VAD alone
@@ -1370,7 +1378,7 @@ def build_voice_pipeline(
                 provisional_duck=playback_duck is not None,
                 commit_secs=turn["barge_in_commit_secs"],
                 on_provisional=(
-                    playback_duck.set_provisional if playback_duck is not None else None
+                    set_provisional_playback if playback_duck is not None else None
                 ),
                 on_provisional_change=lambda state, sustained: recorder.add_event(
                     "barge_in_provisional" if state == "provisional" else "barge_in_resumed",
@@ -1387,6 +1395,11 @@ def build_voice_pipeline(
                 enforce_background=caller_level.enforce if caller_level is not None else False,
                 require_transcript=turn["barge_in_require_transcript"] >= 0.5,
                 meaningful_words=int(round(turn["barge_in_meaningful_words"])),
+                # A one-word final can be the answer to an already-heard
+                # question ("haan"/"nahin") or a request for attention. The
+                # brain supplies that context; the arbiter still requires
+                # current/recent caller VAD and its acoustic safeguards.
+                short_final_context=brain._short_barge_in_context,
                 start_protection=turn["background_start_protection"] >= 0.5,
                 caller_reference_ready=lambda: bool(caller_level and caller_level.established),
                 on_suppressed=lambda arbiter, sustained, verdict, enforced: recorder.add_event(
