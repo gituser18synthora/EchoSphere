@@ -1184,6 +1184,9 @@ class ConversationBrain(FrameProcessor):
         self._silence_policy = silence_policy
         self._silence_task: asyncio.Task | None = None
         self._silence_prompts = 0
+        # A presence-check answer belongs to that check, never to the
+        # business question the silence ladder temporarily interrupted.
+        self._hearing_probe_pending: dict | None = None
         self._hold_requested_at: float | None = None
         # The bot reply a barge-in cut short, remembered until the speech that
         # caused it is classified: a telephony recording notice restores it.
@@ -1405,6 +1408,9 @@ class ConversationBrain(FrameProcessor):
         # Follow-up questions must not replay its terminal nodes or tools.
         self._completed_workflow: str | None = None
         self._completed_workflow_id: str | None = None
+        self._terminal_outcome_slots: set[str] = set()
+        self._open_turn_semantic_snapshot: dict | None = None
+        self._claimed_semantic_snapshots: dict[int, dict] = {}
         # A transfer control has been queued/sent for this call: the normal
         # bot-close path must NOT run (FreeSWITCH owns the call's fate from
         # here — bridge or hangup), and a second transfer is never queued.
@@ -2210,6 +2216,8 @@ class ConversationBrain(FrameProcessor):
         question (PendingAsk + router.is_bare_hmm) — so it is dispatched.
         Returns True when the held text was dropped."""
         held = " ".join(self._pending_segments).strip()
+        if self._hearing_probe_pending is not None and self._presence_check_only(held):
+            return False
         if not held or not is_filler_only(held):
             return False
         pending = self._pending_ask()
@@ -2244,6 +2252,8 @@ class ConversationBrain(FrameProcessor):
         held text was dropped."""
         held = " ".join(self._pending_segments).strip()
         newest = self._pending_newest_final_at
+        if self._hearing_probe_pending is not None and self._presence_check_only(held):
+            return False
         if not held or newest is None or self._identifier_capture is not None:
             return False
         words = len(meaningful_language_words(held))
@@ -3938,6 +3948,11 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_text = self._open_turn_record = None
         self._open_turn_workflow = None
         claimed = (text, record, workflow_turn)
+        snapshot, self._open_turn_semantic_snapshot = self._open_turn_semantic_snapshot, None
+        if snapshot is not None and snapshot.get("text") == text:
+            self._claimed_semantic_snapshots[id(claimed)] = snapshot
+            if len(self._claimed_semantic_snapshots) > 16:
+                del self._claimed_semantic_snapshots[next(iter(self._claimed_semantic_snapshots))]
         # Keep timing with this exact claim, including cancellation before a
         # TurnRecord exists. Repeated "yes"/IDs must never match by text.
         self._claimed_audio_starts[id(claimed)] = self._open_turn_audio_start
@@ -3964,6 +3979,24 @@ class ConversationBrain(FrameProcessor):
         claimed = claimed if claimed is not None else self._claim_open_turn()
         text, record, workflow_turn = claimed
         audio_start = self._claimed_audio_starts.pop(id(claimed), None)
+        snapshot = self._claimed_semantic_snapshots.pop(id(claimed), None)
+        if snapshot is not None:
+            if "hearing_probe" in snapshot:
+                self._hearing_probe_pending = snapshot["hearing_probe"]
+            if "workflow_slots" in snapshot:
+                from shared.orchestration.workflow_corrections import CORRECTION_STATE_KEY
+                self._recorder.workflow_slots = snapshot["workflow_slots"]
+                state = dict(getattr(self._recorder, "call_state", {}) or {})
+                if snapshot.get("correction") is None:
+                    state.pop(CORRECTION_STATE_KEY, None)
+                else:
+                    state[CORRECTION_STATE_KEY] = snapshot["correction"]
+                self._recorder.call_state = state
+                if self._runtime_context is not None and snapshot.get("runtime_values"):
+                    for key, entry in snapshot["runtime_values"].items():
+                        self._runtime_context.values.setdefault(key, entry)
+                    self._verified_runtime_context_block = self._runtime_context.prompt_section()
+                self._recorder.add_event("workflow_correction_rolled_back", reason="late_transcript_merge")
         if workflow_turn is not None and self._workflows is not None:
             # The cancelled turn already advanced the checkpointed workflow
             # (an ask consumed the fragment): rewind it too, or the merged
@@ -4213,6 +4246,7 @@ class ConversationBrain(FrameProcessor):
         # text existed nowhere and the continuation ran without its first
         # half. The turn record fills in once _handle_turn builds it.
         self._open_turn_text, self._open_turn_record = text, None
+        self._open_turn_semantic_snapshot = None
         self._open_turn_completed_at = None
         # The workflow marker belongs to ONE dispatched turn: it is set only
         # when THIS turn reaches the workflow. A marker left over from an
@@ -4701,6 +4735,11 @@ class ConversationBrain(FrameProcessor):
                 max_prompts=policy.max_prompts,
             )
             self._naturalness.set_turn_criticality(True, "silence_prompt")
+            if self._hearing_probe_pending is None:
+                self._hearing_probe_pending = {
+                    "question": self._pending_ask().question,
+                    "nodes": list(self._reply_nodes),
+                }
             await self._say(
                 canned(policy.prompt_key(self._silence_prompts),
                        self._conversation_language)
@@ -4977,6 +5016,8 @@ class ConversationBrain(FrameProcessor):
             return "attention"
         if self._identifier_capture is not None:
             return None
+        if self._hearing_probe_pending is not None and self._presence_check_only(text):
+            return "attention"
         pending = self._pending_ask()
         if self._attention_only_turn(text) and pending.question:
             return "attention"
@@ -5293,6 +5334,8 @@ class ConversationBrain(FrameProcessor):
         self._workflow_farewell_active = False
         self._unheard_reply = None
         facts = collected_facts_block(getattr(self._recorder, "workflow_slots", {}) or {})
+        from shared.orchestration.workflow_corrections import correction_from_state
+        correction = correction_from_state(getattr(self._recorder, "call_state", None))
         self._recorder.add_event(
             "workflow_closing_followup", workflow=self._completed_workflow,
         )
@@ -5316,7 +5359,22 @@ class ConversationBrain(FrameProcessor):
                 "the current turn's tool results confirm it. Answer "
                 "only from the conversation, verified caller context, collected "
                 "facts below and retrieved knowledge; never invent timings or "
-                "promises. "
+                "promises. The workflow reaching its terminal node records a "
+                "conversational proposed outcome, not proof of a backend action. "
+                "Never say a cancellation/referral cannot be changed unless an "
+                "actual tool result proves that restriction. "
+                + (
+                    "The caller explicitly contested the previous outcome/facts. "
+                    "The disputed values have been invalidated and need review. "
+                    "Acknowledge the correction; do not reaffirm the old outcome, "
+                    "claim a replacement action was completed, or claim a real "
+                    "backend action was withdrawn. Acknowledge the corrected "
+                    "caller fact naturally; keep review and invalidation "
+                    "bookkeeping internal, without narrating rules or saying "
+                    "you cannot confirm the previous outcome. Ask one brief clarification "
+                    "only if needed to understand the caller's current request. "
+                    if correction else ""
+                )
                 + (
                     "Answer the concern briefly, then close politely without "
                     "asking another question."
@@ -5333,6 +5391,141 @@ class ConversationBrain(FrameProcessor):
         )
         if close_after_reply:
             await self._close_workflow_completed(self._completed_workflow)
+
+    def _record_late_workflow_correction(
+        self, text: str, decision: ConversationDecision | None,
+    ) -> bool:
+        """Contest opt-in conversational facts without replaying any action.
+
+        This requires an in-scope, high-confidence structured correction and
+        a verbatim span in THIS caller turn. Arbitrary slot observations,
+        reasons, questions and model replies cannot invalidate a result.
+        """
+        from shared.orchestration.workflow_corrections import (
+            CORRECTION_SOURCE, CORRECTION_STATE_KEY,
+        )
+        if (
+            decision is None or decision.correction is None
+            or decision.scope != SCOPE_IN or decision.confidence < 0.85
+        ):
+            return False
+        correction = decision.correction
+        quote = " ".join(correction.evidence.split())
+        caller = " ".join((text or "").split())
+        if not quote or quote not in caller:
+            self._recorder.add_event("workflow_correction_rejected", reason="unbound_evidence")
+            return False
+        slots = dict(getattr(self._recorder, "workflow_slots", {}) or {})
+        # Only existing facts can be invalidated. Backend facts remain
+        # authoritative: the opt-in terminal annotation identifies proposed
+        # outcomes, and a model cannot erase tool/payment verification state.
+        allowed = {
+            spec.source for spec in self._goal_policy.summary_fields
+            if spec.source and not any(word in spec.source.casefold() for word in (
+                "verified", "verification", "backend", "tool_", "transaction",
+                "payment", "otp", "password", "card_number", "aadhaar",
+            ))
+        }
+        invalidated = self._terminal_outcome_slots | (set(correction.slots) & allowed)
+        invalidated &= slots.keys()
+        if not invalidated:
+            # Even a repeated correction is not permission to repeat the
+            # completed journey's tool action.
+            return True
+        old = (getattr(self._recorder, "call_state", {}) or {}).get(CORRECTION_STATE_KEY) or {}
+        self._open_turn_semantic_snapshot = {
+            "text": text, "workflow_slots": dict(slots), "correction": old or None,
+        }
+        if self._runtime_context is not None:
+            self._open_turn_semantic_snapshot["runtime_values"] = (
+                self._runtime_context.invalidate_workflow_values(invalidated)
+            )
+            self._verified_runtime_context_block = self._runtime_context.prompt_section()
+        prior = dict(old.get("previous_slots") or {}) if isinstance(old, dict) else {}
+        prior.update({key: slots.pop(key) for key in sorted(invalidated)})
+        all_invalidated = sorted(set(prior))
+        self._recorder.workflow_slots = slots
+        self._recorder.call_state = {
+            **(getattr(self._recorder, "call_state", {}) or {}),
+            CORRECTION_STATE_KEY: {
+                "status": "contested", "source": CORRECTION_SOURCE,
+                "workflow": self._completed_workflow,
+                "turn": self._turn_counter,
+                "evidence": quote,
+                "invalidated_slots": all_invalidated,
+                "previous_slots": prior,
+            },
+        }
+        self._recorder.add_event(
+            "workflow_outcome_contested", workflow=self._completed_workflow,
+            turn=self._turn_counter, invalidated_slots=sorted(invalidated),
+            source=CORRECTION_SOURCE,
+        )
+        return True
+
+    @staticmethod
+    def _presence_check_only(text: str) -> bool:
+        """Strictly content-free replies to 'can you hear me/are you there?'."""
+        words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
+        vocabulary = {
+            "yes", "yeah", "yep", "haan", "han", "haa", "ha", "हाँ", "हां", "हा",
+            "ji", "jee", "जी", "no", "nope", "nahi", "nahin", "नहीं", "नही",
+            "hello", "helo", "hallo", "hi", "हेलो", "हैलो", "हलो", "sir", "madam",
+            "mam", "सर", "मैडम", "ok", "okay", "theek", "thik", "ठीक", "hai", "है",
+            "sunai", "sunayi", "sun", "raha", "rahi", "rahe", "de", "deta", "deti",
+            "aawaz", "awaz", "awaaz", "aa", "aata", "aati", "hear", "hearing",
+            "can", "you", "i", "me", "am", "able", "to", "here", "there", "on", "line",
+            "speak", "speaking", "listening", "sunta", "sunti", "pa", "sakta", "sakti",
+            "hoon", "hun", "hain", "hu", "boliye", "bolie", "bol", "bolo", "please",
+            "सुन", "सुनाई", "दे", "रहा", "रही", "रहे", "हैं", "हूँ", "हूं", "आवाज़",
+            "आवाज", "आ", "बोलिए", "बोलिये", "सकता", "सकती", "न", "not", "cannot",
+            "now", "ab", "abhi", "mujhe", "aapki", "aap", "main", "your", "voice",
+            "bilkul", "clearly", "clear", "audible", "आपकी", "आप", "मुझे", "अब", "अभी",
+        }
+        return bool(words and len(words) <= 12 and set(words) <= vocabulary)
+
+    async def _answer_hearing_probe(self, text: str, audio_started_at: float | None) -> None:
+        probe, self._hearing_probe_pending = self._hearing_probe_pending, None
+        self._open_turn_semantic_snapshot = {"text": text, "hearing_probe": probe}
+        self._turn_counter += 1
+        self._latency.turn_id = self._turn_counter
+        self._turn_reply_queued = False
+        self._turn_speech_plan = None
+        self._naturalness.set_turn_criticality(True, "presence_check_answer")
+        active_generation = self._generation
+        await self._cancel_generation("presence_check_answer")
+        if active_generation is asyncio.current_task():
+            self._generation = active_generation
+        self._discard_decision_prefetch("presence_check_answer")
+        self._discard_extraction_ahead()
+        self._unheard_reply = None
+        self._unheard_repeated = ()
+        self._interrupted_reply = None
+        self._pending_language = None
+        self._pending_level_samples.clear()
+        self._pending_turn_audio.clear()
+        record = TurnRecord(
+            role="user", text=text, audio_started_at=audio_started_at,
+            route="presence_check_answer",
+        )
+        self._recorder.add_turn(record)
+        self._open_turn_text, self._open_turn_record = text, record
+        await self._notify_client({
+            "type": "transcript", "text": text, "at": turn_time_iso(time.time()),
+        })
+        self._history.append({"role": "user", "content": text})
+        del self._history[:-_HISTORY_MAX_TURNS]
+        self._recorder.add_event("presence_check_answered", workflow=self._active_workflow)
+        self._begin_reply_tracking()
+        question = str((probe or {}).get("question") or "")
+        if question:
+            self._reply_nodes = list((probe or {}).get("nodes") or [])
+            self._reply_text = question
+        await self._say(" ".join(part for part in (
+            canned("ack", self._conversation_language), question,
+        ) if part))
+        if self._turn_reply_queued and not self._reply_audio_started:
+            self._open_turn_completed_at = time.monotonic()
 
     async def _finish_workflow_close(self, pending: tuple[int, str]) -> None:
         await asyncio.sleep(_WORKFLOW_CLOSE_GRACE_S)
@@ -6110,6 +6303,15 @@ class ConversationBrain(FrameProcessor):
         started = time.perf_counter()
         turn_timestamp = time.time()
         audio_started_at = self._turn_audio_start.get()
+        if self._hearing_probe_pending is not None:
+            if self._presence_check_only(text):
+                await self._answer_hearing_probe(text, audio_started_at)
+                return
+            # A substantive response still answers the pending business ask.
+            self._open_turn_semantic_snapshot = {
+                "text": text, "hearing_probe": self._hearing_probe_pending,
+            }
+            self._hearing_probe_pending = None
         completed_followup = (
             self._completed_workflow is not None and self._active_workflow is None
         )
@@ -6372,7 +6574,7 @@ class ConversationBrain(FrameProcessor):
         decision = replace(decision, signal=signal)
         if (
             self._active_workflow is not None and decision.kind == RouteKind.WORKFLOW
-            and orchestrated is not None and orchestrated.next_action == "clarify"
+            and orchestrated is not None
             and (orchestrated.needs_clarification or orchestrated.decision in (
                 "ambiguous", "needs_clarification",
             ))
@@ -6466,8 +6668,13 @@ class ConversationBrain(FrameProcessor):
                 reason="verified_context_question_during_workflow",
                 signal=signal,
             )
+        terminal_correction = bool(
+            completed_followup
+            and self._record_late_workflow_correction(text, orchestrated)
+        )
         will_run_tool = bool(
             classification is not None
+            and not terminal_correction
             and decision.reason != "workflow_answer_ambiguous"
             and (
                 classification.tool_name
@@ -6580,7 +6787,11 @@ class ConversationBrain(FrameProcessor):
         # Tool-backed verification for THIS turn, before any reply: the answer
         # must reflect what the system verified, not what anyone asserted.
         tool_instruction = ""
-        if classification is not None and not self._closing and not goal_close:
+        if (
+            classification is not None and not self._closing and not goal_close
+            and not terminal_correction
+            and decision.reason != "workflow_answer_ambiguous"
+        ):
             if will_run_tool:
                 # Speak the "ek minute, main check karta hoon…" ack BEFORE the
                 # lookup runs: the words a human says while reaching for the
@@ -6697,13 +6908,13 @@ class ConversationBrain(FrameProcessor):
                     tool_instruction + (plan.instruction if plan is not None else ""),
                 )
             elif decision.reason == "workflow_answer_ambiguous":
-                await self._generate_reply(
-                    text, decision, started,
-                    extra_system=(
-                        "\n\nThe caller has not clearly answered the pending workflow question. "
-                        "Ask a brief clarification about that question using one clear polarity. "
-                        "Do not confirm consent, claim an action or advance to a new question."
-                    ),
+                # The graph did not transition. A generated clarification
+                # must not ask another business question: its next "yes"
+                # would still be consumed at the old checkpoint.
+                await self._say(
+                    self._pending_workflow_question
+                    or self._pending_ask().question
+                    or canned("clarify", self._conversation_language)
                 )
             elif plan is not None and plan.scripted_reply and (
                 plan.scripted_final or not tool_instruction
@@ -6802,6 +7013,7 @@ class ConversationBrain(FrameProcessor):
                 await self._handle_workflow(
                     decision, text, started, signal=signal,
                     classification=classification,
+                    signal_authoritative=orchestrated is not None,
                 )
             elif decision.reason == "entry_reprompt":
                 from shared.orchestration.phrases import entry_question_retry
@@ -7420,6 +7632,27 @@ class ConversationBrain(FrameProcessor):
                 "answer_from_knowledge. A genuinely new action keeps its "
                 "configured intent/tool route."
             )
+            slots = getattr(self._recorder, "workflow_slots", {}) or {}
+            fact_sources = {spec.source for spec in self._goal_policy.summary_fields}
+            state["recorded_conversational_facts"] = {
+                key: str(value)[:160] for key, value in slots.items()
+                if (key in self._terminal_outcome_slots or key in fact_sources)
+                and value is not None and not isinstance(value, (dict, list))
+                and not any(secret in key.casefold() for secret in (
+                    "otp", "password", "card_number", "aadhaar", "transaction_reference",
+                )
+                )
+            }
+            state["terminal_outcome_slots"] = sorted(self._terminal_outcome_slots)
+            state["correction_rule"] = (
+                "If the caller explicitly contradicts these proposed outcomes or "
+                "facts, or denies/withdraws the action just proposed, emit "
+                "correction with a short verbatim quote from this "
+                "turn and the names of directly contradicted existing facts. "
+                "This applies even if the caller never agreed to that action. "
+                "A separate clarification may still be needed. This requests "
+                "review, never an external action reversal."
+            )
         return state
 
     _DIRECT_SPEAK_PLAN_ACTIONS = frozenset({
@@ -8037,6 +8270,7 @@ class ConversationBrain(FrameProcessor):
         self, decision: RouteDecision, text: str, started: float,
         signal: str | None = None,
         classification: IntentClassification | None = None,
+        *, signal_authoritative: bool = False,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
         reset_state, initial_slots = self._workflow_turn_inputs(text)
@@ -8059,7 +8293,8 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_pending_exact_ahead = self._pending_exact_ahead
         workflow_started = time.perf_counter()
         result = await self._workflows.handle_turn_detailed(
-            signal=signal or decision.signal,
+            signal=signal if signal_authoritative else signal or decision.signal,
+            signal_authoritative=signal_authoritative,
             session_id=self._recorder.session_id,
             tenant_id=self._config.tenant_id,
             bot_id=self._config.bot_id,
@@ -8138,6 +8373,10 @@ class ConversationBrain(FrameProcessor):
         if result.get("status") == "done" and result["done"]:
             self._completed_workflow = workflow_name
             self._completed_workflow_id = result.get("workflowId") or workflow_name
+            self._terminal_outcome_slots = {
+                key for key in result.get("terminalSetSlots") or []
+                if isinstance(key, str) and key in self._recorder.workflow_slots
+            }
         self._pending_workflow_question = (
             str(result.get("nodePrompt") or "") if not result["done"] else ""
         )
@@ -8211,6 +8450,7 @@ class ConversationBrain(FrameProcessor):
                 text, decision, started, extra_system=extra,
                 question_response=turn_signal == "question" and decision.kind != RouteKind.KNOWLEDGE,
                 pending_question=str(result.get("nodePrompt") or ""),
+                lock_workflow_question=bool(result.get("nodePrompt")),
             )
             return
         reply = result["reply"]
@@ -8915,18 +9155,6 @@ class ConversationBrain(FrameProcessor):
         prompt = (result.get("nodePrompt") or "").strip()
         step = f' The flow is currently waiting on this step: "{prompt}".' if prompt else ""
         facts = collected_facts_block(result.get("slots") or {})
-        if (result.get("awaitingKind") == "intent" and prompt
-                and not result.get("contextQuestion")):
-            # An "anything else?" hub: after answering the caller's question
-            # the bot must not recite the hub's question verbatim every time
-            # (cv_2c60d51f61fb: the same closing line after four answers).
-            step += (
-                " That step is an open follow-up prompt, not a required "
-                "question: after answering, either stop, or add ONE short "
-                "natural follow-up in your own words (e.g. 'और कुछ जानना "
-                "चाहेंगे?' / 'Anything else on this?') — never repeat the "
-                "step's wording verbatim, and vary it across turns."
-            )
         return facts + (
             "\n\n# Paused call flow (THIS turn)\n"
             "A structured call flow is active but the caller's last message "
@@ -9149,11 +9377,21 @@ class ConversationBrain(FrameProcessor):
         extra_system: str = "", fallback_text: str = "",
         *, question_response: bool = False,
         pending_question: str = "",
+        lock_workflow_question: bool = False,
     ) -> None:
         system, turn_instruction, opening_pending, pending_question = self._reply_prompt(
             decision, extra_system,
             question_response=question_response, pending_question=pending_question,
         )
+        if lock_workflow_question:
+            system += (
+                "\n\n# Workflow question ownership\n"
+                "The workflow did not advance. Answer or acknowledge the caller "
+                "briefly using available facts, without asking ANY question or "
+                "inviting any new action. The runtime will then speak the actual "
+                "pending workflow question. Do not ask a later question, offer "
+                "a visit/referral, or claim a new action."
+            )
         if turn_instruction:
             self._recorder.add_event(
                 "context_question_reply", opening_pending=opening_pending,
@@ -9267,6 +9505,7 @@ class ConversationBrain(FrameProcessor):
         reply_parts: list[str] = []
         generation_failed = False
         guardrail_block: _GuardrailBlockedReply | None = None
+        locked_spoken_parts: list[str] | None = [] if lock_workflow_question else None
         self._turn_reply_queued = True
         await self._push_reply_marker()
         await self.push_frame(LLMFullResponseStartFrame())
@@ -9281,6 +9520,8 @@ class ConversationBrain(FrameProcessor):
         try:
             first_token_ms = await self._stream_llm_tokens(
                 reply_parts, system, started, turn_instruction=turn_instruction,
+                **({"suppress_questions": True, "spoken_reply_parts": locked_spoken_parts}
+                   if lock_workflow_question else {}),
             )
             self._latency.mark_llm_completed()
         except _GuardrailBlockedReply as blocked:
@@ -9327,8 +9568,9 @@ class ConversationBrain(FrameProcessor):
             await self._say(fallback_text)
             return
 
-        reply = "".join(reply_parts).strip()
-        self._record_llm_usage(reply)
+        generated_reply = "".join(reply_parts).strip()
+        self._record_llm_usage(generated_reply)
+        reply = "".join(locked_spoken_parts if locked_spoken_parts is not None else reply_parts).strip()
         if reply:
             # Redaction rules rewrite what enters history / the client UI /
             # the stored transcript. (For a streamed reply the audio itself
@@ -9377,7 +9619,10 @@ class ConversationBrain(FrameProcessor):
             # actually starts playing (see _report_latency).
             self._pending_latency_record = record
 
-        if (reply and turn_instruction and pending_question
+        if lock_workflow_question and pending_question and not self._closing:
+            self._recorder.add_event("pending_question_resumed", source="workflow", constrained=True)
+            await self._say(pending_question)
+        elif (reply and turn_instruction and pending_question
                 and not any(mark in reply for mark in ("?", "？", "؟"))
                 and not self._closing):
             # A factual answer alone must not strand a waiting workflow.
@@ -9456,6 +9701,8 @@ class ConversationBrain(FrameProcessor):
     async def _stream_llm_tokens(
         self, reply_parts: list[str], system: str, started: float,
         *, turn_instruction: str = "",
+        suppress_questions: bool = False,
+        spoken_reply_parts: list[str] | None = None,
     ) -> float | None:
         """Stream LLM tokens downstream with pause-flush hints and retry.
 
@@ -9471,8 +9718,8 @@ class ConversationBrain(FrameProcessor):
         """
         first_token_ms: float | None = None
         attempts = 0
-        hold_sentences = self._guardrails.has_output_block_rules
-        spoken_parts: list[str] = []
+        hold_sentences = self._guardrails.has_output_block_rules or suppress_questions
+        spoken_parts: list[str] = spoken_reply_parts if spoken_reply_parts is not None else []
         held: list[str] = []
 
         def _guard_check() -> None:
@@ -9491,6 +9738,51 @@ class ConversationBrain(FrameProcessor):
                 )
 
         async def _release(text: str) -> None:
+            if suppress_questions:
+                sentences = re.split(r"(?<=[.!?।？])\s*", text)
+                accepted = []
+                empathy = re.compile(
+                    r"(?i)^(?:sorry\b|i\s+(?:am\s+sorry|apologi[sz]e|understand|hear\s+you|know)\b|"
+                    r"my\s+apologies\b|maaf\b|maafi\b|माफ़?\s|माफ़?ी\s|क्षमा\s|मुझे\s+पता\s+है\s+कि)"
+                )
+
+                def question_clause(clause: str) -> bool:
+                    if re.search(
+                        r"(?i)^\s*(?:please\s+)?(?:tell|confirm|let me know|provide|share|give|बताइए|बताइये|बताना)\b",
+                        clause,
+                    ):
+                        return True
+                    # Embedded wh-clauses in declarative empathy are not
+                    # questions: "I understand how frustrating that is.".
+                    declarative_empathy = empathy.search(clause) and re.search(
+                        r"(?i)^(?:i\s+(?:understand|know)\s+(?:how|why|that|what)\b|मुझे\s+पता\s+है\s+कि)",
+                        clause.strip(),
+                    )
+                    return bool(
+                        looks_like_question(clause)
+                        and not (declarative_empathy and not any(mark in clause for mark in "?？؟"))
+                    )
+
+                for sentence in sentences:
+                    clauses = re.split(r"[,，;:—–]\s*", sentence)
+                    leading = []
+                    for clause in clauses:
+                        if question_clause(clause):
+                            break
+                        leading.append(clause)
+                    if len(leading) < len(clauses):
+                        self._recorder.add_event("workflow_generated_question_suppressed")
+                        # A courtesy and a new question often share one
+                        # sentence: "Sorry, what would you like to say?".
+                        # Preserve that acknowledgement before the real ask.
+                        prefix = ", ".join(leading).strip()
+                        if prefix and empathy.search(prefix):
+                            accepted.append(prefix.rstrip(".!?।") + ". ")
+                    else:
+                        accepted.append(sentence)
+                text = " ".join(accepted)
+                if not text.strip():
+                    return
             spoken_parts.append(text)
             await self.push_frame(TextFrame(text))
 
@@ -9505,6 +9797,8 @@ class ConversationBrain(FrameProcessor):
             """
             buffered = "".join(held)
             if not buffered:
+                return
+            if suppress_questions and not force:
                 return
             if force or _SENTENCE_END_RE.search(buffered):
                 held.clear()
@@ -9530,7 +9824,8 @@ class ConversationBrain(FrameProcessor):
                 return
             held.append(chunk)
             _guard_check()
-            await _release_held()
+            if not suppress_questions:
+                await _release_held()
 
         while True:
             attempts += 1
@@ -9584,7 +9879,7 @@ class ConversationBrain(FrameProcessor):
                         # TTS once per stall so speech starts without waiting
                         # for the next boundary. Without the release, hold
                         # mode flushed an empty aggregator — dead air.
-                        if hold_sentences and held:
+                        if hold_sentences and held and not suppress_questions:
                             _guard_check()
                             await _release_held(force=True)
                         if reply_parts and not hinted:

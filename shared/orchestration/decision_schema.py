@@ -96,6 +96,34 @@ class SlotObservation(BaseModel):
         return self
 
 
+class CallerCorrection(BaseModel):
+    """An explicit contradiction of a fact/outcome, never a new backend action.
+
+    The runtime still binds ``evidence`` to the current caller turn and limits
+    ``slots`` to existing facts. A model flag alone never amends platform state.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    evidence: str = ""
+    slots: list[str] = Field(default_factory=list)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _clean_evidence(cls, value):
+        return str(value or "").strip()[:180] if not isinstance(value, (dict, list)) else ""
+
+    @field_validator("slots", mode="before")
+    @classmethod
+    def _clean_slots(cls, value):
+        if not isinstance(value, list):
+            return []
+        return list(dict.fromkeys(
+            str(name).strip()[:64] for name in value[:8]
+            if isinstance(name, str) and name.strip()
+        ))
+
+
 class ConversationDecision(BaseModel):
     """One validated Stage-A decision for one completed caller turn."""
 
@@ -119,6 +147,10 @@ class ConversationDecision(BaseModel):
     tool_request: str | None = None
     needs_clarification: bool = False
     context_question: bool = False
+    # Optional; omitted on ordinary turns to preserve the decision budget.
+    # An explicit caller correction can contest a conversational outcome;
+    # it cannot reverse an executed external action or invent a new outcome.
+    correction: CallerCorrection | None = None
     # Optional co-generated reply. Spoken ONLY when the runtime's direct-speech
     # gate allows it (validated decision, no tool/knowledge/workflow involved).
     response_text: str = ""
@@ -151,6 +183,11 @@ class ConversationDecision(BaseModel):
     @classmethod
     def _strict_context_question(cls, v):
         return v is True
+
+    @field_validator("correction", mode="before")
+    @classmethod
+    def _structured_correction_only(cls, value):
+        return value if isinstance(value, (dict, CallerCorrection)) else None
 
     @field_validator("decision", mode="before")
     @classmethod
@@ -218,6 +255,8 @@ class ConversationDecision(BaseModel):
         # Recorded first and unconditionally: the model cannot supply it, and
         # every rewrite below leaves it untouched.
         self.requested_action = self.next_action
+        if self.scope != SCOPE_IN or self.confidence < 0.85:
+            self.correction = None
         if self.signal == "wrong_person" and self.decision == "confirmed":
             # The model contradicted itself. A wrong-number / "not me" signal
             # negates the identity gate, and the decision rules give negation
@@ -284,6 +323,7 @@ class ConversationDecision(BaseModel):
             "tool_request": self.tool_request,
             "needs_clarification": self.needs_clarification,
             "context_question": self.context_question,
+            "has_correction": bool(self.correction and self.correction.evidence),
             "has_response_text": bool(self.response_text),
             "user_language": self.user_language or None,
             "response_language": self.response_language or None,

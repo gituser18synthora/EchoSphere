@@ -270,9 +270,14 @@ class TestOffScriptTurns:
         assert "क्या आप अभी payment करेंगे?" in system  # grounded in the step
         assert "Never invent promises" in system  # no unsupported claims
         assert "workflow_off_script" in brain._recorder.event_kinds()
-        # The LLM's answer was spoken and recorded.
+        # Keep the apology, then the real checkpoint question. A generated
+        # question cannot replace the ask while its next "yes" would still
+        # be consumed by the previous checkpoint.
         assert any(isinstance(f, TextFrame) for f in brain._pushed)
-        assert brain._history[-1]["content"] == "माफ़ कीजिए, बताइए क्या कहना चाहते हैं?"
+        spoken = " ".join(turn.text for turn in brain._recorder.turns if turn.role == "bot")
+        assert "माफ़ कीजिए" in spoken
+        assert brain._history[-1]["content"] == "क्या आप अभी payment करेंगे?"
+        assert "बताइए क्या कहना चाहते हैं?" not in spoken
 
     async def test_hardship_signal_reaches_the_route_decision(self):
         engine = _WorkflowStub(off_script_result(signal="hardship"))

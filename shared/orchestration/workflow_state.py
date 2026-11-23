@@ -58,6 +58,17 @@ class WorkflowState(TypedDict, total=False):
     # returned state so a checkpointed value can never leak into a later turn;
     # when absent the legacy regex classification is the fallback.
     signal_override: str | None
+    # Input-only provenance for signal_override. True means a validated
+    # decision supplied the signal, including an intentional None (no generic
+    # signal). False/absent retains the legacy regex fallback for None. Cleared
+    # with the override after every turn so authority cannot be checkpointed
+    # into the next caller utterance.
+    signal_authoritative: bool
+    # Per-turn constant writes from message nodes explicitly marked
+    # terminalOutcome. Reported only when this turn completes the workflow;
+    # the delivery layer can retract these outcome annotations if a caller
+    # corrects a fact after the closing reply.
+    terminal_set_slots: list[str]
     # Testing Studio: {tool_name: payload} replaces live HTTP in api nodes.
     mock_tool_results: dict | None
     # Digits heard so far at an ask node whose entity expects a numeric

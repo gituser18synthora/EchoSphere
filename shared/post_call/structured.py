@@ -9,9 +9,9 @@ report — for example a delivery-dispute line's ``call_customer``,
 
 Two sources feed a field, in strict precedence:
 
-1. **Workflow slots** (authoritative). The final slot values of the guided
-   flow already reflect every correction the caller made during the
-   verification step, so a slot-derived value is never overridden.
+1. **Workflow slots** (authoritative), except sources the runtime explicitly
+   invalidated after a validated caller correction. Contested sources stay
+   unknown until reviewed; an analyst cannot silently choose a replacement.
 2. **The post-call analyst** (LLM), only for a field whose slot never got a
    value and whose spec allows it — validated against the field's own
    vocabulary, never trusted raw.
@@ -40,6 +40,7 @@ import re
 from datetime import date, datetime
 
 from shared.orchestration.goal_engine import BotGoalPolicy, SummaryFieldSpec
+from shared.orchestration.workflow_corrections import contested_slots
 from shared.orchestration.time_context import resolve_zone
 from shared.orchestration.visit_datetime import PERIOD_WORDS
 
@@ -203,12 +204,16 @@ def display_structured_fields(summary_fields, fields: dict | None) -> dict[str, 
 
 
 def derive_structured_fields(
-    policy: BotGoalPolicy | None, slots: dict | None
+    policy: BotGoalPolicy | None, slots: dict | None, *, correction: dict | None = None,
 ) -> dict[str, str | None]:
     """Every configured field from the workflow slots (None where unknown)."""
     if policy is None:
         return {}
-    fields = {spec.name: derive_field(spec, slots) for spec in policy.summary_fields}
+    blocked = contested_slots(correction)
+    fields = {
+        spec.name: None if spec.source in blocked else derive_field(spec, slots)
+        for spec in policy.summary_fields
+    }
     _apply_derived_fields(policy, fields, {})
     _apply_requires(policy, fields, {})
     return fields
@@ -222,6 +227,7 @@ def merge_structured_fields(
     evidence: dict | None = None,
     turns: list[dict] | None = None,
     reference: datetime | None = None,
+    correction: dict | None = None,
 ) -> tuple[dict[str, str | None], dict[str, str]]:
     """Final fields + per-field provenance (``workflow`` | ``analysis``).
 
@@ -239,8 +245,15 @@ def merge_structured_fields(
     evidence_lower = {_norm(k): v for k, v in evidence.items()} if isinstance(evidence, dict) else {}
     fields: dict[str, str | None] = {}
     sources: dict[str, str] = {}
+    blocked = contested_slots(correction)
     for spec in policy.summary_fields:
         if spec.derived_from:
+            fields[spec.name] = None
+            continue
+        if spec.source and spec.source in blocked:
+            # Explicit runtime correction provenance invalidated this source.
+            # Neither the stale slot nor an analyst's speculative replacement
+            # can turn a disputed proposed action into a completed one.
             fields[spec.name] = None
             continue
         value = derive_field(spec, slots)

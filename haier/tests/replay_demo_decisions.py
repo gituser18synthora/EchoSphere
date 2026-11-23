@@ -76,6 +76,7 @@ from shared.post_call.analyzer import analyze_call, build_analysis_llm, extract_
 from shared.post_call.structured import merge_structured_fields
 from shared.post_call.nba import decide_next_best_action
 from shared.orchestration.placeholders import resolve_placeholders
+from shared.orchestration.workflow_corrections import correction_from_state
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.recording import TurnRecord
 
@@ -235,15 +236,16 @@ def turn_dict(turn):
     return dict(vars(turn))
 
 
-async def validate_summary(config, policy, turns, events, slots, case, closed):
+async def validate_summary(config, policy, turns, events, slots, case, workflow_active, call_state):
     """The actual analyst/evidence/merge stages, without processor persistence."""
     reference = datetime.fromisoformat(str(case.get("started_at") or datetime.now(timezone.utc).isoformat()))
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
     final_state = {"end_reason": case.get("end_reason") or "completed",
                    "disposition": None, "language": "hi-IN", "escalated": False,
-                   "workflow_stage": "conversation" if closed else "workflow",
-                   "duration_sec": 60, "call_state": {}}
+                   "workflow_stage": "workflow" if workflow_active else "conversation",
+                   "workflow_active": workflow_active, "workflow_slots": deepcopy(slots),
+                   "duration_sec": 60, "call_state": deepcopy(call_state)}
     llm = build_analysis_llm(config)
     analysis, usage = await analyze_call(llm, policy=policy, turns=turns, events=events,
                                          final_state=final_state, reference=reference)
@@ -255,13 +257,20 @@ async def validate_summary(config, policy, turns, events, slots, case, closed):
         return {"error": "evidence_extraction_unavailable"}
     analysis.structured_fields = {**analysis.structured_fields, **proposed}
     analysis.structured_field_evidence = evidence or {}
+    correction = correction_from_state(call_state)
+    if correction:
+        analysis.call_outcome = "incomplete"
+        analysis.follow_up_required = True
+        if "workflow_outcome_contested" not in analysis.unresolved_items:
+            analysis.unresolved_items.append("workflow_outcome_contested")
     analysis.next_best_action = decide_next_best_action(
-        analysis, policy=policy, disposition=None, call_state={},
-        escalated=False, workflow_active=not closed)
+        analysis, policy=policy, disposition=None, call_state=call_state,
+        escalated=False, workflow_active=workflow_active)
     if analysis.next_best_action.action in ("do_not_contact", "close_goal_completed", "no_action"):
         analysis.follow_up_required = False
     analysis.structured_fields, analysis.structured_field_sources = merge_structured_fields(
-        policy, slots, analysis.structured_fields, evidence=evidence, turns=turns, reference=reference)
+        policy, slots, analysis.structured_fields, evidence=evidence, turns=turns,
+        reference=reference, correction=correction)
     return {"analysis": analysis.model_dump(mode="json"), "usage": usage,
             "evidence_usage": evidence_usage, "final_state": final_state}
 
@@ -319,6 +328,7 @@ async def run_case(config, definition, case, *, summary_llm=False):
                        "active_workflow": brain._active_workflow,
                        "pending_question": brain._pending_workflow_question,
                        "slots": deepcopy(recorder.workflow_slots),
+                       "call_state": deepcopy(recorder.call_state),
                        "workflow_results": deepcopy(engine.replay_results[workflow_offset:]),
                        "decisions": decisions, "events": events, "closed": brain._closing}
                 rows.append(row)
@@ -327,9 +337,13 @@ async def run_case(config, definition, case, *, summary_llm=False):
                 if visited.intersection(forbidden):
                     failures.append(f"Turn {index + 1} re-entered forbidden nodes {sorted(visited.intersection(forbidden))}")
                 print(f"  {index + 1}: {text} -> {row['reply']} [{row['slots'].get('outcome') or brain._active_workflow}]", flush=True)
-            summary = derive_structured_fields(brain._goal_policy, recorder.workflow_slots)
-            if case.get("outcome") and recorder.workflow_slots.get("outcome") != case["outcome"]:
+            correction = correction_from_state(recorder.call_state)
+            summary = derive_structured_fields(brain._goal_policy, recorder.workflow_slots,
+                                               correction=correction)
+            if "outcome" in case and recorder.workflow_slots.get("outcome") != case["outcome"]:
                 failures.append(f"outcome {recorder.workflow_slots.get('outcome')!r}, expected {case['outcome']!r}")
+            if case.get("expect_correction") and not correction:
+                failures.append("Explicit late correction did not contest the recorded outcome")
             if case.get("expect_open") and brain._closing:
                 failures.append("Uncertain reply unexpectedly completed the workflow")
             if case.get("no_false_no_contact") and any("कोई भी call या visit नहीं हुई" in row["reply"] for row in rows[1:]):
@@ -342,13 +356,14 @@ async def run_case(config, definition, case, *, summary_llm=False):
                       "expected_outcome": case.get("outcome"),
                       "expected_open": case.get("expect_open"),
                       "workflow_slots": deepcopy(recorder.workflow_slots),
+                      "call_state": deepcopy(recorder.call_state),
                       "structured_from_workflow": summary,
                       "turns": [turn_dict(t) for t in recorder.turns],
                       "usage": dict(recorder.usage), "closed": brain._closing}
             if summary_llm:
                 result["summary_validation"] = await validate_summary(
                     config, brain._goal_policy, result["turns"], recorder.events,
-                    recorder.workflow_slots, case, brain._closing)
+                    recorder.workflow_slots, case, bool(brain._active_workflow), recorder.call_state)
                 checked = result["summary_validation"]
                 if checked.get("error"):
                     failures.append(checked["error"])

@@ -34,6 +34,7 @@ from shared.post_call.analyzer import (
     fallback_analysis,
 )
 from shared.post_call.nba import decide_next_best_action
+from shared.orchestration.workflow_corrections import correction_from_state
 from shared.post_call.structured import (
     customer_evidence,
     evidence_field_specs,
@@ -474,6 +475,12 @@ async def process_memory_row(row_id: str) -> bool:
 
         # Deterministic reconciliation: recorded platform state outranks the
         # model's proposal, and unknown actions never persist.
+        correction = correction_from_state(final_state.get("call_state"))
+        if correction:
+            analysis.call_outcome = "incomplete"
+            analysis.follow_up_required = True
+            if "workflow_outcome_contested" not in analysis.unresolved_items:
+                analysis.unresolved_items.append("workflow_outcome_contested")
         analysis.next_best_action = decide_next_best_action(
             analysis,
             policy=policy,
@@ -498,6 +505,7 @@ async def process_memory_row(row_id: str) -> bool:
                 evidence=analysis.structured_field_evidence,
                 turns=turns,
                 reference=reference,
+                correction=correction,
             )
         )
         raw_evidence = {name.strip().lower(): quote for name, quote in analysis.structured_field_evidence.items()}

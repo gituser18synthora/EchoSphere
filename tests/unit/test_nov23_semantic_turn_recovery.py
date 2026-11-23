@@ -189,7 +189,8 @@ async def test_model_explicit_uncertainty_does_not_consume_its_affirm_signal(out
     ))
     try:
         await brain._handle_turn("Yeah?")
-        assert workflow.calls == [] and len(llm.systems) == 1
+        assert workflow.calls == [] and llm.systems == []
+        assert brain._last_bot_reply == brain._pending_workflow_question
         assert brain._active_workflow == "service_flow"
         assert "workflow_answer_needs_clarification" in brain._recorder.event_kinds()
         assert brain._pending_workflow_close is None

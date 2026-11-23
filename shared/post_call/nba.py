@@ -21,6 +21,7 @@ from shared.post_call.schema import (
     NextBestAction,
     PostCallAnalysis,
 )
+from shared.orchestration.workflow_corrections import correction_from_state
 
 # Default follow-up moment on a commitment's promised day. Stored in UTC;
 # 04:30 UTC = 10:00 IST, mid-morning for the platform's calling base.
@@ -105,6 +106,14 @@ def decide_next_best_action(
         return rules(
             "escalate_to_human",
             "The call was escalated to a human agent; ownership moved there.",
+            priority="high",
+        )
+
+    if correction_from_state(call_state):
+        return rules(
+            "collect_missing_information",
+            "The caller explicitly contested the conversational workflow "
+            "outcome; review the correction before any further action.",
             priority="high",
         )
 

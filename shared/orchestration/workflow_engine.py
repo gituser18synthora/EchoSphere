@@ -1171,6 +1171,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         turn_audit_start = len(audit)
         trace: list[str] = []
         replies: list[str] = []
+        terminal_set_slots: list[str] = []
         # Delivery contract of THIS turn's reply. Engine-generated strings
         # (retries, canned fallbacks) append to `replies` directly and stay
         # fixed; only node-authored speech carries the node's declared mode.
@@ -1232,9 +1233,11 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         text = (state.get("user_text") or "").strip()
         # Semantic signal: the Goal Engine's validated decision (passed per
         # turn) is primary; the regex classifier is the deterministic
-        # fallback when no decision reached this turn.
+        # fallback when no decision reached this turn. An authoritative null
+        # is a completed decision with no generic signal, not a missing
+        # decision: reclassifying it can invent an unrelated domain intent.
         signal = (state.get("signal_override") or None) if text else None
-        if signal is None and text:
+        if signal is None and text and not state.get("signal_authoritative", False):
             signal = classify_user_signal(text)
         off_script = False
         context_response = False
@@ -1258,6 +1261,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 **state, "reply": reply, "audit": audit, "trace": [],
                 "off_script": False, "context_response": False,
                 "semantic_extraction": None, "signal_override": None,
+                "signal_authoritative": False,
+                "terminal_set_slots": [],
                 "signal": "question", "status": "collecting",
                 "response_mode": RESPONSE_MODE_FIXED,
                 "response_directives": [], "response_must_include": [],
@@ -1674,6 +1679,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         slots[name] = value
                         audit.append({"action": "slot_set", "node": current,
                                       "variable": name})
+                        if (_node_config(node).get("terminalOutcome") is True
+                                and name not in terminal_set_slots):
+                            terminal_set_slots.append(name)
                 current = _next_of(current)
             elif kind == "ask":
                 config = _node_config(node)
@@ -2093,6 +2101,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "awaiting_identifier": awaiting_identifier,
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
+            "signal_authoritative": False,
+            "terminal_set_slots": (
+                terminal_set_slots if status == "done" and not awaiting else []
+            ),
             "status": status if not awaiting else "collecting",
             "reply": reply_text,
             "response_mode": aggregate_response_mode(segment_modes),
@@ -2222,6 +2234,8 @@ class WorkflowEngine:
         workflow_name: str,
         user_text: str,
         timeout_seconds: float = 10.0,
+        signal: str | None = None,
+        signal_authoritative: bool = False,
     ) -> tuple[str, bool]:
         """Advance the workflow one turn. Returns (reply, finished)."""
         result = await self.handle_turn_detailed(
@@ -2231,6 +2245,8 @@ class WorkflowEngine:
             workflow_name=workflow_name,
             user_text=user_text,
             timeout_seconds=timeout_seconds,
+            signal=signal,
+            signal_authoritative=signal_authoritative,
         )
         return result["reply"], result["done"]
 
@@ -2298,6 +2314,7 @@ class WorkflowEngine:
         language: str | None = None,
         mock_tool_results: dict | None = None,
         signal: str | None = None,
+        signal_authoritative: bool = False,
         initial_slots: dict | None = None,
         context_values: dict | None = None,
         reset_state: bool = False,
@@ -2318,6 +2335,9 @@ class WorkflowEngine:
         ``signal`` is the semantic signal of the utterance as decided by the
         Goal Engine (validated). When provided, intent-node edge selection
         routes on it instead of re-deriving meaning from regex patterns.
+        Set ``signal_authoritative=True`` when a validated decision supplied
+        it: an explicit None then stays None rather than triggering regex
+        fallback. The default preserves legacy callers without a decision.
 
         ``heard_nodes`` is the delivery channel's report of which nodes'
         replies the caller heard to completion (see ``WorkflowState``).
@@ -2411,6 +2431,7 @@ class WorkflowEngine:
             "language": language or "",
             "mock_tool_results": mock_tool_results,
             "signal_override": signal,
+            "signal_authoritative": bool(signal_authoritative),
             "semantic_extraction": None,
         }
         provider = _extensions.semantic_provider_for(definition)
@@ -2507,6 +2528,9 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
+            # Only opt-in outcome annotations written during this completed
+            # turn, never factual constants or an earlier turn's metadata.
+            "terminalSetSlots": list(state.get("terminal_set_slots") or []),
             # Only this invocation's calls, never the accumulated checkpoint
             # history. Traces are bounded and masked by ToolResult.
             "toolEvents": tool_events,

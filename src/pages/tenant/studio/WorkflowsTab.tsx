@@ -4,8 +4,8 @@
    document); the palette adds nodes, nodes drag to move, the inspector edits
    each node's label + runtime configuration and manages its connections.
    Save PUTs the document; the backend validates it structurally, stores
-   server-computed issues, and the SAME saved graph is what the runtime
-   workflow engine executes on live calls and in the Testing tab. */
+   server-computed issues. Published calls execute the workflow revision
+   pinned by their bot release; a later save does not update that release. */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { NodeKind, VoiceBot, Workflow, WorkflowEdge, WorkflowNode } from "@/types/domain";
@@ -445,9 +445,9 @@ export default function WorkflowsTab({ bot, onTest }: { bot: VoiceBot; onTest?: 
       setIssues(saved.issues as Issue[]);
       setDirty(false);
       toast(opts.status === "approved"
-        ? `Workflow v${saved.version} activated — live calls pick it up within ~30s`
+        ? `Workflow v${saved.version} saved and approved — publish a new bot release to update live calls`
         : opts.status === "draft"
-          ? `Workflow v${saved.version} deactivated (draft)`
+          ? `Workflow v${saved.version} saved as draft — the published release is unchanged`
           : opts.name
             ? `Workflow renamed and saved as v${saved.version}`
             : `Workflow saved as v${saved.version} ${saved.status}`);
@@ -655,8 +655,8 @@ export default function WorkflowsTab({ bot, onTest }: { bot: VoiceBot; onTest?: 
               <span className="wf-toolbar-sep" aria-hidden />
               {dirty && <Button size="sm" variant="ghost" icon="x" onClick={() => setDiscardConfirm(true)} title="Throw away unsaved edits">Discard</Button>}
               {wf.status !== "approved"
-                ? <Button size="sm" icon="rocket" busy={busy} onClick={() => setStatusConfirm("approved")} title="Make this flow the one live calls follow">Activate</Button>
-                : <Button size="sm" icon="pause" busy={busy} onClick={() => setStatusConfirm("draft")} title="Set back to draft — live calls stop following it">Deactivate</Button>}
+                ? <Button size="sm" icon="rocket" busy={busy} onClick={() => setStatusConfirm("approved")} title="Approve the saved workflow; publish a bot release to update live calls">Activate</Button>
+                : <Button size="sm" icon="pause" busy={busy} onClick={() => setStatusConfirm("draft")} title="Save the latest workflow as draft; the published release is unchanged">Deactivate</Button>}
               <Button size="sm" variant="primary" icon="check" busy={busy} disabled={!dirty}
                 title={dirty ? "Save your edits as a new version (Ctrl+S)" : "No changes to save"}
                 onClick={() => void persist()}>Save version</Button>
@@ -1233,8 +1233,8 @@ export default function WorkflowsTab({ bot, onTest }: { bot: VoiceBot; onTest?: 
         busy={busy}
         title={statusConfirm === "approved" ? "Activate this workflow?" : "Deactivate this workflow?"}
         body={statusConfirm === "approved"
-          ? <>Your current canvas {dirty ? "(including unsaved edits) " : ""}is saved as a new version and marked <b>Active</b> — live calls and the Testing tab follow it within about 30 seconds.</>
-          : <>The workflow is saved as a new <b>Draft</b> version{dirty ? " (including unsaved edits)" : ""}. Live calls stop following this journey until it is activated again.</>}
+          ? <>Your current canvas {dirty ? "(including unsaved edits) " : ""}is saved as a new version and marked <b>Approved</b>. Publish a new bot release to use this version on live calls. Saving or approving does not change the published release.</>
+          : <>The workflow is saved as a new <b>Draft</b> version{dirty ? " (including unsaved edits)" : ""}. The published release continues using its saved workflow version.</>}
         confirmLabel={statusConfirm === "approved" ? "Activate" : "Deactivate"}
         onConfirm={() => {
           const status = statusConfirm!;

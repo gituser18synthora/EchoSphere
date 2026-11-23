@@ -22,6 +22,7 @@ import unicodedata
 from datetime import datetime, timezone
 
 from shared.orchestration.goal_engine import BotGoalPolicy
+from shared.orchestration.workflow_corrections import correction_from_state
 from shared.orchestration.time_context import resolve_zone
 from shared.post_call.nba import allowed_next_actions, decide_next_best_action
 from shared.post_call.schema import (
@@ -282,6 +283,11 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "is a claim, not a verified fact — unless the platform facts below "
         "show a successful backend verification, keep verification in "
         "unresolved_items and never report the claim as completed.\n"
+        "- If call_state.workflow_outcome_correction is contested, its "
+        "previous_slots are disputed preimages, not final facts. Describe "
+        "the caller's correction and the need for review. Do not list the "
+        "disputed outcome as resolved or claim that a real external action "
+        "was reversed. Preserve unrelated verified facts.\n"
         "- Commitments: capture amount/date exactly as spoken; resolve the "
         "date to ISO using the time reference; status is always 'promised' "
         "for new commitments.\n"
@@ -491,12 +497,18 @@ def fallback_analysis(
         # The workflow slots are platform-recorded facts — safe to report even
         # without an analysis; unknown fields stay None.
         derived = derive_structured_fields(
-            policy, final_state.get("workflow_slots") or {}
+            policy, final_state.get("workflow_slots") or {},
+            correction=correction_from_state(final_state.get("call_state")),
         )
         analysis.structured_fields = derived
         analysis.structured_field_sources = {
             name: "workflow" for name, value in derived.items() if value is not None
         }
+    if correction_from_state(final_state.get("call_state")):
+        analysis.call_outcome = "incomplete"
+        analysis.follow_up_required = True
+        if "workflow_outcome_contested" not in analysis.unresolved_items:
+            analysis.unresolved_items.append("workflow_outcome_contested")
     analysis.next_best_action = decide_next_best_action(
         analysis,
         policy=policy,

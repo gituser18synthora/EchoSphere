@@ -411,7 +411,10 @@ class HybridIntentPipeline:
             )
         in_scope = getattr(decision, "scope", "in_scope") == "in_scope"
         if in_scope:
-            result.signal = decision.signal or result.signal
+            # The validated decision owns the semantic signal, including an
+            # intentional null. A configured intent whose name is also a
+            # platform signal must not resurrect one the decision omitted.
+            result.signal = decision.signal
             result.entities = dict(decision.provided_values())
         else:
             result.signal = None

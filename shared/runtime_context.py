@@ -550,6 +550,19 @@ class RuntimeContext:
             if entry.source != "workflow"
         }
 
+    def invalidate_workflow_values(self, keys) -> dict[str, ContextValue]:
+        """Remove only disputed workflow facts, retaining external provenance.
+
+        Returned immutable entries let an unheard turn rollback restore its
+        own facts without resetting unrelated identity or backend state.
+        """
+        removed = {}
+        for key in keys:
+            entry = self.values.get(key)
+            if entry is not None and entry.source == "workflow":
+                removed[key] = self.values.pop(key)
+        return removed
+
     def workflow_values(self) -> dict[str, object]:
         """Facts verified/returned by workflows during this call.
 

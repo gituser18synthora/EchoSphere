@@ -257,10 +257,12 @@ async def test_repeat_request_uses_current_pending_question_and_last_utterance()
         signal="question", confidence=0, needs_clarification=True,
     ))
     await brain._handle_turn("हाँ बोलो क्या बोल रहे हो?")
-    request = llm.histories[0][-1]["content"]
-    assert question in request and "Do not introduce yourself unless" in request
-    assert "End after the answer" not in request
-    assert [t.text for t in brain._recorder.turns if t.role == "bot"] == [llm.reply]
+    # A repeat/unclear turn delivers the actual authored question directly,
+    # keeping its next answer bound to the existing checkpoint.
+    assert llm.histories == []
+    assert brain._last_bot_reply == question
+    assert engine.calls == []
+    assert [t.text for t in brain._recorder.turns if t.role == "bot"] == [question]
 
 
 def test_question_note_is_scoped_to_one_request_and_combines_with_language_switch():

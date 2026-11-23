@@ -56,6 +56,17 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   of agreeing. Ordered capture arrays preserve priority after MySQL JSON
   storage; real interpreter replays cover corrections and unrelated branches.
   The helper does not publish to DEMO or deploy runtime code.
+- `setup/haier_followup_audit_repair.py` and `haier_followup_policy_repair.py` —
+  pure amendments for the 23 November afternoon follow-up audit of the Studio
+  bot `bot_450a4f7b4832`. They separate payment from resolution, preserve visit
+  and installation facts, clarify unknown completion sources, retain scheduling
+  preferences and require natural, explicit visit permission. The English
+  system prompt is in `prompts/customer_support_followup.txt`. The workflow
+  marks terminal outcome writes explicitly; the corresponding runtime preserves
+  authoritative null signals, re-asks the pending question after hearing checks,
+  and contests outcomes withdrawn by the caller. Apply the configuration with
+  the matching runtime, then publish a bot release that pins the new workflow
+  and prompt versions. These helpers never deploy or restart a server.
 - `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
   validated configuration through the existing DEMO API only. Unchanged prompts
   and summary settings are retained. It never deploys server code or restarts
