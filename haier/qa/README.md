@@ -58,7 +58,15 @@ env/bin/python -B haier/qa/run_voice_cases.py --env demo  --output storage/tmp/h
 ```
 
 A full voice run is ~100 calls and takes ~2.5 hours per environment; use `--only` for quick checks
-and `--resume` to continue an interrupted run. Each call leaves a stereo WAV
+and `--resume` to continue an interrupted run. To score calls that already ran (for example after
+stopping a run) without placing new ones:
+
+```bash
+env/bin/python -B haier/qa/run_voice_cases.py --env demo --evaluate-only storage/tmp/haier_qa/voice_demo.json \
+    --output storage/tmp/haier_qa/voice_demo.json
+```
+
+Run one call at a time on a dev machine: two parallel calls made local workflow steps 5–10× slower. Each call leaves a stereo WAV
 (`storage/tmp/haier_qa/voice_<env>/`, left = caller, right = bot as played).
 Test sessions are ordinary conversations of the bot in that environment: channel `freeswitch`,
 no caller number, no call id (so no ESL command reaches the real switch).
@@ -88,7 +96,9 @@ Never put a real customer's name, number or address in a case.
 
 Expectation keys: `outcome_in`, `outcome_not_in`, `must_close`, `open_ok`, `say_any`, `say_all`, `say_none`
 (regex over bot replies after the greeting), `max_identity_asks`, `intro_has`, `max_intro_repeats`,
-`max_same_question`, `max_bot_turns`, `nodes_none`, `max_dead_air_s` (voice only).
+`max_same_question`, `max_bot_turns`, `nodes_none`, `never_outcome` (outcome recorded at any turn,
+e.g. at the closing before a post-closing turn blanked it), `max_dead_air_s` (voice only).
+The voice runner also fails a call whose saved conversation record lost the workflow's outcome.
 
 Limitations: the text runner cannot judge STT, timing, barge-in, silence prompts or language switching
 (no STT language tag). The voice runner uses clean TTS caller audio, so real phone lines will be

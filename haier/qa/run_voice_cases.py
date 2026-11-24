@@ -416,6 +416,11 @@ async def main(opts) -> int:
         await asyncio.sleep(2.0)
     # fetch transcripts + checkpoints (read-only) and evaluate
     await asyncio.sleep(8.0)
+    evaluate_results(opts, results, spec, evaluate)
+    return 0
+
+
+def evaluate_results(opts, results: list[dict], spec: dict, evaluate) -> None:
     sids = [r["session_id"] for r in results if r.get("session_id")]
     fetched = {}
     for i in range(0, len(sids), 20):
@@ -430,8 +435,16 @@ async def main(opts) -> int:
         r["outcome"] = slots.get("outcome")
         r["bot_turns"] = bot_turns
         r["user_turns"] = [t["text"] for t in (f.get("turns") or []) if t.get("role") == "user"]
-        res = {"outcome": r["outcome"], "bot_turns": bot_turns, "rows": [], "error": r.get("harness_error")}
+        res = {"outcome": r["outcome"], "checkpoint_outcome": r["outcome"], "bot_turns": bot_turns, "rows": [],
+               "error": r.get("harness_error")}
         fails = evaluate(cases[r["id"]], res, spec.get("global_say_none") or [], mode="voice")
+        memory = f.get("memory") or {}
+        r["saved_outcome"] = (memory.get("workflow_slots") or {}).get("outcome")
+        r["saved_disposition"] = memory.get("disposition")
+        if r["outcome"] and memory and r["saved_outcome"] != r["outcome"]:
+            # e.g. a post-closing turn was treated as a correction and blanked the outcome
+            fails.append(f"saved record outcome={r['saved_outcome']!r} disposition={r['saved_disposition']!r} "
+                         f"but the workflow closed with {r['outcome']!r}")
         exp = cases[r["id"]].get("expect") or {}
         if "max_dead_air_s" in exp and r.get("response_gaps"):
             worst = max(r["response_gaps"])
@@ -447,6 +460,17 @@ async def main(opts) -> int:
     for r in results:
         print(f"{'PASS' if r.get('pass') else 'FAIL'} {r['id']}#{r['repeat']} outcome={r.get('outcome')} {'; '.join(r.get('failures') or [])[:240]}")
     print(f"\n{passed}/{len(results)} voice conversations passed on {opts.env}")
+
+
+def evaluate_only(opts) -> int:
+    """Fetch + evaluate calls that already ran (e.g. after an interrupted run). Places no calls."""
+    sys.path.insert(0, str(REPO / "haier/qa"))
+    from run_text_cases import evaluate
+    spec = json.loads(opts.cases.read_text(encoding="utf-8"))
+    results = []
+    for path in opts.evaluate_only:
+        results += json.loads(path.read_text())["results"]
+    evaluate_results(opts, results, spec, evaluate)
     return 0
 
 
@@ -459,4 +483,7 @@ if __name__ == "__main__":
     p.add_argument("--output", type=Path)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--artifacts", type=Path, default=REPO / "storage/tmp/haier_qa")
-    raise SystemExit(asyncio.run(main(p.parse_args())))
+    p.add_argument("--evaluate-only", type=Path, nargs="+", default=None,
+                   help="merge these finished result files, fetch + evaluate them into --output; places no calls")
+    args = p.parse_args()
+    raise SystemExit(evaluate_only(args) if args.evaluate_only else asyncio.run(main(args)))

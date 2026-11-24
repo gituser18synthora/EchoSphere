@@ -290,6 +290,15 @@ def evaluate(case: dict, result: dict, global_none: list[str], mode: str = "text
         fails.append(f"forbidden outcome {outcome!r}")
     if exp.get("must_close") and not outcome:
         fails.append("call did not reach a terminal outcome")
+    if exp.get("never_outcome"):
+        # any outcome recorded at any turn (e.g. at the closing, before a
+        # post-closing turn contested and blanked it) -- text runs only
+        seen = {r.get("outcome") for r in result.get("rows", []) if r.get("outcome")}
+        if mode == "voice" and result.get("checkpoint_outcome"):
+            seen.add(result["checkpoint_outcome"])
+        bad = seen.intersection(exp["never_outcome"])
+        if bad:
+            fails.append(f"outcome {sorted(bad)} was recorded during the call")
     for pat in list(exp.get("say_none") or []) + list(global_none or []):
         m = re.search(pat, joined)
         if m:

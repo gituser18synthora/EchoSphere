@@ -3812,6 +3812,212 @@
      "redispatch"
     ]
    }
+  },
+  {
+   "id": "ECOM-06",
+   "reason": "ecom_damaged_delivery",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Garbled denial ('Nahi. Geyser bil. Bilkul.' -- STT of 'nahi, geyser bilkul sahi hai, koi damage nahi hai') must not cancel as damaged",
+   "patterns": [
+    "stt_garble",
+    "edge_order"
+   ],
+   "source_calls": [
+    "local QA cv_d06b3b6bb816"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "नहीं। गीज़र बिल। बिल्कुल।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "cancel_ecom_damaged"
+    ],
+    "never_outcome": [
+     "cancel_ecom_damaged"
+    ]
+   }
+  },
+  {
+   "id": "NHP-06",
+   "reason": "not_haier_product",
+   "category": "correction_after_close",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Truncated 'Nahi, mere paas.' must not cancel; the correction 'Haier ka hi hai, do din mein bhej do' must be recorded, not just promised",
+   "patterns": [
+    "split_answer",
+    "correction_after_close"
+   ],
+   "source_calls": [
+    "cv_64cb5c7f65c5",
+    "demo QA cv_2b205a66c69c",
+    "demo QA cv_7d067b7f7dcc"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, बोलो।"
+    },
+    {
+     "say": "कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मेरे पास।"
+    },
+    {
+     "say": "हायर का ही है, दो दिन में भेज दो।",
+     "post_close": true
+    },
+    {
+     "say": "हाँ।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "cancel_not_haier_product"
+    ]
+   }
+  },
+  {
+   "id": "CB-11",
+   "reason": "unit_ok_no_defect",
+   "category": "correction_after_close",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "After the re-dispatch closing, 'Please send the technician again' (agreement) must keep the re-dispatch outcome",
+   "patterns": [
+    "correction_after_close",
+    "contested_outcome"
+   ],
+   "source_calls": [
+    "demo QA cv_3347d57305b9"
+   ],
+   "turns": [
+    {
+     "say": "Yes, speaking."
+    },
+    {
+     "say": "Yes, the technician visited."
+    },
+    {
+     "say": "The fridge is still not cooling, the problem is still there."
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "Please send the technician again.",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "ID-08",
+   "reason": "customer_refused_visit",
+   "category": "correction_after_close",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Husband, customer not home, closing, then 'shaam ko milengi' -> wrong-person outcome kept (callback time noted), not blanked",
+   "patterns": [
+    "wrong_person",
+    "contested_outcome"
+   ],
+   "source_calls": [
+    "local QA cv_32cc27da457b",
+    "local QA cv_f5af637ed445",
+    "local QA cv_b8a329b404cb"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, मैं उनका हस्बैंड बोल रहा हूँ, बोलिए।"
+    },
+    {
+     "say": "वो अभी घर पर नहीं हैं।"
+    },
+    {
+     "say": "शाम को मिलेंगी।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "wrong_person_unavailable"
+    ]
+   }
+  },
+  {
+   "id": "CB-12",
+   "reason": "customer_refused_visit",
+   "category": "correction_after_close",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Control: re-dispatch closing then 'theek hai, dhanyavaad' -> outcome stays re-dispatch",
+   "patterns": [
+    "correction_after_close"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मैंने मना नहीं किया था।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "ठीक है, धन्यवाद।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
   }
  ]
 }
