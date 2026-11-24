@@ -177,6 +177,20 @@ class ReplyTTSInterruptedFrame(SystemFrame):
 
 
 @dataclass
+class GreetingPlaybackFrame(TTSStoppedFrame):
+    """Opening-only fence queued after its audio and final packet flush."""
+
+    marker: int = 0
+
+
+@dataclass
+class GreetingPlayedFrame(SystemFrame):
+    """The opening fence left the output queue; far-end hearing is unknown."""
+
+    marker: int = 0
+
+
+@dataclass
 class WorkflowClosingFrame(TTSStoppedFrame):
     """Ordered farewell fence that flushes the transport's final partial PCM.
 

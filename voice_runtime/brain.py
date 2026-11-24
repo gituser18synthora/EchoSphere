@@ -217,6 +217,8 @@ from voice_runtime.endpointing import (
     utterance_looks_complete,
 )
 from voice_runtime.frames import (
+    GreetingPlaybackFrame,
+    GreetingPlayedFrame,
     ReplyMarkerFrame,
     ReplyTTSCompleteFrame,
     ReplyTTSInterruptedFrame,
@@ -1173,6 +1175,13 @@ class ConversationBrain(FrameProcessor):
         self._llm_max_retries: int = int(llm_settings.get("max_retries", 1))
         self._pipeline_started = False
         self._pending_greeting = False
+        self._session_config_sent = False
+        self._opening_locale_ready = False
+        # The first greeting is not a workflow reply. Keep its delivery
+        # evidence across turn resets so a pickup "hello" cannot lose the
+        # company/agent introduction or confirm the caller's identity.
+        self._opening_greeting: dict | None = None
+        self._queuing_opening_greeting = False
         # Platform no-response policy (see voice_runtime.silence_policy): ONE
         # timer, armed when the bot falls quiet with nothing pending, reset by
         # accepted caller speech only. Rejected noise / recording notices
@@ -1573,6 +1582,15 @@ class ConversationBrain(FrameProcessor):
             self._on_reply_tts_interrupted(frame)
             return
 
+        if isinstance(frame, GreetingPlayedFrame):
+            opening = self._opening_greeting
+            if (opening and frame.marker == opening["marker"]
+                    and opening["audio_seen"] and not opening["interrupted"]
+                    and not opening["failed"]):
+                opening["heard"] = True
+                self._recorder.add_event("opening_greeting_heard", marker=frame.marker)
+            return
+
         if isinstance(frame, WorkflowClosingPlayedFrame):
             pending = self._pending_workflow_close
             if pending is not None and frame.token == pending[0] and not self._closing:
@@ -1755,6 +1773,10 @@ class ConversationBrain(FrameProcessor):
                 self._on_reply_interrupted()
             if superseded_unheard:
                 self._supersede_unheard_reply(claimed, gap)
+            # Also cancel a queued greeting before its first audio. Ordinary
+            # barge-in bookkeeping above intentionally applies only to audio
+            # that started, but the pickup collision can precede that frame.
+            self._interrupt_opening_greeting()
             await self._cancel_generation(
                 "late_transcript_merge" if resumed_before_reply
                 else "superseded_by_new_turn" if superseded_unheard
@@ -1868,6 +1890,9 @@ class ConversationBrain(FrameProcessor):
                 await self._discard_held_multiword("stale_new_reply")
             if self._reply_audio_started_at is None:
                 self._reply_audio_started_at = time.monotonic()
+            opening = self._opening_greeting
+            if opening and opening["marker"] == self._reply_marker and not opening["interrupted"]:
+                opening["audio_seen"] = True
             self._disarm_silence_timer()
             self._interrupted_reply = None
             self._latency.mark_bot_started_speaking()
@@ -3679,6 +3704,8 @@ class ConversationBrain(FrameProcessor):
         text = (text_override or " ".join(self._pending_segments)).strip()
         if not text:
             return
+        if self._pickup_hello_pending(text):
+            return
         if self._identifier_payload(text) or self._identifier_confirmation_answer(text):
             # A dictated identifier is consumed deterministically by the
             # active workflow (see _handle_turn) — no Goal Engine request is
@@ -4057,6 +4084,8 @@ class ConversationBrain(FrameProcessor):
                 self._pending_context_clarification = snapshot["context_clarification"]
             if "hearing_probe" in snapshot:
                 self._hearing_probe_pending = snapshot["hearing_probe"]
+            if "opening_greeting" in snapshot:
+                self._opening_greeting = snapshot["opening_greeting"]
             if "workflow_slots" in snapshot:
                 from shared.orchestration.workflow_corrections import CORRECTION_STATE_KEY
                 self._recorder.workflow_slots = snapshot["workflow_slots"]
@@ -4232,7 +4261,14 @@ class ConversationBrain(FrameProcessor):
         if not self._pending_segments:
             return
         generation = self._generation
-        if generation is not None and not generation.done() and self._open_turn_text:
+        pickup_reply_pending = bool(
+            self._open_turn_record is not None
+            and self._open_turn_record.route == "pickup_greeting"
+            and not self._reply_audio_started
+            and self._unheard_reply_merge_window_open()
+        )
+        if (self._open_turn_text and (
+                (generation is not None and not generation.done()) or pickup_reply_pending)):
             # Straggler finals for the utterance we are ALREADY answering (no
             # barge-in happened — the caller is silent and the reply is still
             # generating): cancel it, rewind the partial user turn and run the
@@ -4282,6 +4318,17 @@ class ConversationBrain(FrameProcessor):
             # Restore a fresh fence without generating another question or
             # re-entering a completed workflow for "hello", "hmm", "thanks".
             await self._retain_completed_close(text, audio_started_at)
+            return
+        opening = self._opening_greeting
+        if (self._pickup_hello_pending(text) and not opening["interrupted"]
+                and not opening["failed"] and not opening["heard"]):
+            # No confirmed interruption: keep the original opening task and
+            # delivery markers intact, including a client-notification await
+            # before TTS has been queued. Cancelling it here would leave a
+            # presence-only hello with no greeting left to finish.
+            self._pending_language = None
+            self._smart_turn_closed = False
+            await self._answer_pickup_hello(text, audio_started_at)
             return
         # A real caller turn supersedes whatever reply a barge-in cut: it is
         # answered, not re-spoken.
@@ -4897,18 +4944,26 @@ class ConversationBrain(FrameProcessor):
     async def _push_reply_marker(self) -> None:
         """Tag the reply about to be pushed when its delivery matters.
 
-        Only a reply that speaks for workflow nodes is tracked; prefaces,
+        Workflow-node replies and the opening greeting are tracked; prefaces,
         backchannels and plain chat replies carry no marker. One marker per
         turn: the router answers with ReplyTTSCompleteFrame once the marked
         generation's audio has all been handed to the transport.
         """
-        if not self._reply_nodes or self._reply_marker_pushed:
+        if (not self._reply_nodes and not self._queuing_opening_greeting) or self._reply_marker_pushed:
             return
         self._reply_marker += 1
         self._reply_marker_pushed = True
+        if self._queuing_opening_greeting:
+            self._opening_greeting["marker"] = self._reply_marker
+            # _record_bot_text already resolved placeholders, voice grammar,
+            # and output checks. Recover the actual rendered greeting.
+            self._opening_greeting["text"] = self._last_bot_reply
         await self.push_frame(ReplyMarkerFrame(marker=self._reply_marker))
 
     def _on_reply_tts_complete(self, frame: ReplyTTSCompleteFrame) -> None:
+        opening = self._opening_greeting
+        if opening and frame.marker == opening["marker"] and frame.failed:
+            opening["failed"] = True
         if frame.marker != self._reply_marker or not self._reply_nodes:
             return
         if frame.failed:
@@ -6377,6 +6432,122 @@ class ConversationBrain(FrameProcessor):
             return "deterministic_financial_script"
         return ""
 
+    @staticmethod
+    def _pickup_hello_only(text: str) -> bool:
+        """A pickup salutation only; never an affirmation or business answer."""
+        words = [word for word in re.split(r"[\s.,!?？।॥…:;]+", (text or "").casefold()) if word]
+        salutations = {"hello", "helo", "hallo", "hi", "हेलो", "हैलो", "हलो", "नमस्ते", "नमस्कार"}
+        courtesy = {"ji", "jee", "sir", "madam", "mam", "जी", "सर", "मैडम"}
+        return bool(words and len(words) <= 4 and set(words) <= salutations | courtesy
+                    and any(word in salutations for word in words))
+
+    def _pickup_hello_pending(self, text: str) -> bool:
+        return bool(
+            self._opening_greeting and self._hearing_probe_pending is None
+            and not self._workflow_ever_routed and self._active_workflow is None
+            and not self._identity.confirmed and not self._closing
+            and self._pickup_hello_only(text)
+        )
+
+    def _interrupt_opening_greeting(self) -> None:
+        opening = self._opening_greeting
+        if (not opening or opening["heard"] or opening["interrupted"]
+                or (opening["marker"] is not None and opening["marker"] != self._reply_marker)):
+            return
+        opening["interrupted"] = True
+        opening["played"] = self._reply_played_seconds()
+        self._recorder.add_event(
+            "opening_greeting_interrupted", marker=opening["marker"],
+            played_s=round(opening["played"], 2),
+        )
+
+    async def _say_opening_greeting(self, text: str, *, authored: bool = True,
+                                    recovered: bool = False) -> None:
+        self._prepare_opening_greeting(text, authored=authored, recovered=recovered)
+        self._queuing_opening_greeting = True
+        try:
+            await self._ensure_session_setup()
+            await self._say(text, authored=authored)
+        finally:
+            self._queuing_opening_greeting = False
+        opening = self._opening_greeting
+        if opening and opening["marker"] is not None:
+            # TTS services queue this non-System frame behind all opening
+            # audio; the output observer acknowledges after packet flushing.
+            # Synthesis completion or an inter-sentence BotStopped is not
+            # sufficient delivery evidence.
+            await self.push_frame(GreetingPlaybackFrame(marker=opening["marker"]))
+        else:
+            self._opening_greeting = None
+
+    def _prepare_opening_greeting(self, text: str, *, authored: bool = True,
+                                  recovered: bool = False) -> None:
+        # The authored fallback is available even while session notification
+        # or personalized memory generation is waiting. _say replaces this
+        # with its fully rendered/checked text before its first await.
+        if not (text or "").strip():
+            self._opening_greeting = None
+            return
+        self._opening_greeting = {
+            "marker": None, "text": text, "heard": False, "audio_seen": False,
+            "interrupted": False, "failed": False, "played": 0.0,
+            "recovered": recovered, "authored": authored,
+        }
+
+    async def _answer_pickup_hello(self, text: str, audio_started_at: float | None) -> None:
+        opening = self._opening_greeting
+        self._open_turn_semantic_snapshot = {"text": text, "opening_greeting": dict(opening)}
+        self._turn_counter += 1
+        self._latency.turn_id = self._turn_counter
+        self._turn_reply_queued = False
+        self._turn_speech_plan = None
+        self._naturalness.set_turn_criticality(True, "pickup_greeting")
+        self._discard_decision_prefetch("pickup_greeting")
+        self._discard_extraction_ahead()
+        record = TurnRecord(role="user", text=text, audio_started_at=audio_started_at,
+                            route="pickup_greeting")
+        self._recorder.add_turn(record)
+        self._open_turn_record = record
+        self._history.append({"role": "user", "content": text})
+        del self._history[:-_HISTORY_MAX_TURNS]
+        await self._notify_client({"type": "transcript", "text": text,
+                                   "at": turn_time_iso(time.time())})
+        if not opening["interrupted"] and not opening["failed"] and not opening["heard"]:
+            # A soft hello may miss the turn controller's interruption gate.
+            # The existing opening is still queued/playing: let it finish,
+            # rather than queueing a second identity question behind it.
+            self._recorder.add_event("pickup_hello_answered", opening_continues=True)
+            self._open_turn_text = self._open_turn_record = None
+            return
+        self._begin_reply_tracking()
+        from shared.orchestration.phrases import entry_question
+
+        reply = ""
+        recover = bool((opening["interrupted"] or opening["failed"])
+                       and not opening["heard"] and not opening["recovered"])
+        if recover:
+            reply = opening["text"]
+            # Router sentence byte shares may describe only a synthesized
+            # fragment, not completed sentence playback. Only the ordered
+            # opening fence proves delivery; recover the full rendered
+            # introduction once rather than infer an unheard sentence tail.
+            self._recorder.add_event("opening_greeting_recovered", marker=opening["marker"],
+                                     played_s=round(opening["played"], 2))
+        else:
+            reply = entry_question(opening["text"]) or canned("ack", self._conversation_language)
+            self._recorder.add_event("pickup_hello_answered", opening_heard=opening["heard"],
+                                     recovery_used=opening["recovered"])
+        # Pure hello never reaches the identity rule, workflow capture, or
+        # decision model. One introduction recovery prevents a hello loop.
+        if recover and reply:
+            await self._say_opening_greeting(reply, authored=opening["authored"], recovered=True)
+        else:
+            self._opening_greeting = None
+            await self._ensure_session_setup()
+            await self._say(reply)
+        if self._turn_reply_queued and not self._reply_audio_started:
+            self._open_turn_completed_at = time.monotonic()
+
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
         turn_timestamp = time.time()
@@ -6390,6 +6561,12 @@ class ConversationBrain(FrameProcessor):
                 "text": text, "hearing_probe": self._hearing_probe_pending,
             }
             self._hearing_probe_pending = None
+        if self._pickup_hello_pending(text):
+            await self._answer_pickup_hello(text, audio_started_at)
+            return
+        # The first substantive reply belongs to normal routing. A later
+        # hello in a workflow can never resurrect the initial introduction.
+        self._opening_greeting = None
         completed_followup = (
             self._completed_workflow is not None and self._active_workflow is None
         )
@@ -10302,6 +10479,8 @@ class ConversationBrain(FrameProcessor):
         )
         if not text:
             return None
+        if self._queuing_opening_greeting and self._opening_greeting is not None:
+            self._opening_greeting["text"] = text
         record = await self._record_bot_text(text)
         # Delivery decoration for decision-co-generated replies only: an
         # optional planned preface, and (config-gated, off by default) a rare
@@ -10404,29 +10583,38 @@ class ConversationBrain(FrameProcessor):
         streams (a hardcoded client rate plays 16 kHz audio at 24 kHz — fast,
         pitch-shifted and full of scheduling gaps).
         """
-        if self._client_info:
-            await self._notify_client({"type": "session_config", **self._client_info})
+        # Caller speech can arrive before even the session-config message
+        # finishes sending. Retain the authored opening before any await;
+        # a cancelled memory greeting falls back to this safe introduction.
+        self._prepare_opening_greeting(self._config.greeting)
+        await self._ensure_session_setup()
         # Prime the decision model's prompt cache while the greeting plays:
         # the call's FIRST real decision otherwise pays the cold 2k-token
         # prefix and routinely overran its budget. Background, once per call,
         # never awaited by the pipeline (voice_runtime.brain._run_decision_warmup).
         self._start_decision_warmup()
-        if self._conversation_language != self._config.language:
-            # Language continuity chose a different starting locale: the TTS
-            # router must speak the greeting with that locale's voice.
-            await self.push_frame(
-                SwitchVoiceLanguageFrame(language=self._conversation_language)
-            )
-            await self._notify_client(
-                {"type": "language", "language": self._conversation_language}
-            )
         if self._previous_memory is not None and await self._speak_memory_greeting():
             return
         self._naturalness.set_turn_criticality(
             self._policy is not None,
             "identity_verification" if self._policy is not None else "",
         )
-        await self._say(self._config.greeting)
+        await self._say_opening_greeting(self._config.greeting)
+
+    async def _ensure_session_setup(self) -> None:
+        """Retry cancelled startup setup before any opening/recovery audio."""
+        if self._client_info and not self._session_config_sent:
+            await self._notify_client({"type": "session_config", **self._client_info})
+            self._session_config_sent = True
+        if not self._opening_locale_ready:
+            if self._conversation_language != self._config.language:
+                await self.push_frame(
+                    SwitchVoiceLanguageFrame(language=self._conversation_language)
+                )
+                await self._notify_client(
+                    {"type": "language", "language": self._conversation_language}
+                )
+            self._opening_locale_ready = True
 
     @staticmethod
     def _record_llm_request_options(config, llm, recorder) -> None:
@@ -10602,7 +10790,7 @@ class ConversationBrain(FrameProcessor):
                 self._previous_memory.conversation_id
             ),
         )
-        await self._say(text, authored=False)
+        await self._say_opening_greeting(text, authored=False)
         return True
 
     async def speak_greeting(self) -> None:

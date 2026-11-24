@@ -1,0 +1,3817 @@
+{
+ "version": 1,
+ "bot_id": "bot_450a4f7b4832",
+ "notes": [
+  "Customer utterances are written the way Sarvam STT returns them (Devanagari Hindi, English loanwords often in Devanagari; English sentences in Latin script).",
+  "Utterances derived from real calls are paraphrased; no real customer name, number or address is used. 'source_calls' are conversation IDs for evidence only.",
+  "Text mode (run_text_cases.py) uses only 'say' turns. Voice mode (run_voice_cases.py) also honours timing fields: after=bot_done|bot_start|immediate, delay (s), silence (s), hangup, voice, noise.",
+  "Expectations: outcome_in / outcome_not_in (workflow 'outcome' slot), must_close, open_ok, say_any / say_all / say_none (regex over bot replies after the greeting), max_identity_asks, intro_has (regex over the first business reply), nodes_none."
+ ],
+ "payloads": {
+  "bill_not_available": {
+   "customer_name": "Rahul",
+   "product_name": "Split AC",
+   "rejection_reason": "bill_not_available",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the bill was not available at the time of the technician's visit"
+  },
+  "customer_refused_visit": {
+   "customer_name": "Rohan",
+   "product_name": "Split AC",
+   "rejection_reason": "customer_refused_visit",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the visit was declined when our technician called"
+  },
+  "product_not_delivered": {
+   "customer_name": "Nikhil",
+   "product_name": "Window AC",
+   "rejection_reason": "product_not_delivered",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the product was not delivered when our technician called"
+  },
+  "ecom_damaged_delivery": {
+   "customer_name": "Shivam",
+   "product_name": "Geyser",
+   "rejection_reason": "ecom_damaged_delivery",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the product was delivered in a damaged condition from the e-commerce website"
+  },
+  "refused_to_pay": {
+   "customer_name": "Ankur",
+   "product_name": "Microwave",
+   "rejection_reason": "refused_to_pay",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the payment was refused at the time of the technician's visit"
+  },
+  "unit_ok_no_defect": {
+   "customer_name": "Nakul",
+   "product_name": "Refrigerator",
+   "rejection_reason": "unit_ok_no_defect",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the technician found the unit working fine with no defect"
+  },
+  "not_haier_product": {
+   "customer_name": "Vaibhav",
+   "product_name": "Washing Machine",
+   "rejection_reason": "not_haier_product",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the product is not a Haier product"
+  }
+ },
+ "global_say_none": [
+  "एजेंट से जोड़ा",
+  "connect you with an agent",
+  "[\\u0600-\\u06FF]"
+ ],
+ "cases": [
+  {
+   "id": "BILL-01",
+   "reason": "bill_not_available",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Visit yes, bill not available, ready to pay -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "नहीं, उस समय बिल नहीं था।"
+    },
+    {
+     "say": "नहीं, अभी भी बिल नहीं है।"
+    },
+    {
+     "say": "हाँ, चार्जेस दे दूँगा।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Split AC",
+     "complaint",
+     "bill"
+    ],
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "BILL-02",
+   "reason": "bill_not_available",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Visit yes, bill not available, NOT ready to pay -> cancel (payment declined)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं था।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं, मैं चार्जेस नहीं दूँगा।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_payment_declined"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "BILL-03",
+   "reason": "bill_not_available",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Dispute: bill was available at the visit -> service needed -> re-dispatch",
+   "patterns": [
+    "coverage",
+    "P17"
+   ],
+   "source_calls": [
+    "cv_e5eb4b66e903"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ विज़िट हुई थी।"
+    },
+    {
+     "say": "बिल तो था मेरे पास, मैंने दिखाया भी था।"
+    },
+    {
+     "say": "हाँ सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "say_none": [
+     "charges देने के लिए ready",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "BILL-04",
+   "reason": "bill_not_available",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "I have the bill now (not at the visit) -> no charges question, service -> re-dispatch",
+   "patterns": [
+    "P17"
+   ],
+   "source_calls": [
+    "cv_6f9d8cbf10c7",
+    "cv_6112639d1486"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "उस समय नहीं था, अभी बिल है मेरे पास।"
+    },
+    {
+     "say": "हाँ, अभी मेरे पास बिल है।"
+    },
+    {
+     "say": "हाँ सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई",
+     "dealer से ले सकते"
+    ]
+   }
+  },
+  {
+   "id": "BILL-05",
+   "reason": "bill_not_available",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Technician never came (only a call) -> visit apology -> service yes -> re-dispatch",
+   "patterns": [
+    "P9"
+   ],
+   "source_calls": [
+    "cv_602003f9b619",
+    "cv_f2d07e708cd6"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "कॉल आया था, पर कोई आया नहीं घर पे।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "say_none": [
+     "bill available था\\?"
+    ]
+   }
+  },
+  {
+   "id": "BILL-06",
+   "reason": "bill_not_available",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Why pay, it's under warranty -> warranty-claim path (re-dispatch), never cancel",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [
+    "cv_e5eb4b66e903"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ आया था।"
+    },
+    {
+     "say": "नहीं, उस समय बिल नहीं मिल रहा था।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "चार्जेस क्यों दूँ, मेरा प्रोडक्ट तो वारंटी में है।"
+    },
+    {
+     "say": "हाँ भेज दीजिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "cancel_payment_declined",
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "BILL-07",
+   "reason": "bill_not_available",
+   "category": "no_contact",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "No call or visit at all, service not needed -> cancel",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "नहीं, कोई नहीं आया और ना कोई कॉल आया।"
+    },
+    {
+     "say": "नहीं, अब सर्विस नहीं चाहिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "BILL-08",
+   "reason": "bill_not_available",
+   "category": "timing",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Callback-like reply at the intro must not skip the probes; date within 5 days -> re-dispatch",
+   "patterns": [
+    "P21",
+    "P8"
+   ],
+   "source_calls": [
+    "cv_4ba9fd3f1f28"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, इसी तरह बोलो।"
+    },
+    {
+     "say": "बाद में जो भी चाहिए।"
+    },
+    {
+     "say": "29 तारीख को।"
+    },
+    {
+     "say": "अगले कुछ दिनों में, 29 तारीख को।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "unverified_no_action"
+    ],
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "RV-01",
+   "reason": "customer_refused_visit",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Call yes, refused yes, service needed -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलो।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Split AC",
+     "installation"
+    ]
+   }
+  },
+  {
+   "id": "RV-02",
+   "reason": "customer_refused_visit",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Call yes, refused yes, service NOT needed -> cancel",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "हाँ, मना किया था।"
+    },
+    {
+     "say": "नहीं, रिक्वायरमेंट नहीं है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "RV-03",
+   "reason": "customer_refused_visit",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "I never refused the visit -> PDF says Action 1 (re-dispatch)",
+   "patterns": [
+    "coverage",
+    "P17"
+   ],
+   "source_calls": [
+    "cv_724333d0d2f8",
+    "cv_364f448b16d5"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मैंने मना नहीं किया था, उन्होंने खुद नहीं आए।"
+    },
+    {
+     "say": "हाँ, चाहिए।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "RV-04",
+   "reason": "customer_refused_visit",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "No Haier technician call, only the dealer called -> treat as NO contact (apology), not YES",
+   "patterns": [
+    "P9"
+   ],
+   "source_calls": [
+    "cv_e02255753777"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हायर के टेक्नीशियन की तरफ से नहीं, जहाँ से प्रोडक्ट खरीदा था वहाँ से किसी का कॉल आया था शायद।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "say_none": [
+     "Confirm करने के लिए धन्यवाद। क्या मैं जान सकती हूँ, जब technician ने call किया था"
+    ]
+   }
+  },
+  {
+   "id": "RV-05",
+   "reason": "customer_refused_visit",
+   "category": "timing",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Refused because of renovation, wants installation after ~2 weeks -> 5-day rule: soft deny + cancel (service later)",
+   "patterns": [
+    "P8",
+    "P17"
+   ],
+   "source_calls": [
+    "cv_e02255753777"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "हाँ, रिनोवेशन चल रहा है इसलिए मना किया था, रिनोवेशन के बाद इंस्टॉल करवाएँगे।"
+    },
+    {
+     "say": "दो हफ्ते बाद।"
+    },
+    {
+     "say": "हाँ, दो हफ्ते के बाद ही।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_service_later"
+    ],
+    "outcome_not_in": [
+     "redispatch",
+     "unverified_no_action"
+    ]
+   }
+  },
+  {
+   "id": "RV-06",
+   "reason": "customer_refused_visit",
+   "category": "timing",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Asked technician for Tuesday (within 5 days) -> re-dispatch, no repeated questions",
+   "patterns": [
+    "P17",
+    "P8"
+   ],
+   "source_calls": [
+    "cv_36f7659b6ab3"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "मैम, कॉल आया था हायर की तरफ से। मैंने बस इतना बोला था कि एक दो दिन रुक जाओ, मैं पैनल बनवा रहा हूँ।"
+    },
+    {
+     "say": "नहीं, विज़िट नहीं हुई, मैंने उनको ट्यूसडे के लिए बोला है।"
+    },
+    {
+     "say": "हाँ, ट्यूसडे को भेज दीजिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "max_same_question": 1
+   }
+  },
+  {
+   "id": "RV-07",
+   "reason": "customer_refused_visit",
+   "category": "completed",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Installation already done by self, cancel please -> cancel/close without redundant questions",
+   "patterns": [
+    "P17"
+   ],
+   "source_calls": [
+    "cv_e390939a92c7"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "कॉल आया था लेकिन इंस्टॉलेशन हमने खुद ही करवा लिया, कोई ज़रूरत नहीं है। इंस्टॉलेशन कैंसिल कराइए।"
+    },
+    {
+     "say": "हाँ, सब हो गया है।"
+    },
+    {
+     "say": "लोकल वाले से करवाया था।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service",
+     "close_completed_other",
+     "close_completed"
+    ],
+    "outcome_not_in": [
+     "redispatch",
+     "redispatch_completion"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "ND-01",
+   "reason": "product_not_delivered",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Call yes, product still not delivered -> cancel (not delivered)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "हाँ आया था।"
+    },
+    {
+     "say": "नहीं, अभी तक डिलीवर नहीं हुआ।"
+    },
+    {
+     "say": "ठीक है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_not_delivered"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Window AC",
+     "installation"
+    ]
+   }
+  },
+  {
+   "id": "ND-02",
+   "reason": "product_not_delivered",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Product has been delivered now, installation needed -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, अब डिलीवर हो गया है।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन करवाना है।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "ND-03",
+   "reason": "product_not_delivered",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Customer jumps ahead: 'not delivered yet' as the first answer -> cancel (not delivered), not the no-call apology",
+   "patterns": [
+    "P9",
+    "P17"
+   ],
+   "source_calls": [
+    "cv_97697a98b1ff"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, अभी।"
+    },
+    {
+     "say": "अभी डिलीवर ही नहीं हुआ।"
+    },
+    {
+     "say": "नहीं हुआ अभी।"
+    },
+    {
+     "say": "ठीक है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_not_delivered"
+    ],
+    "say_none": [
+     "कोई call नहीं आया"
+    ]
+   }
+  },
+  {
+   "id": "ND-04",
+   "reason": "product_not_delivered",
+   "category": "completed",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Delivered reply 'ho gaya' must not be read as 'payment ho chuka' and completion must not be assumed",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [
+    "cv_197f101a4de9"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलो।"
+    },
+    {
+     "say": "आया था।"
+    },
+    {
+     "say": "हो गया।"
+    },
+    {
+     "say": "हम्म।"
+    },
+    {
+     "say": "नहीं, अभी इंस्टॉलेशन नहीं हुआ है, करवाना है।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "redispatch_completion",
+     "close_completed"
+    ],
+    "say_none": [
+     "payment हो चुका"
+    ]
+   }
+  },
+  {
+   "id": "ND-05",
+   "reason": "product_not_delivered",
+   "category": "completed",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Delivered and installed, 'warranty chalu kar diya' -> completion path, NOT the warranty-claim re-dispatch",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [
+    "cv_4b418b718cfd"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हो गया।"
+    },
+    {
+     "say": "हाँ सब हो गया, बिल भी दे दिया है, वारंटी चालू कर दी है भाई ने, कोई दिक्कत नहीं है।"
+    },
+    {
+     "say": "हाँ, हायर वाले ने किया था।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "warranty check"
+    ]
+   }
+  },
+  {
+   "id": "ND-06",
+   "reason": "product_not_delivered",
+   "category": "timing",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Delivered, wants installation after one week (next Sunday) -> 5-day rule: soft deny + cancel (service later)",
+   "patterns": [
+    "P8",
+    "P17"
+   ],
+   "source_calls": [
+    "cv_aab4cbded4c1"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ जी, आया था।"
+    },
+    {
+     "say": "हाँ जी, हो गया है।"
+    },
+    {
+     "say": "नहीं, अभी नहीं करवाना। एक वीक के बाद कराना है, मतलब नेक्स्ट संडे को।"
+    },
+    {
+     "say": "नेक्स्ट संडे।"
+    },
+    {
+     "say": "ठीक है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_service_later"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "ND-07",
+   "reason": "product_not_delivered",
+   "category": "timing",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Delivered, 'abhi time lagega' (no date) -> must clarify timing, not re-dispatch straight away",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [
+    "cv_5588f8684a31"
+   ],
+   "turns": [
+    {
+     "say": "हाँ हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ हाँ।"
+    },
+    {
+     "say": "नहीं, अभी नहीं करूँगा।"
+    },
+    {
+     "say": "अभी टाइम लगेगा।"
+    },
+    {
+     "say": "एक महीने बाद।"
+    },
+    {
+     "say": "नहीं, एक महीने बाद ही चाहिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_service_later"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "ND-08",
+   "reason": "product_not_delivered",
+   "category": "no_contact",
+   "priority": "P2",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "No technician call, service wanted -> re-dispatch (PDF) - flow-gap probe: delivery never checked",
+   "patterns": [
+    "GAP-ND"
+   ],
+   "source_calls": [
+    "cv_638fdb9f901a",
+    "cv_3bcbe2e53675"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch",
+     "cancel_not_delivered"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "ECOM-01",
+   "reason": "ecom_damaged_delivery",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Call yes, damaged from e-commerce yes -> cancel + contact e-com site",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "कॉल तो आया था।"
+    },
+    {
+     "say": "हाँ, डैमेज आया था।"
+    },
+    {
+     "say": "हाँ, ठीक है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_ecom_damaged"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Geyser",
+     "installation"
+    ],
+    "say_any": [
+     "E-commerce|e-commerce"
+    ]
+   }
+  },
+  {
+   "id": "ECOM-02",
+   "reason": "ecom_damaged_delivery",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "It is not damaged -> service needed -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "नहीं, गीज़र बिल्कुल सही है, कोई डैमेज नहीं है।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "ECOM-03",
+   "reason": "ecom_damaged_delivery",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Not damaged, but service not needed -> cancel (no service)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं, डैमेज नहीं था।"
+    },
+    {
+     "say": "नहीं, अभी नहीं चाहिए।"
+    },
+    {
+     "say": "दो महीने बाद देखेंगे।"
+    },
+    {
+     "say": "हाँ, बाद में।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service",
+     "cancel_service_later"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "ECOM-04",
+   "reason": "ecom_damaged_delivery",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Replacement already received from the website, installation needed now -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "पहले डैमेज आया था, अब वेबसाइट से रिप्लेस होकर नया आ गया है।"
+    },
+    {
+     "say": "हाँ, नए वाले का इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "cancel_ecom_damaged"
+    ]
+   }
+  },
+  {
+   "id": "ECOM-05",
+   "reason": "ecom_damaged_delivery",
+   "category": "no_contact",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Technician never called; service not required -> cancel",
+   "patterns": [
+    "coverage"
+   ],
+   "source_calls": [
+    "cv_1f1d5604dc25"
+   ],
+   "turns": [
+    {
+     "say": "हाँ हाँ, बोलिए।"
+    },
+    {
+     "say": "नहीं, कल नहीं आया था।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "RTP-01",
+   "reason": "refused_to_pay",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Visit yes, refused payment yes, ready to pay now -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "हाँ, उस समय पेमेंट नहीं किया था।"
+    },
+    {
+     "say": "हाँ, अब दे दूँगा।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Microwave",
+     "complaint"
+    ]
+   }
+  },
+  {
+   "id": "RTP-02",
+   "reason": "refused_to_pay",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Refused payment yes, still not ready to pay -> cancel (payment declined)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ, मना किया था।"
+    },
+    {
+     "say": "नहीं, मैं पैसे नहीं दूँगा।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_payment_declined"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "RTP-03",
+   "reason": "refused_to_pay",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "I never refused, will pay after the work -> service question -> re-dispatch (no cancellation warning)",
+   "patterns": [
+    "P10"
+   ],
+   "source_calls": [
+    "cv_91e1dc9fcd38",
+    "cv_7a43f7effd93"
+   ],
+   "turns": [
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "पेमेंट करने से हम मना क्यों करेंगे? काम करेंगे तो पेमेंट देंगे।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true,
+    "say_none": [
+     "request cancel कर दी जाएगी"
+    ]
+   }
+  },
+  {
+   "id": "RTP-04",
+   "reason": "refused_to_pay",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Why should I pay, it's under warranty -> warranty path (re-dispatch), never payment-declined cancel",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [
+    "cv_ea18157609b6"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ आया था।"
+    },
+    {
+     "say": "हाँ, क्योंकि मेरा प्रोडक्ट वारंटी में है और वो एक्स्ट्रा चार्ज मांग रहे थे।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "cancel_payment_declined"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "RTP-05",
+   "reason": "refused_to_pay",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Already paid but the problem is still there -> must NOT be closed as completion; re-dispatch",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [
+    "cv_4017517f9aa1"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "विज़िट हुई थी और वो पैसे लेके गया 590 रुपये।"
+    },
+    {
+     "say": "नहीं मैडम, पैसे दे दिए थे 590 रुपये।"
+    },
+    {
+     "say": "नहीं, माइक्रोवेव तो अभी भी ठीक नहीं हुआ।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "redispatch_completion",
+     "close_completed"
+    ]
+   }
+  },
+  {
+   "id": "RTP-06",
+   "reason": "refused_to_pay",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Cannot afford quoted 900 but wants service -> follow SOP (ready to pay? no -> cancel) without looping",
+   "patterns": [
+    "P19"
+   ],
+   "source_calls": [
+    "cv_5709a9b1ac23"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ आए थे।"
+    },
+    {
+     "say": "हाँ, वो 900 रुपये मांग रहे थे, इतने पैसे नहीं हैं मेरे पास।"
+    },
+    {
+     "say": "सर्विस तो चाहिए मगर 900 रुपये नहीं दे पाऊँगा।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_payment_declined",
+     "unverified_no_action"
+    ],
+    "max_bot_turns": 7
+   }
+  },
+  {
+   "id": "RTP-07",
+   "reason": "refused_to_pay",
+   "category": "no_contact",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Nobody came; no longer wants service after 2 months -> cancel (no re-dispatch)",
+   "patterns": [
+    "P1"
+   ],
+   "source_calls": [
+    "cv_fd6aa230d024"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "कोई भी नहीं आया यहाँ तो।"
+    },
+    {
+     "say": "नहीं, अब तो मुझे करानी ही नहीं है, दो महीने हो चुके हैं, कोई आने को तैयार ही नहीं होता।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "UOK-01",
+   "reason": "unit_ok_no_defect",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Problem resolved on its own -> cancel (resolved)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं, अब कोई प्रॉब्लम नहीं है।"
+    },
+    {
+     "say": "अपने आप ठीक हो गया।"
+    },
+    {
+     "say": "अपने आप ठीक हुआ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_resolved"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Refrigerator",
+     "complaint"
+    ]
+   }
+  },
+  {
+   "id": "UOK-02",
+   "reason": "unit_ok_no_defect",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Resolved by the Haier technician -> thank + completion",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ आए थे।"
+    },
+    {
+     "say": "नहीं, अब ठीक चल रहा है।"
+    },
+    {
+     "say": "हायर के टेक्नीशियन ने ठीक किया था।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "UOK-03",
+   "reason": "unit_ok_no_defect",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Problem is still there -> apology -> explicit 'haan badha dijiye' consent must be accepted -> re-dispatch",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [
+    "cv_f5293164ece8",
+    "cv_57e1406da2f2"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ हुई थी।"
+    },
+    {
+     "say": "हाँ, प्रॉब्लम है, कूलिंग नहीं हो रही।"
+    },
+    {
+     "say": "हाँ, बढ़ा दीजिए।"
+    },
+    {
+     "say": "हाँ, बढ़ा दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "unverified_no_action"
+    ],
+    "must_close": true,
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई",
+     "status check"
+    ]
+   }
+  },
+  {
+   "id": "UOK-04",
+   "reason": "unit_ok_no_defect",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Technician's report is wrong, machine still not running -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "source_calls": [
+    "cv_3c52dfdbe0ac"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "नहीं, कोई प्रॉब्लम ठीक नहीं हुई, अभी भी मशीन बंद है, टेक्नीशियन ने गलत रिपोर्ट दी है।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "UOK-05",
+   "reason": "unit_ok_no_defect",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Customer says it was an installation request, no problem -> service/installation needed -> re-dispatch",
+   "patterns": [
+    "P11"
+   ],
+   "source_calls": [
+    "cv_a5485fc44457"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "विज़िट हुई थी।"
+    },
+    {
+     "say": "There was no problem. It was installation required."
+    },
+    {
+     "say": "Yes, installation is still pending."
+    },
+    {
+     "say": "Yes, please."
+    },
+    {
+     "say": "Yes, go ahead."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "cancel_resolved",
+     "redispatch_completion"
+    ]
+   }
+  },
+  {
+   "id": "UOK-06",
+   "reason": "unit_ok_no_defect",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Not fixed yet - no redundant 'is it fixed now?' clarification",
+   "patterns": [
+    "P17"
+   ],
+   "source_calls": [
+    "cv_f5dee68768c3",
+    "cv_57e1406da2f2"
+   ],
+   "turns": [
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "अभी नहीं हुई है ठीक।"
+    },
+    {
+     "say": "हाँ सेंड कर दीजिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "issue अब ठीक हो गया है\\?"
+    ]
+   }
+  },
+  {
+   "id": "UOK-07",
+   "reason": "unit_ok_no_defect",
+   "category": "unclear",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Resolved, but caller does not know who fixed it -> must not assume Haier or auto",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [
+    "cv_c72c3346b3e9"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, अब ठीक है।"
+    },
+    {
+     "say": "पता नहीं, मैं घर पर नहीं था।"
+    },
+    {
+     "say": "पता नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch_completion"
+    ]
+   }
+  },
+  {
+   "id": "UOK-08",
+   "reason": "unit_ok_no_defect",
+   "category": "no_contact",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Wife picks up; visit happened 10 days ago, then nothing -> no false 'no visit' apology, no cancellation from 'nahi hui hai'",
+   "patterns": [
+    "P9",
+    "P4",
+    "P14"
+   ],
+   "source_calls": [
+    "cv_14425a59bfbd"
+   ],
+   "turns": [
+    {
+     "say": "जी, मैं उनकी वाइफ बोल रही हूँ, बताइए।"
+    },
+    {
+     "say": "मैम, दस दिन पहले विज़िट हुई थी, उसके बाद कोई नहीं आया। हमने दोबारा एप्लीकेशन डाली थी।"
+    },
+    {
+     "say": "प्रॉब्लम अभी भी है।"
+    },
+    {
+     "say": "हाँ चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "cancel_no_service",
+     "cancel_resolved"
+    ],
+    "say_none": [
+     "कोई भी call या visit नहीं हुई"
+    ]
+   }
+  },
+  {
+   "id": "NHP-01",
+   "reason": "not_haier_product",
+   "category": "agree",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Call yes, no Haier product -> cancel (not Haier)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मेरे पास हायर का कोई प्रोडक्ट नहीं है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_not_haier_product"
+    ],
+    "must_close": true,
+    "intro_has": [
+     "Washing Machine",
+     "complaint",
+     "Haier का नहीं"
+    ]
+   }
+  },
+  {
+   "id": "NHP-02",
+   "reason": "not_haier_product",
+   "category": "dispute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "It IS a Haier product, service needed -> re-dispatch",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ विज़िट हुई थी।"
+    },
+    {
+     "say": "हाँ जी, हायर का ही है, बिल भी है।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "NHP-03",
+   "reason": "not_haier_product",
+   "category": "dispute",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Haier product yes, service not needed -> cancel (no service)",
+   "patterns": [
+    "coverage"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ आया था।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं चाहिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "NHP-04",
+   "reason": "not_haier_product",
+   "category": "split_answer",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Answer starts with 'nahi' but continues 'Haier ka hi hai, do din mein bhej do' -> never cancel",
+   "patterns": [
+    "P4",
+    "P30"
+   ],
+   "source_calls": [
+    "cv_64cb5c7f65c5"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, बोलो।"
+    },
+    {
+     "say": "कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मेरे पास हायर का ही है, बाद में दो दिन में भेज दो।"
+    },
+    {
+     "say": "दो दिन में।"
+    },
+    {
+     "say": "अगले कुछ दिनों में।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "cancel_not_haier_product"
+    ]
+   }
+  },
+  {
+   "id": "NHP-05",
+   "reason": "not_haier_product",
+   "category": "busy",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Abhi aapko call karunga' at the intro -> busy/callback handling, NOT installation scheduling that skips the probes",
+   "patterns": [
+    "P21"
+   ],
+   "source_calls": [
+    "cv_f45eb3020c04"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "अभी आपको कॉल करूँगा।"
+    },
+    {
+     "say": "परसों।"
+    },
+    {
+     "say": "हाँ, बढ़ा दीजिए।"
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "installation या visit के लिए लगभग कब available",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "SVC-01",
+   "reason": "customer_refused_visit",
+   "category": "service_no",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "'Nahi, abhi requirement nahi hai' at the service question -> cancel, never re-dispatch",
+   "patterns": [
+    "P1"
+   ],
+   "source_calls": [
+    "cv_aae81d8367ad"
+   ],
+   "turns": [
+    {
+     "say": "हाँ हो रही है, बोलिए।"
+    },
+    {
+     "say": "विज़िट हुई थी, आपका बंदा आया था।"
+    },
+    {
+     "say": "हाँ मना किया था।"
+    },
+    {
+     "say": "नहीं, अभी रिक्वायरमेंट नहीं है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service",
+     "cancel_service_later"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "SVC-02",
+   "reason": "product_not_delivered",
+   "category": "service_no",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Abhi to product mil gaya hai. No.' at the service question -> no re-dispatch",
+   "patterns": [
+    "P1"
+   ],
+   "source_calls": [
+    "cv_fed2f472385e"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "हो गया।"
+    },
+    {
+     "say": "नहीं, हाँ कुछ कर लिया, हो गया।"
+    },
+    {
+     "say": "अभी तो प्रोडक्ट मिल गया है। No."
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "SVC-03",
+   "reason": "unit_ok_no_defect",
+   "category": "change_answer",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Customer changes answer: service yes, then 'nahi nahi, abhi nahi chahiye' -> follow the latest answer",
+   "patterns": [
+    "CB-CHANGE"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "नहीं, कोई नहीं आया।"
+    },
+    {
+     "say": "हाँ चाहिए... नहीं नहीं, अभी नहीं चाहिए।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CNS-01",
+   "reason": "unit_ok_no_defect",
+   "category": "consent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Hello?' at the re-dispatch confirmation is not consent",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_8616aad3e12c",
+    "cv_364f448b16d5"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "हाँ, प्रॉब्लम है।"
+    },
+    {
+     "say": "हेलो?"
+    },
+    {
+     "say": "हेलो।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CNS-02",
+   "reason": "unit_ok_no_defect",
+   "category": "consent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Hmm' at the re-dispatch confirmation is not consent",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_cf6e3e70add7"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "हाँ, प्रॉब्लम है।"
+    },
+    {
+     "say": "हम्म।"
+    },
+    {
+     "say": "हम्म।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CNS-03",
+   "reason": "refused_to_pay",
+   "category": "consent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Silence at the re-dispatch confirmation -> hearing check -> 'haan' answers the hearing check, not consent",
+   "patterns": [
+    "P2",
+    "P34"
+   ],
+   "source_calls": [
+    "cv_3bcbe2e53675",
+    "cv_fd6aa230d024",
+    "cv_91e1dc9fcd38"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "कोई भी नहीं आया यहाँ तो।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "silence": 9.0
+    },
+    {
+     "say": "हाँ।",
+     "after": "bot_done",
+     "delay": 0.4
+    },
+    {
+     "say": "हाँ।",
+     "after": "bot_done",
+     "delay": 0.6
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CNS-04",
+   "reason": "bill_not_available",
+   "category": "consent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "'Haan kar dijiye' (complete consent) must not trigger a second confirmation",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [
+    "cv_c485f6c330a8",
+    "cv_d566bd0fe726"
+   ],
+   "turns": [
+    {
+     "say": "बोलो।"
+    },
+    {
+     "say": "हाँ बोलो।"
+    },
+    {
+     "say": "हाँ, हुई थी।"
+    },
+    {
+     "say": "नहीं, नहीं था, मेरा बिल खो गया है।"
+    },
+    {
+     "say": "नहीं नहीं, उससे मेरी बात नहीं होती।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "unverified_no_action"
+    ],
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "ID-01",
+   "reason": "refused_to_pay",
+   "category": "identity",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Hello, haan ji' confirms identity - no second identity question",
+   "patterns": [
+    "P12"
+   ],
+   "source_calls": [
+    "cv_364f448b16d5",
+    "cv_56afaad29fce",
+    "cv_ce11beeb04eb"
+   ],
+   "turns": [
+    {
+     "say": "हैलो, हाँ जी।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं, मैंने मना नहीं किया।"
+    },
+    {
+     "say": "हाँ चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "max_identity_asks": 0,
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "ID-02",
+   "reason": "not_haier_product",
+   "category": "identity",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Three non-answers ('hello') must not lead to disclosing the request without identity",
+   "patterns": [
+    "P13"
+   ],
+   "source_calls": [
+    "cv_09a5e232b903",
+    "cv_9a9ae6128c70"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हेलो।"
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "request के regarding है"
+    ]
+   }
+  },
+  {
+   "id": "ID-03",
+   "reason": "unit_ok_no_defect",
+   "category": "identity",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "'Boliye kya kaam hai?' is not an identity confirmation - ask again before disclosure",
+   "patterns": [
+    "P13"
+   ],
+   "source_calls": [
+    "cv_8616aad3e12c"
+   ],
+   "turns": [
+    {
+     "say": "बोलिए क्या काम है?"
+    },
+    {
+     "say": "हाँ, मैं ही बोल रहा हूँ।"
+    },
+    {
+     "say": "हाँ विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं, अब ठीक है।"
+    },
+    {
+     "say": "अपने आप ठीक हो गया।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_resolved"
+    ]
+   }
+  },
+  {
+   "id": "ID-04",
+   "reason": "customer_refused_visit",
+   "category": "wrong_person",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Husband picks up ('main unka husband bol raha hoon') -> no business questions to a third party",
+   "patterns": [
+    "P14"
+   ],
+   "source_calls": [
+    "cv_e02255753777"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, मैं उनका हस्बैंड बोल रहा हूँ, बोलिए।"
+    },
+    {
+     "say": "वो अभी घर पर नहीं हैं।"
+    },
+    {
+     "say": "शाम को मिलेंगी।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "wrong_person_unavailable"
+    ],
+    "say_none": [
+     "request के regarding है"
+    ]
+   }
+  },
+  {
+   "id": "ID-05",
+   "reason": "bill_not_available",
+   "category": "wrong_person",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Wrong number -> apologise and end, no disclosure",
+   "patterns": [
+    "P14"
+   ],
+   "turns": [
+    {
+     "say": "नहीं, आपने गलत नंबर लगाया है, यहाँ कोई राहुल नहीं है।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "request के regarding है"
+    ],
+    "outcome_in": [
+     "wrong_person_unavailable",
+     "wrong_person_no_haier_product",
+     "wrong_person_no_request"
+    ]
+   }
+  },
+  {
+   "id": "ID-06",
+   "reason": "unit_ok_no_defect",
+   "category": "angry",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Angry refusal during identity ('nahi chahiye, product theek ho gaya') -> no identity loop",
+   "patterns": [
+    "P20",
+    "P12"
+   ],
+   "source_calls": [
+    "cv_6c7097c0b357"
+   ],
+   "turns": [
+    {
+     "say": "आप कहाँ से बात कर रहे हैं?"
+    },
+    {
+     "say": "नहीं चाहिए हायर कस्टमर वगैरह कुछ भी भैया, कितनी बार बोलूँ नहीं चाहिए, मेरा प्रोडक्ट ठीक हो गया है।"
+    }
+   ],
+   "expect": {
+    "max_identity_asks": 1,
+    "say_any": [
+     "माफ़ी|असुविधा|sorry|Sorry"
+    ]
+   }
+  },
+  {
+   "id": "CB-01",
+   "reason": "refused_to_pay",
+   "category": "repeat_request",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Caller asks to repeat ('kya? dobara boliye') -> bot repeats the pending question and continues",
+   "patterns": [
+    "CB-REPEAT"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "क्या? फिर से बोलिए।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "हाँ, पेमेंट नहीं किया था।"
+    },
+    {
+     "say": "हाँ, अब दे दूँगा।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CB-02",
+   "reason": "unit_ok_no_defect",
+   "category": "language",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Customer speaks only English -> bot switches to English and completes; payload spoken correctly",
+   "patterns": [
+    "CB-LANG",
+    "P25"
+   ],
+   "turns": [
+    {
+     "say": "Yes, speaking."
+    },
+    {
+     "say": "Yes, the technician visited."
+    },
+    {
+     "say": "The fridge is still not cooling, the problem is still there."
+    },
+    {
+     "say": "Yes, please send the technician again."
+    },
+    {
+     "say": "Yes, go ahead."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_any": [
+     "Refrigerator"
+    ]
+   }
+  },
+  {
+   "id": "CB-03",
+   "reason": "ecom_damaged_delivery",
+   "category": "language",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Hinglish switch mid-call (English sentence then Hindi) -> no broken language mix",
+   "patterns": [
+    "CB-LANG",
+    "P25"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "Yes, the technician had called me."
+    },
+    {
+     "say": "हाँ, डैमेज आया था बॉक्स।"
+    },
+    {
+     "say": "ठीक है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_ecom_damaged"
+    ]
+   }
+  },
+  {
+   "id": "CB-04",
+   "reason": "not_haier_product",
+   "category": "angry",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Repeated-calls complaint -> short apology + resume question (no full intro repeat)",
+   "patterns": [
+    "P18"
+   ],
+   "source_calls": [
+    "cv_06b1549f06e5",
+    "cv_8aea4a1d7527"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "क्या बार-बार आप लोग कॉल कर रहे हो? क्या कर रहे हो?"
+    },
+    {
+     "say": "हाँ, कॉल आई थी।"
+    },
+    {
+     "say": "नहीं, मेरे पास हायर का कोई प्रोडक्ट नहीं है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_not_haier_product"
+    ],
+    "max_intro_repeats": 1
+   }
+  },
+  {
+   "id": "CB-05",
+   "reason": "unit_ok_no_defect",
+   "category": "agent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Caller asks for a human agent -> no false transfer promise; offers to continue/note",
+   "patterns": [
+    "CB-AGENT"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "मुझे किसी इंसान से बात करनी है, एजेंट से बात कराओ।"
+    },
+    {
+     "say": "ठीक है, हाँ विज़िट हुई थी।"
+    },
+    {
+     "say": "प्रॉब्लम अभी भी है।"
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "जोड़ रही हूँ",
+     "transfer कर",
+     "connect कर रही"
+    ],
+    "say_any": [
+     "एजेंट|agent|इंसान|transfer|मदद कर"
+    ]
+   }
+  },
+  {
+   "id": "CB-06",
+   "reason": "refused_to_pay",
+   "category": "off_topic",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Off-topic question (new product price) -> brief redirect, resumes pending question",
+   "patterns": [
+    "CB-OFFTOPIC"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हायर का नया डबल डोर फ्रिज कितने का है?"
+    },
+    {
+     "say": "अच्छा ठीक है। हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं, मना नहीं किया था।"
+    },
+    {
+     "say": "हाँ चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CB-07",
+   "reason": "customer_refused_visit",
+   "category": "busy",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "'Abhi busy hoon, baad mein call karna' right after identity -> polite close, no scheduling questions, no cancellation",
+   "patterns": [
+    "P21"
+   ],
+   "source_calls": [
+    "cv_70a1f4e5c4d2",
+    "cv_9258553fb5bc"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, मैं ही हूँ, पर अभी बिज़ी हूँ, बाद में कॉल करना।"
+    },
+    {
+     "say": "शाम को कर लेना।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "cancel_no_service",
+     "cancel_service_later",
+     "redispatch"
+    ],
+    "say_none": [
+     "installation या visit के लिए लगभग कब available",
+     "request के regarding है"
+    ]
+   }
+  },
+  {
+   "id": "CB-08",
+   "reason": "bill_not_available",
+   "category": "question",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "'Kya dikkat hai? / why was it rejected?' -> bot explains the recorded reason, then resumes",
+   "patterns": [
+    "P19"
+   ],
+   "source_calls": [
+    "cv_cf6e3e70add7",
+    "cv_f5dee68768c3"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "मतलब किस चीज़ के लिए? रिजेक्ट क्यों हुई?"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं, बिल नहीं था।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ दे दूँगा।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "bill"
+    ],
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CB-09",
+   "reason": "unit_ok_no_defect",
+   "category": "question",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "'Technician kab aayega?' after consent -> sets expectation (team will call soon), does not loop",
+   "patterns": [
+    "P19"
+   ],
+   "source_calls": [
+    "cv_57e1406da2f2",
+    "cv_bf2f1b318baa"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "हाँ, कूलिंग नहीं हो रही है।"
+    },
+    {
+     "say": "नहीं, ठीक नहीं हुआ, कूलिंग नहीं हो रही।"
+    },
+    {
+     "say": "हाँ, लेकिन कब तक आएँगे?"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CB-10",
+   "reason": "refused_to_pay",
+   "category": "one_word",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "One-word answers throughout (haan / nahi) -> normal completion",
+   "patterns": [
+    "CB-ONEWORD"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "VX-01",
+   "reason": "unit_ok_no_defect",
+   "category": "pickup_hello",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller says 'Hello?' at pickup over the greeting -> company/agent introduction still heard once; identity asked once",
+   "patterns": [
+    "P16"
+   ],
+   "source_calls": [
+    "cv_f5293164ece8",
+    "cv_64cb5c7f65c5"
+   ],
+   "turns": [
+    {
+     "say": "हेलो?",
+     "after": "bot_start",
+     "delay": 0.8
+    },
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, आए थे।"
+    },
+    {
+     "say": "नहीं, अब कोई प्रॉब्लम नहीं है।"
+    },
+    {
+     "say": "अपने आप ठीक हो गया।"
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "Haier Customer Care"
+    ],
+    "outcome_in": [
+     "cancel_resolved"
+    ]
+   }
+  },
+  {
+   "id": "VX-02",
+   "reason": "product_not_delivered",
+   "category": "interrupt",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller interrupts the intro with the answer ('haan call aaya tha, deliver ho gaya') -> no answer-to-unheard-question, intro reason still conveyed",
+   "patterns": [
+    "P31",
+    "P15"
+   ],
+   "source_calls": [
+    "cv_9a9ae6128c70",
+    "cv_0978030e285b"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था, प्रोडक्ट डिलीवर हो गया है।",
+     "after": "bot_start",
+     "delay": 6.0
+    },
+    {
+     "say": "हाँ, डिलीवर हो गया है।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन करवाना है।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "VX-03",
+   "reason": "not_haier_product",
+   "category": "split_answer",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Answer with a mid-sentence pause ('Nahi, mere paas...' 1.2 s '...Haier ka hi hai') -> no cancellation on the fragment",
+   "patterns": [
+    "P4",
+    "P30"
+   ],
+   "source_calls": [
+    "cv_64cb5c7f65c5"
+   ],
+   "turns": [
+    {
+     "say": "हाँ, बोलो।"
+    },
+    {
+     "say": "कॉल आया था।"
+    },
+    {
+     "say": "नहीं, मेरे पास।"
+    },
+    {
+     "say": "हायर का ही है, दो दिन में भेज दो।",
+     "after": "immediate",
+     "delay": 1.2
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "cancel_not_haier_product"
+    ]
+   }
+  },
+  {
+   "id": "VX-04",
+   "reason": "bill_not_available",
+   "category": "long_answer",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Long multi-sentence answer with pauses -> no long dead air (late-merge cancellations), sensible next question",
+   "patterns": [
+    "P28"
+   ],
+   "source_calls": [
+    "cv_70a1f4e5c4d2",
+    "cv_14ef6fbfcb1b"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "देखिए, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "उस टाइम बिल नहीं मिल रहा था।",
+     "after": "immediate",
+     "delay": 0.9
+    },
+    {
+     "say": "अब मिल गया है, अभी मेरे पास है।",
+     "after": "immediate",
+     "delay": 0.9
+    },
+    {
+     "say": "हाँ सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "max_dead_air_s": 6.0
+   }
+  },
+  {
+   "id": "VX-05",
+   "reason": "customer_refused_visit",
+   "category": "silence",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller goes silent after identity -> silence prompts then polite end; no business outcome recorded",
+   "patterns": [
+    "P34"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "silence": 40.0
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch",
+     "cancel_no_service"
+    ]
+   }
+  },
+  {
+   "id": "VX-06",
+   "reason": "refused_to_pay",
+   "category": "hangup",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller hangs up during the intro -> call ends cleanly, no outcome",
+   "patterns": [
+    "CB-HANGUP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 4.0
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "redispatch",
+     "cancel_no_service",
+     "cancel_payment_declined"
+    ]
+   }
+  },
+  {
+   "id": "VX-07",
+   "reason": "ecom_damaged_delivery",
+   "category": "noise",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Background TV noise during answers -> still understood",
+   "patterns": [
+    "CB-NOISE"
+   ],
+   "source_calls": [
+    "cv_ba893a873cff"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।",
+     "noise": "babble"
+    },
+    {
+     "say": "हाँ कॉल आया था।",
+     "noise": "babble"
+    },
+    {
+     "say": "हाँ, डैमेज आया था।",
+     "noise": "babble"
+    },
+    {
+     "say": "ठीक है।",
+     "noise": "babble"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_ecom_damaged"
+    ]
+   }
+  },
+  {
+   "id": "VX-08",
+   "reason": "bill_not_available",
+   "category": "correction_after_close",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Customer corrects after the cancel closing ('nahi nahi, mujhe service chahiye') -> outcome must not stay a plain cancel",
+   "patterns": [
+    "P7"
+   ],
+   "source_calls": [
+    "cv_e5eb4b66e903",
+    "cv_14425a59bfbd",
+    "cv_f2d07e708cd6"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, विज़िट हुई थी।"
+    },
+    {
+     "say": "नहीं था।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं नहीं, रुकिए, मैं चार्जेस दे दूँगा, मुझे सर्विस चाहिए।",
+     "after": "bot_start",
+     "delay": 3.0
+    },
+    {
+     "say": "हाँ, भेज दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_not_in": [
+     "cancel_payment_declined"
+    ],
+    "note": "Pass = outcome corrected to redispatch OR flagged as contested (disposition not Cancel WO)."
+   }
+  },
+  {
+   "id": "VX-09",
+   "reason": "unit_ok_no_defect",
+   "category": "consent",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Explicit consent 'haan badha dijiye' over the telephony path -> re-dispatch (demo regression cv_f5293164ece8)",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [
+    "cv_f5293164ece8",
+    "cv_f45eb3020c04"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ हुई थी।"
+    },
+    {
+     "say": "हाँ, प्रॉब्लम है।"
+    },
+    {
+     "say": "हाँ, बढ़ा दीजिए।"
+    },
+    {
+     "say": "हाँ, बढ़ा दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VX-10",
+   "reason": "customer_refused_visit",
+   "category": "early_answer",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Early 'haan' during the greeting, then silence -> bot must not sit silent; identity re-asked quickly",
+   "patterns": [
+    "P29"
+   ],
+   "source_calls": [
+    "cv_1a2ad5c9ab3e",
+    "cv_bbafe75c7446"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।",
+     "after": "bot_start",
+     "delay": 1.5
+    },
+    {
+     "silence": 12.0
+    },
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ कॉल आया था।"
+    },
+    {
+     "say": "हाँ मना किया था।"
+    },
+    {
+     "say": "नहीं, अभी नहीं चाहिए।"
+    }
+   ],
+   "expect": {
+    "max_dead_air_s": 7.0
+   }
+  },
+  {
+   "id": "STEP-01",
+   "reason": "unit_ok_no_defect",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "Unit OK: 'nahi, koi nahi aaya' (no call, no visit) -> apology + service question; must not crash with the 30-step budget",
+   "patterns": [
+    "STEP"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "नहीं, कोई नहीं आया।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "STEP-02",
+   "reason": "unit_ok_no_defect",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Unit OK: 'koi call nahi aaya' -> call apology",
+   "patterns": [
+    "STEP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "नहीं, कोई कॉल नहीं आया।"
+    },
+    {
+     "say": "नहीं, अब नहीं चाहिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "STEP-03",
+   "reason": "unit_ok_no_defect",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Unit OK: 'call aaya tha par visit nahi hui' -> visit apology",
+   "patterns": [
+    "STEP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "कॉल आया था पर विज़िट नहीं हुई।"
+    },
+    {
+     "say": "हाँ चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "STEP-04",
+   "reason": "unit_ok_no_defect",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Unit OK: bare 'nahi' to the contact question",
+   "patterns": [
+    "STEP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "STEP-05",
+   "reason": "bill_not_available",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Bill: has the bill now, but service NOT needed -> cancel; must not crash (36-step path)",
+   "patterns": [
+    "STEP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "उस समय नहीं था, अभी बिल है मेरे पास।"
+    },
+    {
+     "say": "नहीं, अब सर्विस नहीं चाहिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "STEP-06",
+   "reason": "unit_ok_no_defect",
+   "category": "step_budget",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Unit OK: unclear contact answer then 'nahi' at the contact clarify (34-step path)",
+   "patterns": [
+    "STEP"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "पता नहीं, शायद घर पे किसी से बात हुई हो।"
+    },
+    {
+     "say": "नहीं, कोई नहीं आया।"
+    },
+    {
+     "say": "हाँ चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "BILL-09",
+   "reason": "bill_not_available",
+   "category": "misroute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "At 'kya ab bill available hai?' the answer 'nahi, par charges de dunga' must lead to charges/re-dispatch, never 'aapne payment kar diya hai'",
+   "patterns": [
+    "P5",
+    "NEW-BILLSTATE"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "नहीं, उस समय बिल नहीं था।"
+    },
+    {
+     "say": "नहीं, पर मैं चार्जेस दे दूँगा।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "outcome_not_in": [
+     "redispatch_completion",
+     "close_completed"
+    ],
+    "say_none": [
+     "payment कर दिया है",
+     "payment हो चुका"
+    ]
+   }
+  },
+  {
+   "id": "BILL-10",
+   "reason": "bill_not_available",
+   "category": "misroute",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text",
+    "voice"
+   ],
+   "title": "At 'kya ab bill available hai?' a plain 'haan' must not be read as 'payment kar diya'",
+   "patterns": [
+    "NEW-BILLSTATE"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ, टेक्नीशियन आया था।"
+    },
+    {
+     "say": "नहीं, उस समय बिल नहीं मिल रहा था।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "payment कर दिया है",
+     "payment हो चुका"
+    ]
+   }
+  },
+  {
+   "id": "RV-08",
+   "reason": "customer_refused_visit",
+   "category": "completed",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "Technician already came and demonstrated the machine (installation done) -> no 'koi call nahi aaya' apology, no re-dispatch",
+   "patterns": [
+    "P9",
+    "P2"
+   ],
+   "source_calls": [
+    "cv_8616aad3e12c"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, मैं ही बोल रहा हूँ।"
+    },
+    {
+     "say": "कोई टेक्नीशियन आ गया था। रोज़ फोन आता है, मैं रोज़ बोलता हूँ कि टेक्नीशियन आ गया। डेमो में दिखा के चला गया, अभी तक पानी से वॉश नहीं किया है हमने।"
+    },
+    {
+     "say": "हाँ, इंस्टॉलेशन हो गया है।"
+    },
+    {
+     "say": "हायर वाले ने किया था।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion",
+     "close_completed",
+     "close_completed_other"
+    ],
+    "outcome_not_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "कोई call नहीं आया",
+     "कोई भी call या visit नहीं हुई"
+    ]
+   }
+  },
+  {
+   "id": "ID-07",
+   "reason": "customer_refused_visit",
+   "category": "identity",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'Boliye kya kaam hai? Haan main hi bol raha hoon' confirms identity - no re-ask",
+   "patterns": [
+    "P12",
+    "NEW-IDGATE"
+   ],
+   "source_calls": [
+    "cv_8616aad3e12c"
+   ],
+   "turns": [
+    {
+     "say": "बोलिए क्या काम है? हाँ मैं ही बोल रहा हूँ।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, मना किया था।"
+    },
+    {
+     "say": "हाँ, अब चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "max_identity_asks": 0,
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  }
+ ]
+}
