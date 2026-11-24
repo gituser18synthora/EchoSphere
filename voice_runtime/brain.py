@@ -1411,6 +1411,9 @@ class ConversationBrain(FrameProcessor):
         self._terminal_outcome_slots: set[str] = set()
         self._open_turn_semantic_snapshot: dict | None = None
         self._claimed_semantic_snapshots: dict[int, dict] = {}
+        # A clarification of the caller's question temporarily owns the next
+        # answer. It must never be consumed as consent at the paused graph.
+        self._pending_context_clarification: dict | None = None
         # A transfer control has been queued/sent for this call: the normal
         # bot-close path must NOT run (FreeSWITCH owns the call's fate from
         # here — bridge or hangup), and a second transfer is never queued.
@@ -1855,6 +1858,10 @@ class ConversationBrain(FrameProcessor):
                 # markers stay for the straggler-final merge.)
                 self._open_turn_text = self._open_turn_record = None
                 self._open_turn_workflow = None
+            if self._last_buffered_final is not None:
+                # A new audible reply is a question boundary. The previous
+                # caller episode may no longer admit an overlapping tail.
+                self._last_buffered_final["caller_confirmed"] = False
             if self._held_multiword:
                 # A new reply is starting (a silence prompt, a workflow step):
                 # speech held from the previous reply is stale now.
@@ -2049,8 +2056,47 @@ class ConversationBrain(FrameProcessor):
             # ticks for bursts too short to open a user turn.
             "serial": self._speech_start_serial,
             "gate_serial": gate_serial,
+            "vad_episode": self._vad_episode,
             "at": time.monotonic(),
         }
+
+    def _confirmed_buffer_continuation(self, provenance: dict) -> bool:
+        """A trailing final of the caller turn already in the buffer.
+
+        A barge-in flush can land during speech, followed by turn-close and
+        then its trailing final. The audio snapshot still correctly says
+        that this speech overlapped the bot; that does not make the tail
+        unconfirmed background speech. Keep the exemption restricted to the
+        same observed speech episode, before any reply starts and inside the
+        normal late-final window. An unconfirmed held segment alone can never
+        establish this proof.
+        """
+        previous = self._last_buffered_final
+        closed_at = self._last_turn_closed_at
+        if (
+            self._bot_speaking
+            or self._physical_speech_active
+            or not self._pending_segments
+            or previous is None
+            or not previous.get("caller_confirmed")
+            or closed_at is None
+            or not 0 <= provenance["at"] - closed_at <= _LATE_FINAL_WINDOW_S
+        ):
+            return False
+        if any(provenance.get(key) != previous.get(key) for key in (
+            "serial", "gate_serial", "vad_episode",
+        )):
+            return False
+        # Explicit provider identity is stronger than the local episode:
+        # never join a new provider turn/connection on timing alone.
+        if (provenance.get("connection") and previous.get("connection")
+                and provenance["connection"] != previous["connection"]):
+            return False
+        if (provenance.get("turn_index") is not None
+                and previous.get("turn_index") is not None
+                and provenance["turn_index"] != previous["turn_index"]):
+            return False
+        return True
 
     def _proven_cumulative(self, provenance: dict) -> bool:
         """Whether a prefix-extending final is a PROVEN cumulative re-emission
@@ -2115,7 +2161,10 @@ class ConversationBrain(FrameProcessor):
         self._note_meaningful_input()
         self._transcript_timing.accepted_segment(new_buffer=not self._pending_segments)
         self._pending_newest_final_at = time.monotonic()
-        provenance = provenance or self._final_provenance(None)
+        provenance = dict(provenance or self._final_provenance(None))
+        provenance["caller_confirmed"] = (
+            self._turn_active or self._confirmed_buffer_continuation(provenance)
+        )
         if self._pending_segments:
             joined = " ".join(self._pending_segments).strip()
             joined_folded = self._tokens_casefold(joined)
@@ -2300,14 +2349,18 @@ class ConversationBrain(FrameProcessor):
         self._arm_silence_timer()
         return True
 
-    def _should_hold_multiword(self, text: str) -> bool:
+    def _should_hold_multiword(self, text: str, provenance: dict | None = None) -> bool:
         """Multi-word, unconfirmed (no open turn), captured while the bot
         was audibly speaking."""
         if self._turn_active or not self._captured_during_bot_audio():
             return False
+        if provenance is not None and self._confirmed_buffer_continuation(provenance):
+            return False
         return len(meaningful_language_words(text)) >= _HELD_MULTIWORD_MIN_WORDS
 
-    async def _hold_multiword_segment(self, text: str) -> None:
+    async def _hold_multiword_segment(
+        self, text: str, provenance: dict | None = None,
+    ) -> None:
         # Remember WHICH physical speech episode produced the segment: only a
         # barge-in confirmed within that same episode may reclaim it (the
         # flush final and the confirmed interruption are one utterance).
@@ -2319,6 +2372,7 @@ class ConversationBrain(FrameProcessor):
             # Episode counter at the hold, for a final that landed after its
             # burst closed (see _HELD_RECLAIM_LATE_FINAL_S).
             "seen_episode": self._vad_episode,
+            "provenance": dict(provenance or self._final_provenance(None)),
         })
         del self._held_multiword[:-_SUSPECT_BUFFER_MAX]
         self._interim_texts.clear()
@@ -2385,6 +2439,15 @@ class ConversationBrain(FrameProcessor):
             for entry in same:
                 self._pending_segments.append(entry["text"])
                 self._transcript_timing.include(entry.get("audio_started_at"))
+            confirmed = self._final_provenance(None)
+            # Confirmation supplies the current local episode identity;
+            # preserve the provider identity carried by the reclaimed final.
+            provider = same[-1].get("provenance") or {}
+            for key in ("connection", "turn_index"):
+                if key in provider:
+                    confirmed[key] = provider[key]
+            confirmed["caller_confirmed"] = True
+            self._last_buffered_final = confirmed
             self._recorder.add_event(
                 "stt_held_segment_merged",
                 segments=len(same),
@@ -2853,8 +2916,8 @@ class ConversationBrain(FrameProcessor):
             # ever merged into the caller's own continuation once the bot is
             # quiet (or into a confirmed barge-in), never dispatched because
             # the reply happened to end.
-            if self._should_hold_multiword(text):
-                await self._hold_multiword_segment(text)
+            if self._should_hold_multiword(text, provenance):
+                await self._hold_multiword_segment(text, provenance)
                 return
             await self._supersede_held_multiword()
         if not self._turn_active:
@@ -3981,6 +4044,17 @@ class ConversationBrain(FrameProcessor):
         audio_start = self._claimed_audio_starts.pop(id(claimed), None)
         snapshot = self._claimed_semantic_snapshots.pop(id(claimed), None)
         if snapshot is not None:
+            identity_before = snapshot.get("workflow_identity")
+            if isinstance(identity_before, dict):
+                self._identity.confirmed = identity_before["confirmed"]
+                self._identity.denied = identity_before["denied"]
+                self._identity.confirmed_turn = identity_before["confirmed_turn"]
+                if self._goal_session is not None:
+                    self._goal_session.identity_state = identity_before["goal_identity"]
+                self._recorder.workflow_slots = dict(identity_before["workflow_slots"])
+                self._recorder.add_event("workflow_identity_rolled_back", reason="late_transcript_merge")
+            if "context_clarification" in snapshot:
+                self._pending_context_clarification = snapshot["context_clarification"]
             if "hearing_probe" in snapshot:
                 self._hearing_probe_pending = snapshot["hearing_probe"]
             if "workflow_slots" in snapshot:
@@ -4661,6 +4735,8 @@ class ConversationBrain(FrameProcessor):
         return True
 
     def _missing_stt_pending_question(self) -> str:
+        if self._active_workflow and self._pending_context_clarification is not None:
+            return str(self._pending_context_clarification.get("clarification_question") or "")
         if self._active_workflow and self._pending_workflow_question:
             return self._pending_workflow_question
         return ""
@@ -5466,6 +5542,8 @@ class ConversationBrain(FrameProcessor):
     @staticmethod
     def _presence_check_only(text: str) -> bool:
         """Strictly content-free replies to 'can you hear me/are you there?'."""
+        if is_bare_hmm(text):
+            return True
         words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
         vocabulary = {
             "yes", "yeah", "yep", "haan", "han", "haa", "ha", "हाँ", "हां", "हा",
@@ -6469,7 +6547,8 @@ class ConversationBrain(FrameProcessor):
                 # before.
                 fast_path = self._deterministic_fast_path(text, decision)
             if fast_path is None and (
-                answer := self._deterministic_answer(text, decision)
+                answer := (self._deterministic_answer(text, decision)
+                           if self._pending_context_clarification is None else None)
             ) is not None:
                 # The paused workflow question resolves this short reply
                 # deterministically (deterministic_answers): the workflow takes
@@ -6573,8 +6652,72 @@ class ConversationBrain(FrameProcessor):
         # classification found no configured business intent to upgrade.
         decision = replace(decision, signal=signal)
         if (
+            self._pending_context_clarification is not None
+            and self._active_workflow is not None and self._policy is None
+            and orchestrated is not None and orchestrated.scope == SCOPE_IN
+            and orchestrated.confidence >= .85 and not orchestrated.context_question
+            and not orchestrated.needs_clarification
+            and orchestrated.requested_action == "continue_workflow"
+            and not orchestrated.tool_request
+            and decision.kind not in (
+                RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
+                RouteKind.KNOWLEDGE, RouteKind.TOOL,
+            )
+            and signal not in ("question", "hold", "stop", "wrong_person")
+            and not self._presence_check_only(text) and not looks_like_question(text)
+        ):
+            # The caller may abandon their side-question and explicitly
+            # answer the actual business question instead. Require a clear
+            # validated answer with substance; bare acknowledgements stay
+            # owned by the clarification and cannot grant business consent.
+            self._snapshot_context_clarification(text)
+            self._pending_context_clarification = None
+            decision = replace(
+                decision, kind=RouteKind.WORKFLOW, action=self._active_workflow,
+                reason="context_clarification_return_to_business",
+            )
+            self._recorder.add_event("context_clarification_return_to_business")
+        context_clarification_reply = bool(
+            self._pending_context_clarification is not None
+            and self._active_workflow is not None and self._policy is None
+            and decision.kind not in (
+                RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
+                RouteKind.TOOL, RouteKind.KNOWLEDGE,
+            )
+            and signal != "hold"
+            and signal not in ("stop", "wrong_person")
+            and not (decision.kind == RouteKind.WORKFLOW and decision.action
+                     and decision.action != self._active_workflow)
+            and not (classification is not None and classification.tool_name)
+            and not (orchestrated is not None and orchestrated.tool_request)
+            and not (orchestrated is not None and orchestrated.requested_action in (
+                "end_call", "escalate_to_human",
+            ))
+        )
+        if context_clarification_reply:
+            # The last audible question asked which event/person the caller
+            # meant. Even an affirmative cannot answer the business step
+            # underneath it. Control, scope and explicit tool routes retain
+            # their ordinary priority below.
+            decision = replace(
+                decision, kind=RouteKind.CHAT, action=None, signal="question",
+                reason="context_clarification_followup",
+            )
+            signal = "question"
+            if orchestrated is not None and orchestrated.scope == SCOPE_IN:
+                orchestrated = ConversationDecision(
+                    signal="question", confidence=orchestrated.confidence,
+                    context_question=True,
+                    needs_clarification=(orchestrated.needs_clarification
+                                         or not orchestrated.context_question
+                                         or self._presence_check_only(text)),
+                    next_action="answer", source=orchestrated.source,
+                )
+            classification = None
+        if (
             self._active_workflow is not None and decision.kind == RouteKind.WORKFLOW
             and orchestrated is not None
+            and not orchestrated.context_question
             and (orchestrated.needs_clarification or orchestrated.decision in (
                 "ambiguous", "needs_clarification",
             ))
@@ -6625,15 +6768,27 @@ class ConversationBrain(FrameProcessor):
             # must not let free chat invent its first business question.
             decision = replace(decision, reason="entry_resume")
         identity = self._identity
+        workflow_identity_turn = bool(
+            self._policy is None and self._workflows is not None
+            and (self._active_workflow is not None or decision.kind == RouteKind.WORKFLOW)
+            and (self._workflow_identity_pending() or identity.pending(self._last_bot_reply))
+        )
+        identity_resolution = (
+            orchestrated.decision
+            if workflow_identity_turn and orchestrated is not None
+            and orchestrated.scope == SCOPE_IN and orchestrated.confidence >= 0.85
+            and not orchestrated.needs_clarification
+            and orchestrated.decision in ("confirmed", "denied") else None
+        )
         if (
             self._policy is None and orchestrated is not None
-            and identity.pending(self._last_bot_reply)
+            and (self._workflow_identity_pending() or identity.pending(self._last_bot_reply))
         ):
             # Generic bots: the identity question's outcome, from the rule or
             # the validated decision (the collections policy keeps its own).
-            if orchestrated.decision == "confirmed":
+            if orchestrated.decision == "confirmed" and not workflow_identity_turn:
                 identity.confirm(self._turn_counter)
-            elif orchestrated.decision == "denied":
+            elif orchestrated.decision == "denied" and not workflow_identity_turn:
                 identity.denied = True
             elif (
                 orchestrated.decision in ("ambiguous", "needs_clarification")
@@ -6718,7 +6873,10 @@ class ConversationBrain(FrameProcessor):
         elif self._goal_session is not None and orchestrated is not None:
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
-            self._goal_session.apply(orchestrated)
+            self._goal_session.apply(
+                orchestrated.model_copy(update={"decision": None})
+                if workflow_identity_turn else orchestrated
+            )
             if (
                 not workflow_owns_turn and not completed_followup
                 and not self._transfer_requested and signal != "hold"
@@ -6907,6 +7065,8 @@ class ConversationBrain(FrameProcessor):
                     text, decision, started, orchestrated,
                     tool_instruction + (plan.instruction if plan is not None else ""),
                 )
+            elif context_clarification_reply:
+                await self._answer_context_clarification(text, decision, started, orchestrated)
             elif decision.reason == "workflow_answer_ambiguous":
                 # The graph did not transition. A generated clarification
                 # must not ask another business question: its next "yes"
@@ -7014,6 +7174,11 @@ class ConversationBrain(FrameProcessor):
                     decision, text, started, signal=signal,
                     classification=classification,
                     signal_authoritative=orchestrated is not None,
+                    identity_resolution=identity_resolution,
+                    context_question_needs_clarification=bool(
+                        orchestrated is not None and orchestrated.context_question
+                        and orchestrated.needs_clarification
+                    ),
                 )
             elif decision.reason == "entry_reprompt":
                 from shared.orchestration.phrases import entry_question_retry
@@ -7308,6 +7473,8 @@ class ConversationBrain(FrameProcessor):
         decided before the engine ever runs. ``route`` is the router's
         decision for the turn (None while prefetching, before it exists).
         """
+        if self._pending_context_clarification is not None:
+            return None
         if (
             self._identifier_capture is not None
             and self._active_workflow is not None
@@ -7334,29 +7501,31 @@ class ConversationBrain(FrameProcessor):
     ) -> str | None:
         """Identity rule for bots without a domain policy (identity_mode).
 
-        The bot's last utterance asked who it is speaking with and nothing
-        else has started: a plain affirm-led reply confirms without the
-        decision LLM — unless a workflow entry is configured for the opening
-        answer, whose routing stays with the router/decision as before. In
-        strict mode a bare go-ahead earns the one explicit re-ask (on any
-        route). Everything else is judged by the decision LLM, which the
-        decision prompt gives the same rule.
+        The opening identity question or an explicitly authored active
+        identity gate owns the answer. The shared standard/strict rule reads
+        clear replies without a decision request; a workflow still commits
+        confirmation only after its gate accepts the answer. In strict mode
+        a bare go-ahead earns one explicit re-ask. Everything else stays with
+        the decision model under the same live-state identity rule.
         """
         identity = self._identity
-        if self._active_workflow is not None or not identity.pending(
-            self._last_bot_reply
-        ):
+        if self._active_workflow is not None and not self._workflow_identity_pending():
+            return None
+        if not (self._workflow_identity_pending() or identity.pending(self._last_bot_reply)):
             return None
         outcome = identity.rule(text)
         if outcome == IDENTITY_EXPLICIT_REASK:
             return "identity_explicit_reask"
-        if (
-            outcome == IDENTITY_CONFIRM
-            and (route is None or route.kind != RouteKind.WORKFLOW)
-            and self._router.affirm_entry is None
-        ):
+        if outcome == IDENTITY_CONFIRM:
             return "identity_confirmed"
         return None
+
+    def _workflow_identity_pending(self) -> bool:
+        """The graph, rather than a generated last reply, owns this gate."""
+        return bool(
+            self._active_workflow is not None
+            and (self._pending_ask_shape or {}).get("confirmationRole") == "identity"
+        )
 
     def _deterministic_answer(
         self, text: str, route: RouteDecision | None = None
@@ -7593,11 +7762,16 @@ class ConversationBrain(FrameProcessor):
                 language=self._conversation_language,
                 last_bot_question=self._last_bot_reply[-_LAST_QUESTION_CHARS:],
             ))
+        # GoalSession's generic stage must not erase an active graph stage.
+        if self._active_workflow:
+            state["workflow_stage"] = f"workflow:{self._active_workflow}"
         if self._active_workflow and self._pending_workflow_question:
             state["pending_question"] = self._pending_workflow_question
         elif policy is None and (question := self._pending_opening_question()):
             state["pending_question"] = question
-        if policy is None and self._identity.pending(self._last_bot_reply):
+        if policy is None and (
+            self._workflow_identity_pending() or self._identity.pending(self._last_bot_reply)
+        ):
             # The identity question is what the caller is answering: the
             # decision gets the same rule the runtime applies first.
             state["pending_question"] = (
@@ -7610,6 +7784,7 @@ class ConversationBrain(FrameProcessor):
                     explicit_asked=self._identity.explicit_asked,
                 )
             )
+            state["identity_state"] = "unconfirmed"
         # What kind of answer the pending question expects (and the options
         # the bot just offered): a bare "haan", "2 baje" or "pehla" is judged
         # against it instead of being labelled unrelated or unclear.
@@ -7620,6 +7795,16 @@ class ConversationBrain(FrameProcessor):
             )
             if pending.kind == "choice" and pending.options:
                 state["options_offered"] = list(pending.options)
+        if self._workflow_identity_pending():
+            state["expected_answer"] = "identity confirmation (yes/no)"
+        if self._pending_context_clarification is not None and self._active_workflow:
+            state["context_clarification"] = dict(self._pending_context_clarification)
+            state["pending_question"] = (
+                self._pending_context_clarification.get("clarification_question")
+                or "Clarify which event, person or statement the caller means."
+            )
+            state["expected_answer"] = "clarification of the caller's question; no business consent"
+            state.pop("options_offered", None)
         if self._completed_workflow is not None and self._active_workflow is None:
             state["workflow_stage"] = f"completed:{self._completed_workflow}"
             state["call_connected"] = True
@@ -8225,6 +8410,7 @@ class ConversationBrain(FrameProcessor):
             or self._llm is None
             or self._active_workflow is None
             or route.kind != RouteKind.WORKFLOW
+            or self._pending_context_clarification is not None
         ):
             return
         self._discard_extraction_ahead()
@@ -8271,8 +8457,29 @@ class ConversationBrain(FrameProcessor):
         signal: str | None = None,
         classification: IntentClassification | None = None,
         *, signal_authoritative: bool = False,
+        identity_resolution: str | None = None,
+        context_question_needs_clarification: bool = False,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
+        if (self._pending_context_clarification is not None
+                and workflow_name != self._active_workflow):
+            self._snapshot_context_clarification(text)
+            self._pending_context_clarification = None
+        if self._policy is None and (
+            self._workflow_identity_pending() or self._identity.pending(self._last_bot_reply)
+        ):
+            snapshot = self._open_turn_semantic_snapshot
+            if snapshot is None or snapshot.get("text") != text:
+                snapshot = {"text": text}
+                self._open_turn_semantic_snapshot = snapshot
+            snapshot.setdefault("workflow_identity", {
+                "confirmed": self._identity.confirmed,
+                "denied": self._identity.denied,
+                "confirmed_turn": self._identity.confirmed_turn,
+                "goal_identity": (self._goal_session.identity_state
+                                  if self._goal_session is not None else ""),
+                "workflow_slots": dict(getattr(self._recorder, "workflow_slots", {}) or {}),
+            })
         reset_state, initial_slots = self._workflow_turn_inputs(text)
         if reset_state:
             self._runtime_context.clear_workflow_values()
@@ -8295,6 +8502,7 @@ class ConversationBrain(FrameProcessor):
         result = await self._workflows.handle_turn_detailed(
             signal=signal if signal_authoritative else signal or decision.signal,
             signal_authoritative=signal_authoritative,
+            **({"identity_resolution": identity_resolution} if identity_resolution is not None else {}),
             session_id=self._recorder.session_id,
             tenant_id=self._config.tenant_id,
             bot_id=self._config.bot_id,
@@ -8316,6 +8524,38 @@ class ConversationBrain(FrameProcessor):
             **({"extraction_ahead": extraction_ahead} if extraction_ahead is not None else {}),
         )
         self._open_turn_workflow_committed = True
+        accepted_identity = result.get("identityConfirmation")
+        if (accepted_identity is None and identity_resolution in ("confirmed", "denied")
+                and not result.get("identityGateEncountered")
+                and result.get("status") != "error"):
+            # Unmarked older graphs keep their own matcher behavior. Confirm
+            # only after their actual identity ask captured this reply, never
+            # merely because the opening greeting received a yes or because
+            # an unrelated business ask consumed it.
+            legacy_capture = next((capture for capture in result.get("capturedAsks") or []
+                if isinstance(capture, dict) and self._identity.is_identity_ask(
+                    resolve_placeholders(str(capture.get("prompt") or ""), self._placeholder_values())
+                )), None)
+            if legacy_capture is not None:
+                accepted_identity = {"outcome": identity_resolution,
+                    "node": legacy_capture["node"], "variable": legacy_capture["variable"],
+                    "legacy": True}
+        if (self._policy is None and isinstance(accepted_identity, dict)
+                and accepted_identity.get("outcome") in ("confirmed", "denied")):
+            outcome = accepted_identity["outcome"]
+            if outcome == "confirmed":
+                self._identity.denied = False
+                self._identity.confirm(self._turn_counter)
+                self._note_trusted_turn("identity_confirmed")
+            else:
+                self._identity.denied = True
+                self._identity.confirmed = False
+            if self._goal_session is not None:
+                self._goal_session.apply(ConversationDecision(
+                    decision=outcome, confidence=1.0, next_action="continue_workflow",
+                    source="workflow_identity_gate",
+                ))
+            self._recorder.add_event("workflow_identity_accepted", **accepted_identity)
         for event in result.get("toolEvents") or []:
             self._recorder.flush_event_soon("tool_executed", **event)
             self._latency.mark_tool_span(
@@ -8378,7 +8618,8 @@ class ConversationBrain(FrameProcessor):
                 if isinstance(key, str) and key in self._recorder.workflow_slots
             }
         self._pending_workflow_question = (
-            str(result.get("nodePrompt") or "") if not result["done"] else ""
+            str(result.get("nodeResumePrompt") or result.get("nodePrompt") or "")
+            if not result["done"] else ""
         )
         shape = result.get("awaitingAsk")
         self._pending_ask_shape = (
@@ -8446,12 +8687,27 @@ class ConversationBrain(FrameProcessor):
                     "workflow_kb_question", workflow=workflow_name,
                     consumed=False, intent=decision.intent,
                 )
+            clarify_context = bool(
+                classification is not None and classification.context_question
+                and context_question_needs_clarification and self._policy is None
+                and self._pending_workflow_question
+            )
+            if clarify_context:
+                self._snapshot_context_clarification(text)
+                self._pending_context_clarification = {
+                    "original_question": text[:500],
+                    "business_question": self._pending_workflow_question,
+                    "clarification_question": "",
+                }
             await self._generate_reply(
                 text, decision, started, extra_system=extra,
                 question_response=turn_signal == "question" and decision.kind != RouteKind.KNOWLEDGE,
-                pending_question=str(result.get("nodePrompt") or ""),
-                lock_workflow_question=bool(result.get("nodePrompt")),
+                pending_question=self._pending_workflow_question,
+                lock_workflow_question=bool(self._pending_workflow_question) and not clarify_context,
+                clarify_context_question=clarify_context,
             )
+            if clarify_context and self._pending_context_clarification is not None:
+                self._pending_context_clarification["clarification_question"] = self._last_bot_reply
             return
         reply = result["reply"]
         if result.get("knowledgeCovered") and kb_intent:
@@ -9236,6 +9492,11 @@ class ConversationBrain(FrameProcessor):
            yes/no or choice by cheap lexical cues, else free text; otherwise
            nothing is pending.
         """
+        if self._active_workflow and self._pending_context_clarification is not None:
+            return PendingAsk(str(
+                self._pending_context_clarification.get("clarification_question")
+                or "Clarify the referent of the caller's question."
+            ), "free_text")
         if self._active_workflow and self._pending_workflow_question:
             shape = self._pending_ask_shape or {}
             kind = str(shape.get("kind") or "free_text")
@@ -9302,6 +9563,7 @@ class ConversationBrain(FrameProcessor):
     def _reply_prompt(
         self, decision: RouteDecision, extra_system: str = "",
         *, question_response: bool = False, pending_question: str = "",
+        clarify_context_question: bool = False,
     ) -> tuple[str, str, bool, str]:
         """(system, turn_instruction, opening_pending, pending_question) of one
         reply generation. No side effects: a speculative reply builds its
@@ -9370,7 +9632,62 @@ class ConversationBrain(FrameProcessor):
                 + json.dumps(self._last_bot_reply or None, ensure_ascii=False)
             )
             system += "\n\n# Current question — response task\n" + turn_instruction
+        if clarify_context_question:
+            # The validated Stage A decision authorizes only a clarification
+            # of the caller's referent, never a different business question.
+            turn_instruction += (
+                "\nAuthoritative response mode: context_question=true and needs_clarification=true. "
+                "Ask one short question clarifying the caller's referent. "
+                "Do not answer a guessed question, ask for business consent, "
+                "or append the paused business question."
+            )
+            system += "\n\n# Current clarification — authoritative\n" + turn_instruction
         return system, turn_instruction, bool(opening_pending), pending_question
+
+    def _snapshot_context_clarification(self, text: str) -> None:
+        snapshot = self._open_turn_semantic_snapshot
+        if snapshot is None or snapshot.get("text") != text:
+            snapshot = {"text": text}
+            self._open_turn_semantic_snapshot = snapshot
+        if "context_clarification" not in snapshot:
+            previous = self._pending_context_clarification
+            snapshot["context_clarification"] = dict(previous) if previous is not None else None
+
+    async def _answer_context_clarification(
+        self, text: str, decision: RouteDecision, started: float,
+        orchestrated: ConversationDecision | None,
+    ) -> None:
+        frame = self._pending_context_clarification
+        if frame is None:
+            return
+        self._snapshot_context_clarification(text)
+        unresolved = bool(
+            orchestrated is None or not orchestrated.context_question
+            or orchestrated.needs_clarification
+            or self._presence_check_only(text)
+        )
+        self._recorder.add_event("context_clarification_answer", resolved=not unresolved)
+        extra = (
+            "\n\n# Paused caller question\ncontext_clarification: "
+            + json.dumps(frame, ensure_ascii=False)
+            + "\nThis reply answers the clarification_question above, not the "
+            "business_question. No workflow value, identity or consent has been "
+            "captured. If resolved, answer original_question using the clarified "
+            "referent and available facts. If the caller instead asks a new "
+            "explicit context question, answer that latest question; do not "
+            "pretend it resolves the original referent. Then resume the business "
+            "question once. Never repeat the full complaint intro."
+        )
+        await self._generate_reply(
+            text, decision, started, extra_system=extra, question_response=True,
+            pending_question=str(frame.get("business_question") or ""),
+            clarify_context_question=unresolved,
+            lock_workflow_question=not unresolved,
+        )
+        if unresolved:
+            frame["clarification_question"] = self._last_bot_reply
+        else:
+            self._pending_context_clarification = None
 
     async def _generate_reply(
         self, text: str, decision: RouteDecision, started: float,
@@ -9378,10 +9695,12 @@ class ConversationBrain(FrameProcessor):
         *, question_response: bool = False,
         pending_question: str = "",
         lock_workflow_question: bool = False,
+        clarify_context_question: bool = False,
     ) -> None:
         system, turn_instruction, opening_pending, pending_question = self._reply_prompt(
             decision, extra_system,
             question_response=question_response, pending_question=pending_question,
+            clarify_context_question=clarify_context_question,
         )
         if lock_workflow_question:
             system += (
@@ -9391,6 +9710,13 @@ class ConversationBrain(FrameProcessor):
                 "inviting any new action. The runtime will then speak the actual "
                 "pending workflow question. Do not ask a later question, offer "
                 "a visit/referral, or claim a new action."
+            )
+            turn_instruction += (
+                "\nAuthoritative response mode: answer_only; runtime_resumes_pending_question. "
+                "Answer the caller's question from available facts, or briefly "
+                "acknowledge their statement. Do not ask any question, repeat "
+                "the full introduction, or offer an action. The runtime alone "
+                "will speak the authored pending question after this answer."
             )
         if turn_instruction:
             self._recorder.add_event(
@@ -9622,7 +9948,7 @@ class ConversationBrain(FrameProcessor):
         if lock_workflow_question and pending_question and not self._closing:
             self._recorder.add_event("pending_question_resumed", source="workflow", constrained=True)
             await self._say(pending_question)
-        elif (reply and turn_instruction and pending_question
+        elif (reply and turn_instruction and pending_question and not clarify_context_question
                 and not any(mark in reply for mark in ("?", "？", "؟"))
                 and not self._closing):
             # A factual answer alone must not strand a waiting workflow.
@@ -9690,12 +10016,25 @@ class ConversationBrain(FrameProcessor):
             "\n\n[Platform note — not the caller's words: " + " ".join(notes) + "]"
         )
         if turn_instruction:
-            messages[-1]["content"] += (
-                "\n\nResponse task: answer the actual question, then return "
-                "to the supplied pending question once. For a repeat request, "
-                "just restate that question clearly. Keep it brief; do not "
-                "advance to another step.\nSpoken reply:"
-            )
+            if "Authoritative response mode: context_question=true and needs_clarification=true" in turn_instruction:
+                messages[-1]["content"] += (
+                    "\n\nResponse task: ask only one short clarification about "
+                    "the caller's referent. Keep the business step paused; "
+                    "do not append its question.\nSpoken reply:"
+                )
+            elif "Authoritative response mode: answer_only; runtime_resumes_pending_question" in turn_instruction:
+                messages[-1]["content"] += (
+                    "\n\nResponse task: speak the brief factual answer only. "
+                    "The runtime will speak the pending question; do not "
+                    "include any question or consent request.\nSpoken reply:"
+                )
+            else:
+                messages[-1]["content"] += (
+                    "\n\nResponse task: answer the actual question, then return "
+                    "to the supplied pending question once. For a repeat request, "
+                    "just restate that question clearly. Keep it brief; do not "
+                    "advance to another step.\nSpoken reply:"
+                )
         return messages
 
     async def _stream_llm_tokens(
@@ -9739,6 +10078,8 @@ class ConversationBrain(FrameProcessor):
 
         async def _release(text: str) -> None:
             if suppress_questions:
+                from shared.orchestration.generated_questions import is_generated_question_clause
+
                 sentences = re.split(r"(?<=[.!?।？])\s*", text)
                 accepted = []
                 empathy = re.compile(
@@ -9746,28 +10087,12 @@ class ConversationBrain(FrameProcessor):
                     r"my\s+apologies\b|maaf\b|maafi\b|माफ़?\s|माफ़?ी\s|क्षमा\s|मुझे\s+पता\s+है\s+कि)"
                 )
 
-                def question_clause(clause: str) -> bool:
-                    if re.search(
-                        r"(?i)^\s*(?:please\s+)?(?:tell|confirm|let me know|provide|share|give|बताइए|बताइये|बताना)\b",
-                        clause,
-                    ):
-                        return True
-                    # Embedded wh-clauses in declarative empathy are not
-                    # questions: "I understand how frustrating that is.".
-                    declarative_empathy = empathy.search(clause) and re.search(
-                        r"(?i)^(?:i\s+(?:understand|know)\s+(?:how|why|that|what)\b|मुझे\s+पता\s+है\s+कि)",
-                        clause.strip(),
-                    )
-                    return bool(
-                        looks_like_question(clause)
-                        and not (declarative_empathy and not any(mark in clause for mark in "?？؟"))
-                    )
-
                 for sentence in sentences:
                     clauses = re.split(r"[,，;:—–]\s*", sentence)
                     leading = []
-                    for clause in clauses:
-                        if question_clause(clause):
+                    for index, clause in enumerate(clauses):
+                        following = clauses[index + 1] if index + 1 < len(clauses) else ""
+                        if is_generated_question_clause(clause, following):
                             break
                         leading.append(clause)
                     if len(leading) < len(clauses):

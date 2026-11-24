@@ -5,7 +5,9 @@ per-bot modes (``runtime_context_schemas.identity_confirmation_mode``):
 
 - ``standard`` — an affirm-led reply with no negation and no other-person cue
   confirms: "haan", "haan ji", "ji", "ji haan", "haan boliye", "ji boliye",
-  "haan bol raha hoon", "main hi bol raha hoon", "haan main hoon".
+  "haan bol raha hoon", "main hi bol raha hoon", "haan main hoon". A whole
+  non-question "hmm" also answers the simple identity question on a generic
+  bot; this does not grant permission for a business action.
 - ``strict`` — a reply that only invites the bot to go on ("haan boliye",
   "ji boliye", "haan bolo") earns ONE rephrased explicit re-ask ("Kya aap hi
   Gaurav ji bol rahe hain?"); any affirm to that explicit question confirms.
@@ -73,6 +75,13 @@ def decision_prompt_rule(mode: str, *, explicit_asked: bool = False) -> str:
         rule = (
             " The bot has already asked explicitly whether the caller IS that "
             "person." + rule
+        )
+    if mode == STANDARD:
+        rule += (
+            " For a generic bot's standard identity question only, a whole "
+            "non-question 'hmm' or 'हम्म' is also identity confirmed; a hum "
+            "with a question, negation or other content is not. This rule "
+            "does not establish business-action permission."
         )
     return rule + _DENIED_CUES
 

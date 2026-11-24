@@ -67,6 +67,51 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   and contests outcomes withdrawn by the caller. Apply the configuration with
   the matching runtime, then publish a bot release that pins the new workflow
   and prompt versions. These helpers never deploy or restart a server.
+- `setup/haier_followup_consent_repair.py` — incremental configuration repair
+  for conversation `cv_f5293164ece8`, applied after the follow-up audit repair.
+  It accepts explicit short requests such as “haan, badha dijiye” at the visit
+  permission step, keeps negation and special-case precedence, uses a distinct
+  clarification question, and removes the unsolicited customer-care referral
+  from the unconfirmed closing. The outcome remains unconfirmed when no clear
+  permission is received. Its v2 upgrade treats Hindi sentence terminators as
+  punctuation when matching explicit service refusals at both permission steps.
+  Its v3 upgrade uses the reviewed “aage forward kar doon” permission wording
+  in initial, clarification and date-preference readbacks, and accepts explicit
+  forward commands at those same permission steps. For `cv_1815c8433f93`, the
+  matching runtime accepts a whole non-question “hmm” only at a pending standard
+  identity question; strict identity still requires an explicit answer, and
+  “hmm” cannot grant business-action consent or bypass a caller clarification.
+  The v4 amendment fixes `cv_c485f6c330a8`: a complete permission answer such
+  as “haan kar dijiye” uses the existing visit-consent route without another
+  confirmation question. It keeps the reviewed wording and protected routes.
+  This helper has no server or publication side effects.
+- `setup/haier_dialogue_regression_repair.py` — incremental repair for the
+  named-customer identity loop and repeated complaint introductions. It marks
+  the primary identity gate explicitly and authors short resume questions for
+  the nine combined introductions. Initial speech, capture rules and graph
+  edges remain unchanged. Use the matching runtime: accepted gate outcomes
+  synchronize identity state, ambiguous caller questions pause for clarification,
+  and their answers cannot become consent at the underlying business step.
+  This pure helper never publishes configuration or restarts services.
+- `setup/haier_pdf_wording_repair.py` — uses the current
+  `Haier_Rejection_Call_Flow.pdf` wording for the Studio bot's non-Haier-product
+  and no-service cancellations. Page 2 sends a negative product-ownership answer
+  to Action 2; page 3 supplies Action 2 and the common closing. This replaces the
+  older Excel's company-helpline and customer-care referrals in those two fixed
+  closings. The user-approved neutral non-Haier variant avoids claiming that
+  a product-ownership denial means service is not required; the no-service
+  branch retains the PDF's service-refusal wording. Routing and outcomes remain
+  unchanged.
+  The helper has no publication or service side effects.
+- `setup/haier_bill_state_repair.py` — workflow-only amendment for
+  `cv_6f9d8cbf10c7`. It keeps bill availability at the earlier visit separate
+  from current availability, handles bill corrections at the dealer/charges
+  steps, and verifies a visit separately from a phone call. Current bill
+  possession does not establish warranty, free service or payment consent.
+  Use `setup/haier_bill_summary_policy_repair.py` for the matching two temporal
+  summary fields and explicit warranty evidence rules. These helpers use the
+  existing interpreter contracts and do not modify runtime code, publish
+  configuration or restart services.
 - `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
   validated configuration through the existing DEMO API only. Unchanged prompts
   and summary settings are retained. It never deploys server code or restarts

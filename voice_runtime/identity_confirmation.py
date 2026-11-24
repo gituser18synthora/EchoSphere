@@ -24,8 +24,9 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from shared.orchestration.identity_confirmation import STRICT
+from shared.orchestration.identity_confirmation import STANDARD, STRICT
 from shared.orchestration.phrases import resolve_phrase
+from shared.orchestration.router import is_bare_hmm
 from voice_runtime.spoken_text import normalize_word, normalize_words
 
 # Reply kinds (see classify_identity_reply) and rule outcomes.
@@ -437,6 +438,13 @@ class IdentityConfirmation:
 
     def rule(self, text: str) -> str | None:
         """The deterministic outcome for a reply to the pending question."""
+        # A whole listening hum answers the simple standard-mode identity
+        # question (cv_1815c8433f93). Keep it out of the shared identity
+        # classifier: strict identity and the collections policy still need
+        # an explicit answer, and this is never business-action consent.
+        if (self.mode == STANDARD and "?" not in (text or "")
+                and "？" not in (text or "") and is_bare_hmm(text)):
+            return CONFIRM
         kind = classify_identity_reply(text, self.subject_name)
         return identity_reply_outcome(
             kind, mode=self.mode, explicit_asked=self.explicit_asked,

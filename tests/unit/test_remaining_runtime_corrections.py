@@ -277,7 +277,7 @@ async def probe_brain():
 
 @pytest.mark.parametrize("reply", [
     "haan ji", "जी", "नहीं", "hello", "Yes I can hear you", "हाँ सुनाई दे रहा है",
-    "Hello I can hear you now", "जी हाँ आपकी आवाज आ रही है",
+    "Hello I can hear you now", "जी हाँ आपकी आवाज आ रही है", "हम्म।", "hmm",
 ])
 @pytest.mark.parametrize("guard", [False, True])
 async def test_presence_answer_never_approves_pending_business_action(reply, guard):
@@ -299,7 +299,7 @@ async def test_presence_answer_never_approves_pending_business_action(reply, gua
         await cleanup(brain)
 
 
-@pytest.mark.parametrize("reply", ["haan ji", "जी", "नहीं", "hello"])
+@pytest.mark.parametrize("reply", ["haan ji", "जी", "नहीं", "hello", "हम्म।", "hmm"])
 async def test_stale_held_probe_answer_remains_presence_response(reply):
     brain, workflow = await probe_brain()
     try:

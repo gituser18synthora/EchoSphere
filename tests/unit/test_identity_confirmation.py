@@ -93,6 +93,23 @@ class TestModes:
 
 
 class TestReplyRule:
+    @pytest.mark.parametrize("text", ("हम्म।", "हम्म", "हम्।", "hmm", "hm", "हम्म। हम्म।"))
+    def test_bare_hum_confirms_only_standard_tracker_identity(self, text):
+        assert IdentityConfirmation(mode=STANDARD).rule(text) == CONFIRM
+        # The shared classifier also serves collection-account identity.
+        assert classify_identity_reply(text, "gaurav") is None
+        for explicit_asked in (False, True):
+            tracker = IdentityConfirmation(mode=STRICT)
+            tracker.explicit_asked = explicit_asked
+            assert tracker.rule(text) is None
+
+    @pytest.mark.parametrize("text", (
+        "हम्म?", "हम्म？", "hmm?", "hmm nahi", "हम्म नहीं।", "hmm kahan",
+        "हम्म कहाँ।", "हम्म मैं उनका भाई हूँ।", "हम्म Rahul बोल रहा हूँ।",
+    ))
+    def test_hum_with_question_or_content_never_confirms_identity(self, text):
+        assert IdentityConfirmation(mode=STANDARD, subject_name="gaurav").rule(text) is None
+
     @pytest.mark.parametrize("text", STANDARD_CONFIRMS)
     def test_standard_confirms_affirm_led_replies(self, text):
         kind = classify_identity_reply(text, "gaurav")
@@ -185,15 +202,18 @@ class TestDecisionPrompt:
         assert "'haan boliye', 'ji boliye'" in standard and "is decision confirmed" in standard
         assert "galat number" in standard and "main unka bhai/beta" in standard
         assert "'doctor', 'sir'" in standard
+        assert "a whole non-question 'hmm' or 'हम्म'" in standard
         strict = decision_prompt_rule(STRICT)
         assert "'haan boliye', 'ji boliye', 'haan bolo') is ambiguous" in strict
         assert "'haan ho rahi hai'" in strict
         # Strict leaves denials to the base decision rule: restating them
         # there turned "हाँ डॉक्टर बोल रहे हैं" into a denial (bench).
         assert "galat number" not in strict
+        assert "'hmm'" not in strict
         explicit = decision_prompt_rule(STRICT, explicit_asked=True)
         assert explicit.startswith(" The bot has already asked explicitly")
         assert "is decision confirmed (signal affirm), also when the yes is followed only by" in explicit
+        assert "'hmm'" not in explicit
 
     def test_the_static_decision_prompt_never_carries_it(self):
         # Bench 2026-10-27: as a system-prompt line the rule moved 25% of
@@ -299,7 +319,7 @@ class TestGenericBot:
         llm = _AgenticLLMStub([AMBIGUOUS] * 3)
         brain = _survey_brain(llm)
         await brain._say(GREETING)
-        for reply in ("hello hello", "हम्म", "अच्छा"):
+        for reply in ("hello hello", "सुनिए", "अच्छा"):
             await turn(brain, reply)
         asked = bot_replies(brain)[1:]
         assert asked == [identity_reask(i, "hi-IN", "gaurav") for i in range(3)]

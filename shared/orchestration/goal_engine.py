@@ -906,8 +906,9 @@ class GoalEngine:
             "signal: " + ", ".join(PLATFORM_SIGNALS) + ", or null."
         )
         decision_line = (
-            "decision: ONLY for the pending confirmation (identity or yes/no "
-            "gate): confirmed, denied, ambiguous, unrelated, needs_clarification; otherwise null."
+            "decision: ONLY for a pending identity or verification gate: "
+            "confirmed, denied, ambiguous, unrelated, needs_clarification; "
+            "ordinary business answers and action permission use null."
         )
         slots_line = (
             'slots: {"slot_name":{"status":"provided","value":"literal caller value"}}. '
@@ -975,10 +976,18 @@ class GoalEngine:
             "when a duration is named ('paanch minute ruko'); choose "
             "'callback' only for calling at another time.",
             *_SIGNAL_SCOPE_RULES,
-            "- decision: judge ONLY the pending question stated in the live "
-            "state. Any negation ('नहीं', 'no', 'जी नहीं', 'not me') means "
-            "denied even if affirmative words also appear. Partial, noisy or "
-            "off-question replies are ambiguous — NEVER guess confirmed from "
+            "- Pending-question ownership: the live pending question defines "
+            "what the caller is answering; the primary goal and broad intent "
+            "examples do not replace it. Identity-denial intents and wrong_person "
+            "require a person/name/number mismatch, even after earlier identity "
+            "confirmation. Denying a product, service, event or proposed action "
+            "is not denying who is speaking.",
+            "- decision: judge ONLY the pending identity or verification gate. "
+            "Apply negation to the proposition actually denied; 'not me' denies "
+            "identity even after affirmative words. Ordinary business answers, "
+            "including accepting or refusing a proposed action, use decision=null. "
+            "Partial, noisy or genuinely unclear replies are ambiguous — "
+            "NEVER guess confirmed from "
             "fragments like 'बोल रहा' alone, from background speech, or from "
             "the caller asking who is calling.",
             "- slots: 'हाँ, नंबर है' / 'yes I have it' means the value EXISTS "
@@ -1012,9 +1021,16 @@ class GoalEngine:
             + (", and leave response_text empty" if self._include_response_text else "")
             + ": the response stage "
             "has the full approved bot instructions and permitted call facts.",
+            "- needs_clarification measures ambiguity in what the caller MEANS, "
+            "not whether the pending question received its expected answer. "
+            "An understood in-scope fact, correction of the question's premise, "
+            "or explicit refusal has needs_clarification=false and "
+            "next_action=continue_workflow when a workflow owns the turn. "
+            "The workflow decides whether to route or keep its question. "
+            "Do not require confirmation of an unambiguous refusal.",
             "- next_action must follow from the decision: an ambiguous or "
-            "denied confirmation re-asks; a claimed-but-not-provided slot "
-            "requests the actual value; out_of_scope redirects to the goal.",
+            "denied identity/verification gate re-asks; a claimed-but-not-provided "
+            "slot requests the actual value; out_of_scope redirects to the goal.",
             *((
                 "- response_text: one or two short sentences, at most one "
                 "question, ALWAYS in the language shown as 'Conversation "
@@ -1049,6 +1065,7 @@ class GoalEngine:
             ("conversation_state", "Conversation state"),
             ("last_bot_question", "The bot's last utterance (the caller is answering THIS)"),
             ("pending_question", "Pending question awaiting an answer"),
+            ("context_clarification", "Paused caller question and its clarification (not business consent)"),
             ("expected_answer", "Expected answer type"),
             ("options_offered", "Options just offered"),
             ("identity_state", "Identity confirmation status"),

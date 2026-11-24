@@ -271,7 +271,28 @@ def _awaiting_ask_shape(node: dict | None) -> dict | None:
     if not isinstance(node, dict) or node.get("kind") != "ask":
         return None
     variable = str(_node_config(node).get("variable") or node.get("id"))
-    return ask_answer_shape(node, variable)
+    shape = ask_answer_shape(node, variable)
+    if _identity_confirmation_values(node) is not None:
+        return {**shape, "kind": "yes_no", "options": ["yes", "no"],
+                "confirmationRole": "identity"}
+    return shape
+
+
+def _identity_confirmation_values(node: dict | None) -> dict | None:
+    """Only an explicitly authored identity ask accepts a semantic outcome."""
+    if not isinstance(node, dict) or node.get("kind") != "ask":
+        return None
+    config = _node_config(node)
+    values = config.get("confirmationValues")
+    if (config.get("confirmationRole") != "identity"
+            or not str(config.get("variable") or "").strip()
+            or not isinstance(values, dict)):
+        return None
+    if any(not isinstance(values.get(key), str) or not values[key].strip()
+           for key in ("confirmed", "denied")):
+        return None
+    return ({key: values[key] for key in ("confirmed", "denied")}
+            if values["confirmed"] != values["denied"] else None)
 
 
 def _awaiting_edges(definition: dict | None, node: dict | None) -> list[dict] | None:
@@ -433,6 +454,18 @@ def _localized_node_prompt(node: dict, language: str) -> str | None:
     if isinstance(translated, str) and translated.strip():
         return translated.strip()
     return _node_text(node, "question", "prompt", "text", fallback_label=False) or None
+
+
+def _localized_resume_prompt(node: dict, language: str, fallback: str | None) -> str | None:
+    """An authored short pending question; initial speech remains unchanged."""
+    config = _node_config(node)
+    translations = config.get("resumePromptByLanguage")
+    locale = (language or "en").split("-")[0].lower()
+    translated = translations.get(locale) if isinstance(translations, dict) else None
+    if isinstance(translated, str) and translated.strip():
+        return translated.strip()
+    authored = config.get("resumePrompt")
+    return authored.strip() if isinstance(authored, str) and authored.strip() else fallback
 
 
 def _edge_tokens(label: str) -> list[str]:
@@ -1172,6 +1205,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         trace: list[str] = []
         replies: list[str] = []
         terminal_set_slots: list[str] = []
+        identity_confirmation = None
+        identity_resolution = state.get("identity_resolution")
         # Delivery contract of THIS turn's reply. Engine-generated strings
         # (retries, canned fallbacks) append to `replies` directly and stay
         # fixed; only node-authored speech carries the node's declared mode.
@@ -1262,6 +1297,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 "off_script": False, "context_response": False,
                 "semantic_extraction": None, "signal_override": None,
                 "signal_authoritative": False,
+                "identity_resolution": None, "identity_confirmation": None,
                 "terminal_set_slots": [],
                 "signal": "question", "status": "collecting",
                 "response_mode": RESPONSE_MODE_FIXED,
@@ -1311,6 +1347,33 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # hub's own "haan".
         hub_text = ""
 
+        def accept_identity(node: dict, offered: str) -> bool:
+            nonlocal identity_confirmation, identity_resolution
+            values = _identity_confirmation_values(node)
+            if (not offered or values is None
+                    or identity_resolution not in ("confirmed", "denied")):
+                return False
+            variable = str(_node_config(node)["variable"])
+            # Protected authored answers (for example a service opt-out)
+            # remain their own branch, rather than becoming identity denial.
+            authored = _extract_ask_value(node, variable, offered)
+            if (_ask.answer_is_rejected(node, offered)
+                    or (authored is not None and authored not in values.values())):
+                return False
+            # A literal authored denial is stronger than a conflicting model
+            # confirmation. A leading yes must never erase "not me".
+            resolved = "denied" if authored == values["denied"] else identity_resolution
+            node_id = str(node["id"])
+            slots[variable] = values[resolved]
+            node_retries.pop(node_id, None)
+            identity_confirmation = {
+                "outcome": resolved, "node": node_id,
+                "variable": variable,
+            }
+            audit.append({"action": "identity_confirmation", **identity_confirmation})
+            identity_resolution = None  # single use; never another gate's answer
+            return True
+
         def confirm_entry(node: dict, value, offered: str) -> bool:
             from shared.orchestration.identifier_confirmation import start_confirmation
             ctx = _ask.AskContext(
@@ -1338,22 +1401,25 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 # ask_resolution.py): pre-handlers → value resolvers →
                 # outcome rules. The engine only supplies the definition
                 # closures and applies the decision.
-                ask = _ask.resolve_ask(_ask.AskContext(
-                    node=node, node_id=awaiting, text=text, signal=signal, lang=lang,
-                    slots=slots, audit=audit, pending_digits=pending_digits,
-                    node_retries=node_retries, replies=replies, behavior=behavior,
-                    ask_question=lambda n, retrying, language: _question(n, retrying=retrying, lang=language),
-                    unmatched_reply=lambda n, sig, language: _unmatched_reply(n, sig, language),
-                    next_of=_next_of,
-                    fallback_target=_fallback_target_of,
-                    provider=provider, semantic=semantic,
-                    pending_confirmations=pending_confirmations,
-                ))
-                current, awaiting = ask.current, ask.awaiting
-                if ask.off_script:
-                    off_script = True
-                if ask.status is not None:
-                    status = ask.status
+                if accept_identity(node, text):
+                    current, awaiting = _next_of(awaiting), None
+                else:
+                    ask = _ask.resolve_ask(_ask.AskContext(
+                        node=node, node_id=awaiting, text=text, signal=signal, lang=lang,
+                        slots=slots, audit=audit, pending_digits=pending_digits,
+                        node_retries=node_retries, replies=replies, behavior=behavior,
+                        ask_question=lambda n, retrying, language: _question(n, retrying=retrying, lang=language),
+                        unmatched_reply=lambda n, sig, language: _unmatched_reply(n, sig, language),
+                        next_of=_next_of,
+                        fallback_target=_fallback_target_of,
+                        provider=provider, semantic=semantic,
+                        pending_confirmations=pending_confirmations,
+                    ))
+                    current, awaiting = ask.current, ask.awaiting
+                    if ask.off_script:
+                        off_script = True
+                    if ask.status is not None:
+                        status = ask.status
             elif kind == "intent":
                 out_edges = edges_from.get(awaiting, [])
                 chosen, why = _choose_intent_edge(
@@ -1697,6 +1763,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     audit.append({"action": "answer_rejected", "node": current})
                     offered = ""
                     entry_text = hub_text = ""
+                if accept_identity(node, offered):
+                    entry_text = hub_text = ""
+                    current = _next_of(current)
+                    continue
                 if config.get("skipIfCorrectedThisTurn") is True and any(
                     entry.get("action") in _CORRECTION_ACTIONS
                     for entry in audit[turn_audit_start:]
@@ -2071,6 +2141,30 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         "entity": _ask_entity(paused_node, paused_variable),
                         "held_digits": pending_digits.get(awaiting, ""),
                     }
+        # Existing matchers may accept a tagged gate even without a semantic
+        # override (for example during provider failure). Synchronize from
+        # that actual fresh capture too, never a reused/prefilled old slot.
+        if identity_confirmation is None:
+            for entry in audit[turn_audit_start:]:
+                if entry.get("action") not in ("slot_filled", "entry_slot_filled"):
+                    continue
+                accepted_node = nodes_by_id.get(str(entry.get("node")))
+                accepted_values = _identity_confirmation_values(accepted_node)
+                if accepted_values is None:
+                    continue
+                variable = str(_node_config(accepted_node)["variable"])
+                if entry.get("variable") != variable:
+                    continue
+                outcome = next((name for name, value in accepted_values.items()
+                                if name in ("confirmed", "denied")
+                                and slots.get(variable) == value), None)
+                if outcome is not None:
+                    identity_confirmation = {
+                        "outcome": outcome, "node": str(accepted_node["id"]),
+                        "variable": variable,
+                    }
+                    audit.append({"action": "identity_confirmation", **identity_confirmation})
+                    break
         return {
             **state,
             "slots": slots,
@@ -2102,6 +2196,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
             "signal_authoritative": False,
+            "identity_resolution": None,
+            "identity_confirmation": identity_confirmation,
             "terminal_set_slots": (
                 terminal_set_slots if status == "done" and not awaiting else []
             ),
@@ -2236,6 +2332,7 @@ class WorkflowEngine:
         timeout_seconds: float = 10.0,
         signal: str | None = None,
         signal_authoritative: bool = False,
+        identity_resolution: str | None = None,
     ) -> tuple[str, bool]:
         """Advance the workflow one turn. Returns (reply, finished)."""
         result = await self.handle_turn_detailed(
@@ -2247,6 +2344,7 @@ class WorkflowEngine:
             timeout_seconds=timeout_seconds,
             signal=signal,
             signal_authoritative=signal_authoritative,
+            identity_resolution=identity_resolution,
         )
         return result["reply"], result["done"]
 
@@ -2315,6 +2413,7 @@ class WorkflowEngine:
         mock_tool_results: dict | None = None,
         signal: str | None = None,
         signal_authoritative: bool = False,
+        identity_resolution: str | None = None,
         initial_slots: dict | None = None,
         context_values: dict | None = None,
         reset_state: bool = False,
@@ -2338,6 +2437,11 @@ class WorkflowEngine:
         Set ``signal_authoritative=True`` when a validated decision supplied
         it: an explicit None then stays None rather than triggering regex
         fallback. The default preserves legacy callers without a decision.
+
+        ``identity_resolution`` is a validated current reply (confirmed or
+        denied), consumed only at an opt-in identity ask. Its authored
+        confirmationValues choose the captured value; it cannot write an
+        arbitrary slot and never survives this turn.
 
         ``heard_nodes`` is the delivery channel's report of which nodes'
         replies the caller heard to completion (see ``WorkflowState``).
@@ -2415,12 +2519,19 @@ class WorkflowEngine:
                     if previous["awaiting"] in (previous.get("pending_identifier_confirmations") or {})
                     else _localized_node_prompt(pending, language) or previous.get("awaiting_prompt")
                 ),
+                "nodeResumePrompt": _localized_resume_prompt(
+                    pending, language, previous.get("awaiting_prompt")
+                    if previous["awaiting"] in (previous.get("pending_identifier_confirmations") or {})
+                    else _localized_node_prompt(pending, language) or previous.get("awaiting_prompt"),
+                ),
                 "awaitingIdentifier": previous.get("awaiting_identifier"),
                 "awaitingKind": pending.get("kind"), "signal": signal,
                 "awaitingAsk": _awaiting_ask_shape(pending),
                 "awaitingSignals": _awaiting_edge_signals(definition, pending),
                 "awaitingEdges": _awaiting_edges(definition, pending),
                 "spokenNodes": [],
+                "identityGateEncountered": _node_config(pending).get("confirmationRole") == "identity",
+                "capturedAsks": [],
             }
         invocation = {
             "tenant_id": tenant_id,
@@ -2432,6 +2543,8 @@ class WorkflowEngine:
             "mock_tool_results": mock_tool_results,
             "signal_override": signal,
             "signal_authoritative": bool(signal_authoritative),
+            "identity_resolution": identity_resolution,
+            "identity_confirmation": None,
             "semantic_extraction": None,
         }
         provider = _extensions.semantic_provider_for(definition)
@@ -2519,6 +2632,24 @@ class WorkflowEngine:
             for entry in (state.get("audit") or [])[prior_audit_count:]
             if entry.get("action") == "api_call"
         ]
+        nodes = {str(node.get("id")): node for node in (definition or {}).get("nodes") or []}
+        captured_asks = []
+        captured_nodes = set()
+        for entry in (state.get("audit") or [])[prior_audit_count:]:
+            if entry.get("action") not in ("slot_filled", "entry_slot_filled"):
+                continue
+            node_id = str(entry.get("node"))
+            node = nodes.get(node_id) or {}
+            variable = str(_node_config(node).get("variable") or node_id)
+            if (node.get("kind") != "ask" or node_id in captured_nodes
+                    or entry.get("variable") != variable
+                    or variable not in (state.get("slots") or {})):
+                continue
+            captured_nodes.add(node_id)
+            # No captured value: callers only need proof of WHICH question
+            # actually accepted this utterance, never private answer contents.
+            captured_asks.append({"node": node_id, "variable": variable,
+                                  "prompt": _localized_node_prompt(node, language)})
         return {
             "reply": "" if off_script
                      else (state.get("reply") or canned("wf_repeat", language)),
@@ -2531,6 +2662,12 @@ class WorkflowEngine:
             # Only opt-in outcome annotations written during this completed
             # turn, never factual constants or an earlier turn's metadata.
             "terminalSetSlots": list(state.get("terminal_set_slots") or []),
+            "identityConfirmation": state.get("identity_confirmation"),
+            "identityGateEncountered": any(
+                _node_config(nodes.get(str(node_id)) or {}).get("confirmationRole") == "identity"
+                for node_id in (state.get("trace") or [])
+            ),
+            "capturedAsks": captured_asks,
             # Only this invocation's calls, never the accumulated checkpoint
             # history. Traces are bounded and masked by ToolResult.
             "toolEvents": tool_events,
@@ -2553,6 +2690,9 @@ class WorkflowEngine:
             "pinMissing": (definition or {}).get("pinMissing"),
             "contextResponse": bool(state.get("context_response")),
             "nodePrompt": state.get("awaiting_prompt"),
+            "nodeResumePrompt": _localized_resume_prompt(
+                awaiting_node or {}, language, state.get("awaiting_prompt"),
+            ),
             # Set while the flow is paused at an ask collecting a numeric
             # identifier: {node, variable, entity, held_digits}. Drives the
             # brain's identifier-collection mode; held digit VALUES stay

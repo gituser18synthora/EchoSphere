@@ -64,6 +64,11 @@ class WorkflowState(TypedDict, total=False):
     # with the override after every turn so authority cannot be checkpointed
     # into the next caller utterance.
     signal_authoritative: bool
+    # Validated CURRENT identity reply, consumed only by an ask explicitly
+    # authored with confirmationRole=identity and confirmationValues. Never
+    # retained as authority for the next utterance.
+    identity_resolution: str | None
+    identity_confirmation: dict | None
     # Per-turn constant writes from message nodes explicitly marked
     # terminalOutcome. Reported only when this turn completes the workflow;
     # the delivery layer can retract these outcome annotations if a caller

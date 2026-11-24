@@ -276,9 +276,11 @@ class ConversationDecision(BaseModel):
         )
         if self.context_question:
             # A question about the call is not an answer to its pending gate.
+            # The question itself may still need a narrow clarification of
+            # its referent. Preserve that signal for the response stage;
+            # it never authorizes a business question or state transition.
             self.decision = "unrelated" if self.decision is not None else None
             self.next_action = "answer"
-            self.needs_clarification = False
         if self.scope != SCOPE_IN:
             # Off-goal turns never call tools, never fill slots, never
             # confirm a pending gate and never advance a workflow — they
