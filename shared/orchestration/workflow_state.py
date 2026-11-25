@@ -33,6 +33,9 @@ class WorkflowState(TypedDict, total=False):
     node_retries: dict[str, int]
     trace: list[str]  # node ids visited THIS turn (reset every turn)
     handoff_queue: str | None  # handover node's configured queue, if any
+    # Call-context values the handover node forwards with the transfer
+    # (its opt-in ``contextArgs``); recomputed every step.
+    handoff_data: dict[str, str] | None
     # Per-turn (recomputed every step, never carried over):
     off_script: bool  # the turn was NOT consumed — node unchanged, no reply
     context_response: bool  # authored node delegates this reply to the LLM
@@ -64,6 +67,20 @@ class WorkflowState(TypedDict, total=False):
     # with the override after every turn so authority cannot be checkpointed
     # into the next caller utterance.
     signal_authoritative: bool
+    # Input-only: the id of the paused hub's ``answerOptions`` entry the
+    # validated decision chose for THIS turn (None = it chose none). Read only
+    # by an intent hub that declares that option; cleared with the signal.
+    option_override: str | None
+    # Input-only: a model decision judged this reply against the hub's options
+    # (it may have chosen none). Cleared with the override.
+    option_judged: bool
+    # Output of the turn: the answer option the paused hub's reply resolved to
+    # (chosen by the decision, a plain yes/no, or the option whose target the
+    # authored labels reached), None when the hub declares no options or the
+    # turn left it waiting. ``turn_side_effects`` is True when the turn ran an
+    # api or handover node. Both are per-turn and overwritten every turn.
+    answered_option: str | None
+    turn_side_effects: bool
     # Validated CURRENT identity reply, consumed only by an ask explicitly
     # authored with confirmationRole=identity and confirmationValues. Never
     # retained as authority for the next utterance.

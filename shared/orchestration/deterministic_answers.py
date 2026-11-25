@@ -65,6 +65,9 @@ RESOLVER_CHOICE = "ask_resolution"
 RESOLVER_NUMBER = "spoken_numbers"
 RESOLVER_DATETIME = "visit_datetime"
 RESOLVER_EDGE = "workflow_edge"
+# A contact check, thanks or a goodbye at a hub that declares answer options:
+# no answer to judge, the hub asks its question again.
+RESOLVER_REACTION = "reaction"
 # Signals a yes / no at a hub may take (the engine's compatible pairs).
 _YES_EDGE_SIGNALS = frozenset({"affirm", "payment_intent"})
 _NO_EDGE_SIGNALS = frozenset({"refusal"})
@@ -80,8 +83,33 @@ _NO_WORDS = _lang.union("bare_no")
 _POLITE_WORDS = frozenset({"ji", "jee", "जी"})
 _COURTESY_WORDS = frozenset({
     "sir", "madam", "mam", "maam", "ma'am", "सर", "मैडम", "मैम", "मेम",
-})
+}) | _lang.union("courtesy_words")
 _NEUTRAL_WORDS = _lang.union("fillers") | _COURTESY_WORDS | _POLITE_WORDS
+# "bilkul" strengthens whichever answer it stands next to: "बिल्कुल" is a yes,
+# "बिल्कुल नहीं" a no.
+_INTENSIFIER_WORDS = _lang.union("intensifier_words")
+_AGREEMENT_WORDS = _lang.union("agreement_words")
+# Replies that are a reaction, not an answer. A contact check ("hello",
+# "hmm", "haan boliye"), thanks and a goodbye never answer a business
+# question: no permission, no refusal, no option.
+_ATTENTION_WORDS = _lang.union("attention_words")
+_THANKS_WORDS = _lang.union("thanks_words")
+_FAREWELL_WORDS = _lang.union("farewell_words")
+_REACTION_MAX_WORDS = 6
+# Multi-word reactions, folded to one category word before the word check.
+_REACTION_PHRASES = (
+    (re.compile(
+        r"\bgood\s*(?:morning|afternoon|evening)\b|गुड\s*(?:मॉर्निंग|मार्निंग|इवनिंग|ईवनिंग|आफ्टरनून)",
+        re.I), " hello "),
+    (re.compile(
+        r"\bthank\s*(?:you|u)\b(?:\s+(?:so|very)\s+much)?|\bthanks\s+a\s+lot\b"
+        r"|थैंक\s*(?:यू|यु|ऊ)(?:\s+(?:सो|वेरी)\s+मच)?|बहुत[\s-]*बहुत\s+(?=धन्यवाद|शुक्रिया)|बहुत\s+(?=धन्यवाद|शुक्रिया)",
+        re.I), " thanks "),
+    (re.compile(
+        r"\bgood\s*(?:night|day|bye)\b|\bbye[\s-]*bye\b|\bsee\s+you(?:\s+(?:later|soon|again))?\b"
+        r"|\btake\s+care\b|गुड\s*(?:नाइट|डे|बाय)|बाय[\s-]*बाय|शुभ\s+रात्रि|फिर\s+मिलते\s+हैं|फिर\s+मिलेंगे",
+        re.I), " bye "),
+)
 _TOKEN_SPLIT = re.compile(
     r"[\s,;:\-\"()\[\]" + re.escape(_lang.sentence_terminators()) + r"]+"
 )
@@ -113,24 +141,107 @@ def _only_neutral(tokens: list[str], extra: frozenset[str] = frozenset()) -> boo
     return all(t in _NEUTRAL_WORDS or t in extra for t in tokens)
 
 
-def yes_no_polarity(text: str) -> str | None:
+def yes_no_polarity(text: str, *, agreement: bool = True) -> str | None:
     """"yes" / "no" when every word is a yes/no, filler or courtesy word and
-    only one polarity is present; None otherwise."""
-    yes = no = polite = False
-    for token in _tokens(text):
+    only one polarity is present; None otherwise.
+
+    ``agreement=False`` is for a question that asks about a STATE rather than
+    proposing something: "ठीक है" / "सही है" / "ok" / "fine" there may describe
+    the state ("is there still a problem?" — "ठीक है" means it works), so a
+    reply containing such a word is not read as a plain yes."""
+    yes = no = polite = intensifier = thanks = False
+    for token in _reaction_tokens(text):
+        if not agreement and token in _AGREEMENT_WORDS:
+            return None
         if token in _NO_WORDS:
             no = True
         elif token in _POLITE_WORDS:
             polite = True
+        elif token in _INTENSIFIER_WORDS:
+            intensifier = True
         elif token in _YES_WORDS:
             yes = True
+        elif token in _THANKS_WORDS or token in _FAREWELL_WORDS:
+            # "ठीक है, थैंक यू" is still a yes and "no, thank you" still a no.
+            thanks = True
         elif token in _NEUTRAL_WORDS:
             continue
         else:
             return None
     if no:
         return None if yes else "no"
-    return "yes" if (yes or polite) else None
+    if yes or intensifier:
+        return "yes"
+    # The courtesy "जी" alone is a yes; beside thanks or a goodbye it is only
+    # the polite form of that ("जी, धन्यवाद").
+    return "yes" if polite and not thanks else None
+
+
+def _reaction_tokens(text: str) -> list[str]:
+    folded = text or ""
+    for pattern, word in _REACTION_PHRASES:
+        folded = pattern.sub(word, folded)
+    return _tokens(folded)
+
+
+def attention_only(text: str) -> bool:
+    """A contact check with no answer in it: "hello", "हेलो हेलो", "hmm",
+    "हाँ बोलिए", "जी बताइए", "good morning", and a questioning "हाँ?" /
+    "जी?". A leading yes word does not turn it into an answer — "हाँ, हेलो"
+    is still "are you there?"."""
+    tokens = _reaction_tokens(text)
+    if not tokens or len(tokens) > _REACTION_MAX_WORDS:
+        return False
+    plain = _NEUTRAL_WORDS | _YES_WORDS | _INTENSIFIER_WORDS
+    if not all(t in plain or t in _ATTENTION_WORDS for t in tokens):
+        return False
+    return any(t in _ATTENTION_WORDS for t in tokens) or "?" in (text or "")
+
+
+def thanks_only(text: str) -> bool:
+    """Thanks or a goodbye with no answer in it: "thank you", "धन्यवाद",
+    "bye". With a yes or no word beside it the reply is that answer said
+    politely ("ठीक है, थैंक यू"), not thanks alone."""
+    tokens = _reaction_tokens(text)
+    if not tokens or len(tokens) > _REACTION_MAX_WORDS:
+        return False
+    core = _THANKS_WORDS | _FAREWELL_WORDS
+    return (
+        all(t in core or t in _NEUTRAL_WORDS for t in tokens)
+        and any(t in core for t in tokens)
+        and yes_no_polarity(text) is None
+    )
+
+
+def reaction_only(text: str) -> bool:
+    """A reply that reacts to the bot without answering its question."""
+    return attention_only(text) or thanks_only(text)
+
+
+# What a caller says back to a goodbye without asking for anything more.
+_CLOSING_EXTRA_WORDS = frozenset({
+    "accha", "acha", "achha", "achcha", "अच्छा", "ओके", "ok", "okay", "bas", "बस",
+    "theek", "thik", "ठीक", "hai", "है", "phir", "फिर", "milte", "मिलते", "hain", "हैं",
+    "aapka", "आपका", "aapko", "आपको", "bhi", "भी", "din", "दिन", "shubh", "शुभ", "rahe", "रहे",
+    "same", "to", "too", "you", "aap", "आप", "namaste", "नमस्ते", "नमस्कार", "namaskar",
+    "jai", "जय", "hind", "हिंद", "ram", "राम", "shri", "श्री", "krishna", "कृष्ण", "radhe", "राधे",
+})
+_CLOSING_REACTION_MAX_WORDS = 8
+
+
+def closing_reaction(text: str) -> bool:
+    """A content-free reaction to a farewell: an acknowledgement ("ठीक है",
+    "ok ji", "अच्छा", "हाँ जी मैम"), thanks, a goodbye, a greeting returned
+    ("आपका भी दिन शुभ रहे", "जय श्री राम"), a contact check or a hum. A no,
+    a question or any content word makes it something to answer."""
+    if attention_only(text) or thanks_only(text):
+        return True
+    tokens = _reaction_tokens(text)
+    if not tokens or len(tokens) > _CLOSING_REACTION_MAX_WORDS or "?" in (text or ""):
+        return False
+    allowed = (_NEUTRAL_WORDS | _YES_WORDS | _INTENSIFIER_WORDS | _ATTENTION_WORDS
+               | _THANKS_WORDS | _FAREWELL_WORDS | _CLOSING_EXTRA_WORDS)
+    return all(t in allowed for t in tokens)
 
 
 def _phrase(text: str) -> str:
@@ -248,6 +359,21 @@ def _time(text: str) -> str | None:
     if not span or not _only_neutral(_residue(text, span), _DATETIME_PARTICLES):
         return None
     return span if parse_time(span).kind == "exact" else None
+
+
+def resolve_reaction(text: str) -> DeterministicAnswer | None:
+    """The deterministic reading of a reply that only reacts ("hello", "hmm",
+    "haan boliye", "thank you") at a hub with answer options: it carries no
+    signal and no value, and needs no decision — the hub re-asks at once
+    instead of leaving the caller in silence while a model call runs."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    if attention_only(stripped):
+        return DeterministicAnswer(ASK_KIND_HUB, RESOLVER_REACTION, "attention")
+    if thanks_only(stripped):
+        return DeterministicAnswer(ASK_KIND_HUB, RESOLVER_REACTION, "thanks")
+    return None
 
 
 def resolve_short_answer(

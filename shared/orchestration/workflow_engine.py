@@ -37,6 +37,7 @@ from shared.orchestration.response_modes import (
     resolve_response_must_include,
 )
 from shared.orchestration.router import classify_user_signal, looks_like_question
+from shared.orchestration.deterministic_answers import attention_only, thanks_only, yes_no_polarity
 from shared.orchestration.value_readback import configured_readback, retain_readback_values
 from shared.orchestration.behavior import WorkflowBehavior, resolve_behavior
 from shared.orchestration import lang as _lang
@@ -329,6 +330,119 @@ def _awaiting_edge_signals(definition: dict | None, node: dict | None) -> list[s
         if str(e.get("from") or "") == node_id and str(e.get("to") or "") in ids
     ]
     return sorted({s for _edge, _tokens, signals in _edge_meta(edges) for s in signals})
+
+
+# ── semantic answer options of an intent hub ────────────────────────────────
+# Edge labels and capture patterns are word lists: they recognise the answers
+# their author thought of. ``answerOptions`` (opt-in per intent node) names
+# what each possible answer MEANS instead:
+#
+#     "answerOptions": [
+#         {"id": "yes", "meaning": "wants the visit", "to": "n_redispatch",
+#          "signal": "affirm"},
+#         {"id": "no", "meaning": "does not want service", "to": "m_end_no",
+#          "signal": "refusal"},
+#         {"id": "later", "meaning": "wants it at a later date", "to": "n_when"}
+#     ]
+#
+# The decision model reads the whole reply against those meanings and returns
+# one id (``option_override``); the hub then goes to that option's ``to``
+# node. A plain yes / no — every word a yes/no, courtesy or filler word — is
+# resolved without the model through the option's ``signal``. The authored
+# labels and captures stay as the fallback for a turn the model did not judge;
+# a bare yes/no word buried in a longer sentence never decides on such a hub.
+_OPTION_SIGNALS = {"affirm": "yes", "refusal": "no"}
+_MAX_OPTION_MEANING_CHARS = 200
+# Reactions ("hello", "thank you") a hub with ``answerOptions`` answers by
+# asking again before it takes its authored else edge.
+_MAX_UNANSWERED_OPTION_TURNS = 2
+# Replies the decision judged to be no answer that such a hub hands to the
+# brain (it answers them in context and the question is asked once more)
+# before the hub's else edge takes over. ``answerMaxMisses`` on the node
+# overrides it: a clarification hub that is already the second wording of a
+# question declares 0.
+_DEFAULT_OPTION_MISSES = 1
+
+
+def _option_misses_allowed(node: dict | None) -> int:
+    value = _node_config(node or {}).get("answerMaxMisses")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _DEFAULT_OPTION_MISSES
+    return max(0, min(value, 3))
+
+
+def _answer_options(node: dict | None, node_ids) -> dict[str, dict]:
+    """``{id: {"id", "meaning", "to", "signal"}}`` of an intent hub's valid
+    ``answerOptions`` in authored order; {} when it declares none. An entry
+    without an id, a meaning or an existing target is ignored."""
+    if not isinstance(node, dict) or node.get("kind") != "intent":
+        return {}
+    raw = _node_config(node).get("answerOptions")
+    if not isinstance(raw, list):
+        return {}
+    options: dict[str, dict] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        option_id = str(entry.get("id") or "").strip()
+        meaning = " ".join(str(entry.get("meaning") or "").split())
+        target = str(entry.get("to") or "").strip()
+        if not option_id or not meaning or target not in node_ids or option_id in options:
+            continue
+        signal = str(entry.get("signal") or "").strip().lower()
+        options[option_id] = {
+            "id": option_id, "meaning": meaning[:_MAX_OPTION_MEANING_CHARS],
+            "to": target, "signal": signal if signal in _OPTION_SIGNALS else None,
+        }
+    return options
+
+
+def _awaiting_plain_yes(definition: dict | None, node: dict | None) -> str | None:
+    """``awaitingPlainYes`` for the result payload: how a hub with answer
+    options reads a plain yes — "agreement" (it proposes something, so "ठीक
+    है" / "ok" agree) or "explicit" (only yes / haan / ji do); None when the
+    hub declares no options."""
+    if _awaiting_options(definition, node) is None:
+        return None
+    return "agreement" if _node_config(node or {}).get("answerAgreementWords") is True else "explicit"
+
+
+_BARE_ANSWER_WORDS = (
+    _lang.union("bare_yes") | _lang.union("bare_no")
+    | frozenset({"ji", "jee", "जी", "hai", "hain", "है", "हैं", "sir", "madam", "mam", "सर", "मैडम", "मैम"})
+)
+
+
+def _bare_yes_no_token(token: str) -> bool:
+    """An edge token that is nothing but yes/no words ("नहीं", "ठीक है", "जी
+    हाँ"). An authored phrase that merely contains one ("अब ठीक है", "कोई
+    विजिट नहीं", "पैसे नहीं") is a content token and keeps deciding."""
+    words = [w for w in re.split(r"[\s,.;:!?।]+", (token or "").lower()) if w]
+    return not words or len(token) < 3 or all(w in _BARE_ANSWER_WORDS for w in words)
+
+
+def _closing_followups(definition: dict | None) -> int | None:
+    """``closingFollowups`` of the definition's start node: how many replies
+    the delivery layer may give after this flow's closing line before it ends
+    the call. None (not declared) leaves the delivery layer's default."""
+    start = next(
+        (n for n in (definition or {}).get("nodes") or [] if n.get("kind") == "start"), None)
+    value = _node_config(start or {}).get("closingFollowups")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return max(0, value)
+
+
+def _awaiting_options(definition: dict | None, node: dict | None) -> list[dict] | None:
+    """``awaitingOptions`` for the result payload: the paused intent hub's
+    answer options as ``{"id", "meaning"}`` in authored order, None when the
+    hub declares none or the flow waits elsewhere. The brain offers them to
+    the decision model and returns the chosen id with the next turn."""
+    ids = {str(n.get("id")) for n in (definition or {}).get("nodes") or []}
+    options = _answer_options(node, ids)
+    if not options:
+        return None
+    return [{"id": o["id"], "meaning": o["meaning"]} for o in options.values()]
 
 
 # Nodes that pause the flow for the caller: the walk below stops at them.
@@ -957,6 +1071,49 @@ def _api_context_args(config: dict) -> list[str]:
     return [str(k).strip() for k in raw if str(k or "").strip()]
 
 
+# Keys the transfer control message owns on the wire; a handover node's
+# ``contextArgs`` can never shadow them.
+_HANDOVER_RESERVED_KEYS = frozenset(
+    {"type", "event", "reason", "transfer_queue", "agent_id"}
+)
+_HANDOVER_WIRE_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+_HANDOVER_VALUE_CHARS = 200
+
+
+def _handover_context(config: dict, context_values: dict | None) -> dict[str, str]:
+    """Call-context values a handover node sends along with the transfer.
+
+    Opt-in via the node's ``contextArgs``: a list forwards each named
+    call-context value under its own name (``["bdList"]``); a mapping renames
+    it for the telephony side (``{"number": "bdList"}`` sends ``number``).
+    Same trust model as the api node passthrough — only values the dialer or
+    the runtime context supplied for THIS call, never slots and never invented:
+    absent, blank and non-scalar values are simply not sent.
+    """
+    raw = config.get("contextArgs") or config.get("context_args") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if isinstance(raw, dict):
+        pairs = [(str(wire).strip(), str(source or "").strip())
+                 for wire, source in raw.items()]
+    elif isinstance(raw, (list, tuple)):
+        pairs = [(str(key or "").strip(), str(key or "").strip()) for key in raw]
+    else:
+        return {}
+    out: dict[str, str] = {}
+    for wire, source in pairs:
+        if (not source or not _HANDOVER_WIRE_KEY.match(wire)
+                or wire in _HANDOVER_RESERVED_KEYS):
+            continue
+        value = (context_values or {}).get(source)
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        text = str(value).strip()
+        if text:
+            out[wire] = text[:_HANDOVER_VALUE_CHARS]
+    return out
+
+
 def _api_metadata(config: dict, state: dict) -> dict[str, str]:
     """Runtime ids for the payload, per the node's ``includeMetadata`` opt-in."""
     wanted = config.get("includeMetadata")
@@ -1051,6 +1208,12 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         src: _edge_meta(edges, signal_of) for src, edges in edges_from.items()
     }
 
+    # Semantic answer options per intent hub ({} for a hub declaring none).
+    options_from: dict[str, dict[str, dict]] = {
+        node_id: options for node_id, node in nodes_by_id.items()
+        if (options := _answer_options(node, nodes_by_id))
+    }
+
     start_node = next(
         (n for n in (definition.get("nodes") or []) if n.get("kind") == "start"), None
     ) or next(iter((definition.get("nodes") or [])), None)
@@ -1141,6 +1304,34 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # QUESTION (its last interrogative sentence), or a generic short
         # re-prompt when the node text has no question to extract.
         return canned("wf_retry_prefix", lang) + _short_question(base, lang)
+
+    def _resolved_option(
+        hub: str | None, chosen_id: str | None, walked: list[str], now_awaiting,
+    ) -> str | None:
+        """The option an answered hub's reply resolved to this turn: the one
+        chosen, else the one whose target the authored labels reached first.
+        None when the hub is still waiting or declares no options."""
+        options = options_from.get(hub or "") or {}
+        if not options or now_awaiting == hub:
+            return None
+        if chosen_id:
+            return chosen_id
+        after = walked[walked.index(hub) + 1:] if hub in walked else walked
+        landing = next(
+            (n for n in after if (nodes_by_id.get(n) or {}).get("kind") != "condition"), None)
+        return next((o["id"] for o in options.values() if o["to"] == landing), None)
+
+    def _reask_text(node: dict, lang: str = "") -> str:
+        """The hub's own question, for a caller who reacted without
+        answering: its authored resume prompt, else its last question
+        sentence in the caller's language. No apology, no new wording."""
+        config = _node_config(node)
+        locale = (lang or "").split("-")[0].lower()
+        base = _node_text(node, "question", "prompt", "text")
+        translated = (config.get("textByLanguage") or {}).get(locale) if locale else None
+        if translated:
+            base = translated
+        return _localized_resume_prompt(node, lang, None) or _short_question(base, lang)
 
     def _unmatched_reply(node: dict, signal: str | None = None, lang: str = "") -> str:
         """Fixed, workflow-authored reply for fail-closed collection nodes.
@@ -1265,6 +1456,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
 
         status = "collecting"
         handoff_queue: str | None = None
+        handoff_data: dict[str, str] = {}
+        # The option hub this turn answered and the option it resolved to.
+        answer_hub: str | None = None
+        answered_option: str | None = None
         text = (state.get("user_text") or "").strip()
         # Semantic signal: the Goal Engine's validated decision (passed per
         # turn) is primary; the regex classifier is the deterministic
@@ -1296,7 +1491,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 **state, "reply": reply, "audit": audit, "trace": [],
                 "off_script": False, "context_response": False,
                 "semantic_extraction": None, "signal_override": None,
-                "signal_authoritative": False,
+                "signal_authoritative": False, "option_override": None,
+                "option_judged": False,
                 "identity_resolution": None, "identity_confirmation": None,
                 "terminal_set_slots": [],
                 "signal": "question", "status": "collecting",
@@ -1433,6 +1629,78 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 if _node_config(node).get("alsoCapture"):
                     _apply_also_capture(node, text, slots, audit, awaiting)
                     captured_here = True
+                # A hub with answerOptions reads the MEANING of the reply
+                # first: the option the decision chose, else the option a
+                # plain yes / no stands for. Its labels and captures only
+                # decide a turn neither of those could place — and never on a
+                # bare yes/no word inside a longer sentence ("ये सही करके
+                # नहीं दे रहे" is not a no to "do you need service?").
+                options = options_from.get(awaiting) or {}
+                option_pick = None
+                reaction_reply = ""
+                if options and text:
+                    requested = str(state.get("option_override") or "").strip()
+                    # A hub that PROPOSES something ("may I forward it?")
+                    # declares ``answerAgreementWords``: there "ठीक है" / "ok"
+                    # is agreement. At any other question such a word may
+                    # describe a state and is left to the decision.
+                    polarity = (
+                        yes_no_polarity(
+                            text,
+                            agreement=_node_config(node).get("answerAgreementWords") is True,
+                        ) if "?" not in text else None
+                    )
+                    reaction = ("attention" if attention_only(text)
+                                else "thanks" if thanks_only(text) else "")
+                    if reaction:
+                        # "hello", "hmm", "haan boliye", "thank you": the
+                        # caller reacted, they did not answer. The question is
+                        # asked again — nothing is agreed, refused or routed.
+                        misses = node_retries.get(awaiting, 0) + 1
+                        node_retries[awaiting] = misses
+                        audit.append({"action": "reaction_not_answer", "node": awaiting,
+                                      "reaction": reaction, "attempt": misses})
+                        gave_up = (_else_edge_of(awaiting)
+                                   if misses > _MAX_UNANSWERED_OPTION_TURNS else None)
+                        if gave_up is not None:
+                            chosen, why = gave_up, "unanswered_else"
+                        else:
+                            chosen, why = None, "reaction"
+                            reaction_reply = _reask_text(node, lang)
+                    elif requested in options:
+                        option_pick, why = options[requested], "option"
+                    elif polarity is not None:
+                        wanted = "affirm" if polarity == "yes" else "refusal"
+                        option_pick = next(
+                            (o for o in options.values() if o["signal"] == wanted), None)
+                        if option_pick is not None:
+                            why = "option_signal"
+                    if (not reaction and option_pick is None
+                            and state.get("option_judged") is True):
+                        # The decision read the whole reply against every
+                        # option and found none: the caller has not answered
+                        # yet (a question, "please repeat", a remark). No
+                        # label or capture may guess an answer from its words.
+                        chosen, why = None, "no_option"
+                    answer_hub = awaiting
+                    if option_pick is not None:
+                        answered_option = option_pick["id"]
+                        chosen = {
+                            "id": f"option:{option_pick['id']}",
+                            "label": f"option:{option_pick['id']}",
+                            "to": option_pick["to"],
+                        }
+                    elif (not reaction and why != "no_option" and chosen is not None
+                          and why == "token" and polarity is None):
+                        _edge, _why, matched = _choose_intent_edge_detailed(
+                            edge_meta_from.get(awaiting, []), text, signal, behavior,
+                            option_hub=_node_config(node).get("optionHub") is True,
+                        )
+                        if _bare_yes_no_token(matched):
+                            # The token itself is only a yes/no/courtesy word.
+                            audit.append({"action": "generic_token_ignored",
+                                          "node": awaiting, "token": matched})
+                            chosen, why = None, "no_match"
                 correction_variable = str(
                     _node_config(node).get("correctionCaptureVariable") or ""
                 ).strip()
@@ -1499,7 +1767,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                             )
                             if literal is not None and literal_why == "token":
                                 chosen, why = literal, "correction_literal"
-                if correction is None and why not in ("correction_edge",):
+                if correction is None and why not in (
+                    "correction_edge", "option", "option_signal", "reaction",
+                    "unanswered_else", "no_option",
+                ):
                     # A hub with a declared "correction" edge: whatever edge the
                     # signal picked (a "नहीं" that also matches the decline edge),
                     # a changed answer in the same breath takes the correction
@@ -1521,7 +1792,12 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     _unmatched_reply(node, signal if why == "off_script" else None, lang)
                     if chosen is None else ""
                 )
-                if correction is None and why != "correction_edge":
+                if why == "reaction" and reaction_reply:
+                    fixed_reply = reaction_reply
+                if correction is None and why not in (
+                    "correction_edge", "option", "option_signal", "reaction",
+                    "unanswered_else", "no_option",
+                ):
                     # The utterance changed/restated an answer ("nahi, Sunday
                     # nahi, Monday ko hua tha" at the readback) — whether or
                     # not a yes/no token also matched: say the updated value
@@ -1651,11 +1927,27 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                   "signal": signal, "reason": why})
                     replies.append(fixed_reply)
                     current = None
-                elif correction is None and chosen is None and why == "off_script":
+                elif correction is None and chosen is None and why in ("off_script", "no_option"):
                     audit.append({"action": "off_script", "node": awaiting,
-                                  "signal": signal})
-                    off_script = True
-                    current = None  # stay awaiting
+                                  "signal": signal,
+                                  **({"reason": "no_option"} if why == "no_option" else {})})
+                    # An option hub hears a statement it cannot place only so
+                    # often before its authored else edge takes over: the same
+                    # question a third time helps nobody. Questions, requests
+                    # to repeat and "one moment" are conversation, not misses.
+                    unanswered_else = None
+                    if options and signal not in ("question", "clarify", "hold"):
+                        misses = node_retries.get(awaiting, 0) + 1
+                        node_retries[awaiting] = misses
+                        if misses > _option_misses_allowed(node):
+                            unanswered_else = _else_edge_of(awaiting)
+                    if unanswered_else is not None:
+                        audit.append({"action": "unanswered_else", "node": awaiting,
+                                      "target": str(unanswered_else.get("to"))})
+                        chosen, why = unanswered_else, "unanswered_else"
+                    else:
+                        off_script = True
+                        current = None  # stay awaiting
                 elif correction is None and chosen is None:  # no signal, no literal match
                     retries = node_retries.get(awaiting, 0) + 1
                     node_retries[awaiting] = retries
@@ -2094,8 +2386,12 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 )
                 replies.append(spoken)
                 queue = _node_config(node).get("queue")
+                handoff_data = _handover_context(_node_config(node), context_values)
+                # Names only — the forwarded values never reach the audit.
                 audit.append({"action": "handover", "node": current,
-                              "queue": queue})
+                              "queue": queue,
+                              **({"data_keys": sorted(handoff_data)}
+                                 if handoff_data else {})})
                 handoff_queue = str(queue) if queue else None
                 status = "handoff"
                 current = None
@@ -2188,6 +2484,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "current_node": awaiting or current,
             "awaiting": awaiting,
             "handoff_queue": handoff_queue,
+            "handoff_data": handoff_data or None,
             "off_script": off_script,
             "context_response": context_response,
             "awaiting_prompt": ("Please confirm the identifier just read back, or repeat the correct one."
@@ -2196,6 +2493,14 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
             "signal_authoritative": False,
+            "option_override": None,
+            "option_judged": False,
+            "answered_option": _resolved_option(
+                answer_hub, answered_option, trace, awaiting),
+            "turn_side_effects": any(
+                entry.get("action") in ("api_call", "handover")
+                for entry in audit[turn_audit_start:]
+            ),
             "identity_resolution": None,
             "identity_confirmation": identity_confirmation,
             "terminal_set_slots": (
@@ -2413,6 +2718,8 @@ class WorkflowEngine:
         mock_tool_results: dict | None = None,
         signal: str | None = None,
         signal_authoritative: bool = False,
+        answer_option: str | None = None,
+        answer_option_judged: bool = False,
         identity_resolution: str | None = None,
         initial_slots: dict | None = None,
         context_values: dict | None = None,
@@ -2529,6 +2836,8 @@ class WorkflowEngine:
                 "awaitingAsk": _awaiting_ask_shape(pending),
                 "awaitingSignals": _awaiting_edge_signals(definition, pending),
                 "awaitingEdges": _awaiting_edges(definition, pending),
+                "awaitingOptions": _awaiting_options(definition, pending),
+                "awaitingPlainYes": _awaiting_plain_yes(definition, pending),
                 "spokenNodes": [],
                 "identityGateEncountered": _node_config(pending).get("confirmationRole") == "identity",
                 "capturedAsks": [],
@@ -2543,6 +2852,11 @@ class WorkflowEngine:
             "mock_tool_results": mock_tool_results,
             "signal_override": signal,
             "signal_authoritative": bool(signal_authoritative),
+            "option_override": str(answer_option).strip() if answer_option else None,
+            # True when a model decision judged this reply against the hub's
+            # options (whatever it chose); False for a deterministic or
+            # fallback turn, which leaves the authored labels in charge.
+            "option_judged": bool(answer_option_judged),
             "identity_resolution": identity_resolution,
             "identity_confirmation": None,
             "semantic_extraction": None,
@@ -2681,6 +2995,9 @@ class WorkflowEngine:
                                  "service_tiers": dict(invocation["semantic_extraction"].get("service_tiers") or {})}
                                 if invocation.get("semantic_extraction") is not None else None),
             "handoffQueue": state.get("handoff_queue"),
+            # Call-context values the handover node forwards with the
+            # transfer (its opt-in ``contextArgs``); None when there are none.
+            "handoffData": state.get("handoff_data") or None,
             # Off-script: the turn was NOT consumed — the workflow stays at
             # the same node and the caller (brain) must answer contextually.
             "offScript": off_script,
@@ -2699,6 +3016,12 @@ class WorkflowEngine:
             # in-memory only and are never logged.
             "awaitingIdentifier": state.get("awaiting_identifier"),
             "signal": state.get("signal"),
+            # The answer option the paused hub's reply resolved to this turn
+            # and whether the turn ran an api / handover node.
+            "answeredOption": state.get("answered_option"),
+            "turnSideEffects": bool(state.get("turn_side_effects")),
+            # The flow's own bound for replies after its closing line.
+            "closingFollowups": _closing_followups(definition),
             # How this turn's reply must be delivered (fixed | exact |
             # llm_grounded). Builders and legacy definitions produce no mode
             # → fixed, so existing workflows keep their behavior.
@@ -2727,6 +3050,9 @@ class WorkflowEngine:
             # Signals the paused intent hub's edges carry (None elsewhere).
             "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
             "awaitingEdges": _awaiting_edges(definition, awaiting_node),
+            # Semantic answer options of the paused hub (None when it has none).
+            "awaitingOptions": _awaiting_options(definition, awaiting_node),
+            "awaitingPlainYes": _awaiting_plain_yes(definition, awaiting_node),
             # An exact-wording / compliance line can follow the paused step.
             "awaitingExactAhead": _exact_wording_ahead(definition, awaiting_node),
             # A node spoken this turn that declares ``coversKnowledgeQuestion``

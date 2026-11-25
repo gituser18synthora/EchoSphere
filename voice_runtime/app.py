@@ -600,6 +600,9 @@ async def _run_call(
                 reason=message.get("reason") or "transfer",
                 call_uuid=call_uuid,
                 transport=media_transport or "audio_stream",
+                # Names of the call-context values sent with the transfer
+                # (a handover node's ``contextArgs``) — never the values.
+                data_keys=sorted(message.get("transfer_data") or {}) or None,
             )
             start_transfer_monitor(
                 session_id=session_id, call_uuid=call_uuid, recorder=recorder

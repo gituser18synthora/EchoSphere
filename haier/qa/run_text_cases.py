@@ -26,7 +26,9 @@ Usage (from the repo root):
         --snapshot storage/tmp/haier_qa/snapshot_demo.raw --output storage/tmp/haier_qa/text_demo.json
 
 Options: --cases FILE, --only ID[,ID], --repeat N (override per-case repeat),
---concurrency K (default 4), --transcripts FILE (human-readable dump).
+--concurrency K (default 4), --transcripts FILE (human-readable dump),
+--decision-timeout S (relaxed decision budget for parallel runs; a decision that
+times out falls back to the authored labels, exactly as on a live call).
 """
 from __future__ import annotations
 
@@ -159,7 +161,11 @@ def speaker_name(config: ResolvedBotConfig) -> str:
 # ----------------------------------------------------------------------------
 # one conversation
 # ----------------------------------------------------------------------------
-async def run_conversation(config, definition, payload: dict, turns: list) -> dict:
+async def open_session(config, definition, payload: dict):
+    """One isolated call: (brain, recorder, engine, greeting, background tasks).
+
+    Shared by the conversation runner below and ``run_hub_cases.py``.
+    """
     recorder = MemoryRecorder()
     runtime = await load_runtime_context(
         config.tenant_id, config.bot_id, phone=None, session_variables=dict(payload),
@@ -205,6 +211,29 @@ async def run_conversation(config, definition, payload: dict, turns: list) -> di
     brain._history = [{"role": "assistant", "content": greeting}]
     brain._last_bot_reply = greeting
     recorder.add_turn(TurnRecord(role="bot", text=greeting, timestamp=0))
+    return brain, recorder, engine, greeting, tasks
+
+
+async def close_session(brain, tasks) -> None:
+    try:
+        brain._disarm_silence_timer()
+        brain._discard_speculation("qa_done")
+        brain._discard_extraction_ahead()
+    except Exception:  # noqa: BLE001
+        pass
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def run_conversation(config, definition, payload: dict, turns: list,
+                           decision_timeout: float = 0.0) -> dict:
+    brain, recorder, engine, greeting, tasks = await open_session(config, definition, payload)
+    if decision_timeout > 0:
+        # Judge understanding, not the provider's speed under a parallel run.
+        brain._goal_engine._timeout = float(decision_timeout)
     rows = []
     error = None
     workflow_done = False
@@ -244,17 +273,7 @@ async def run_conversation(config, definition, payload: dict, turns: list) -> di
     except Exception as exc:  # noqa: BLE001 — a crash is a finding, keep going
         error = f"{type(exc).__name__}: {exc}"
     finally:
-        try:
-            brain._disarm_silence_timer()
-            brain._discard_speculation("qa_done")
-            brain._discard_extraction_ahead()
-        except Exception:  # noqa: BLE001
-            pass
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await close_session(brain, tasks)
     bot_turns = [t.text for t in recorder.turns if getattr(t, "role", "") == "bot"]
     return {
         "greeting": greeting,
@@ -367,7 +386,8 @@ async def main(opts) -> int:
         case, rep, turns = job
         async with sem:
             started = time.perf_counter()
-            res = await run_conversation(config, definition, payloads[case["reason"]], turns)
+            res = await run_conversation(config, definition, payloads[case["reason"]], turns,
+                                         decision_timeout=opts.decision_timeout)
             res.update({"id": case["id"], "repeat": rep, "reason": case["reason"], "title": case["title"],
                         "priority": case.get("priority"), "patterns": case.get("patterns"),
                         "seconds": round(time.perf_counter() - started, 1)})
@@ -420,6 +440,8 @@ if __name__ == "__main__":
     parser.add_argument("--only", default="")
     parser.add_argument("--repeat", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--decision-timeout", type=float, default=0.0,
+                        help="seconds; 0 = the bot's own decision budget")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--transcripts", type=Path)
     logging.basicConfig(level=logging.ERROR)

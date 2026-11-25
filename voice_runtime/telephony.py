@@ -292,8 +292,21 @@ class _FreeSwitchControlMixin:
             data["transfer_queue"] = str(message["transfer_queue"])
         if message.get("agent_id"):
             data["agent_id"] = str(message["agent_id"])
-        wire_message = json.dumps({"type": "transfer", "data": data})
-        logger.info("freeswitch outbound transfer: %s", wire_message)
+        # A workflow handover node's opt-in call-context values (e.g. the
+        # dialer's agent number) ride along as extra ``data`` keys; they can
+        # never replace the fields above.
+        extra = {
+            str(key): str(value)
+            for key, value in (message.get("transfer_data") or {}).items()
+            if str(key) not in data and value is not None
+        }
+        wire_message = json.dumps({"type": "transfer", "data": {**data, **extra}})
+        # Extra values (phone numbers) stay out of the logs — names only.
+        logger.info(
+            "freeswitch outbound transfer: %s",
+            json.dumps({"type": "transfer",
+                        "data": {**data, **{key: "<redacted>" for key in extra}}}),
+        )
         return wire_message
 
     async def _notify_control(self, message: dict) -> None:

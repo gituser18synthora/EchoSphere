@@ -112,6 +112,19 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   summary fields and explicit warranty evidence rules. These helpers use the
   existing interpreter contracts and do not modify runtime code, publish
   configuration or restart services.
+- `setup/haier_answer_options_repair.py` — pure amendment for the review of all
+  77 DEMO calls of 25 November (`qa/REPORT_2026-11-25.md`). Every question (81
+  intent hubs) receives `answerOptions`: what each possible answer means and
+  where it leads. With the matching runtime a reply is resolved in one order
+  at every step: a reaction that answers nothing ("hello", "hmm", "thank you")
+  re-asks the question; then the option the decision model chose for the whole
+  reply; then a plain yes / no ("ji", "haan", "theek hai", "nahi", with or
+  without sir / ma'am); the existing labels and capture patterns remain the
+  fallback for a turn the model did not judge. A bare yes/no word inside a
+  longer sentence no longer decides a branch. No route is added (an option may
+  only lead where its hub could already go) and no spoken text changes.
+  `setup/09_answer_options_local.py` saves that revision on the LOCAL bot
+  (dry-run by default); it refuses any API that is not on this machine.
 - `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
   validated configuration through the existing DEMO API only. Unchanged prompts
   and summary settings are retained. It never deploys server code or restarts

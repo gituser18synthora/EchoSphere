@@ -131,6 +131,7 @@ _SMALLTALK = re.compile(
 # patterns; a negation ("don't hang up", "फोन मत काटो") from any language wins.
 _HANGUP_NEGATION = _lang.compile_alternation("hangup_negation")
 _HANGUP_PATTERNS: list[re.Pattern] = _lang.compile_any("hangup_patterns")
+_HANGUP_REPORT = _lang.compile_alternation("hangup_report")
 
 
 def detect_hangup(text: str) -> bool:
@@ -140,10 +141,15 @@ def detect_hangup(text: str) -> bool:
         return False
     if _HANGUP_NEGATION is not None and _HANGUP_NEGATION.search(stripped):
         return False
+    if _HANGUP_REPORT is not None and _HANGUP_REPORT.search(stripped):
+        # The caller is describing a hang-up, not asking for one.
+        return False
     return any(p.search(stripped) for p in _HANGUP_PATTERNS)
 
 
-_DNC_PATTERNS: list[re.Pattern] = _lang.compile_any("dnc_patterns")
+_DNC_PATTERNS: list[re.Pattern] = [
+    *_lang.compile_any("dnc_patterns"), *_lang.compile_any("dnc_patterns_extra"),
+]
 
 
 def detect_do_not_call(text: str) -> bool:

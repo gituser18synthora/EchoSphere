@@ -188,6 +188,20 @@ workflow `handover` node — whose configured `queue` becomes `transfer_queue`)
 emits the `transfer` event *after* the bot has finished speaking its
 announcement, so the caller hears it before Vaani re-routes the call.
 
+**Transfer data (FreeSWITCH `audio_fork`).** A workflow `handover` node may
+forward call-context values with the transfer through its opt-in
+`contextArgs`: a list sends each named value under its own name
+(`"contextArgs": ["bdList"]`), a mapping renames it for the switch
+(`"contextArgs": {"number": "bdList"}`). They arrive as extra keys next to
+the protocol fields:
+`{"type":"transfer","data":{"reason":"workflow_handover","transfer_queue":"pristyn_bd","bdList":"7738184155"}}`.
+Only values the dialer / runtime context supplied for this call are sent
+(max 200 chars each); absent, blank and non-scalar values are omitted, the
+protocol fields (`reason`, `transfer_queue`, `agent_id`) cannot be replaced,
+and the values are never logged (names only, also on the `transfer_requested`
+event as `data_keys`). Without `contextArgs` the message is unchanged. The
+Vaani `transfer` event does not carry them.
+
 **Call metadata.** The signed Vaani webhook may include `callId` (attached to
 the session, written on the `call_started` event and stored on the
 conversation row as `callId`, so `GET /conversations/{callId}` and

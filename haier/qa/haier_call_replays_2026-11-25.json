@@ -1,0 +1,2530 @@
+{
+ "version": 1,
+ "bot_id": "bot_450a4f7b4832",
+ "notes": [
+  "The caller turns of the DEMO phone calls of 2026-11-25, in order, as Sarvam STT returned them (table row = CALL-nn in haier/qa/REPORT_2026-11-25.md).",
+  "Turns spoken after the original closing line carry post_close. Calls without any caller speech are not listed.",
+  "Text level only: timing, barge-in, held or dropped audio of the real call are not reproduced. Names and long digit runs are replaced.",
+  "expect: the outcome a correct agent reaches from what the caller said; open_ok where the real caller hung up before a conclusion."
+ ],
+ "payloads": {
+  "bill_not_available": {
+   "customer_name": "Rahul",
+   "product_name": "Split AC",
+   "rejection_reason": "bill_not_available",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the bill was not available at the time of the technician's visit"
+  },
+  "customer_refused_visit": {
+   "customer_name": "Rohan",
+   "product_name": "Split AC",
+   "rejection_reason": "customer_refused_visit",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the visit was declined when our technician called"
+  },
+  "product_not_delivered": {
+   "customer_name": "Nikhil",
+   "product_name": "Window AC",
+   "rejection_reason": "product_not_delivered",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the product was not delivered when our technician called"
+  },
+  "ecom_damaged_delivery": {
+   "customer_name": "Shivam",
+   "product_name": "Geyser",
+   "rejection_reason": "ecom_damaged_delivery",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the product was delivered in a damaged condition from the e-commerce website"
+  },
+  "refused_to_pay": {
+   "customer_name": "Ankur",
+   "product_name": "Microwave",
+   "rejection_reason": "refused_to_pay",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the payment was refused at the time of the technician's visit"
+  },
+  "unit_ok_no_defect": {
+   "customer_name": "Nakul",
+   "product_name": "Refrigerator",
+   "rejection_reason": "unit_ok_no_defect",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the technician found the unit working fine with no defect"
+  },
+  "not_haier_product": {
+   "customer_name": "Vaibhav",
+   "product_name": "Washing Machine",
+   "rejection_reason": "not_haier_product",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "the product is not a Haier product"
+  },
+  "no_response": {
+   "customer_name": "Sachin",
+   "product_name": "Refrigerator",
+   "rejection_reason": "no_response",
+   "l3_tagging": "complaint",
+   "rejection_reason_label": "our technician could not reach you"
+  }
+ },
+ "global_say_none": [
+  "एजेंट से जोड़ा",
+  "connect you with an agent",
+  "[\\u0600-\\u06FF]"
+ ],
+ "cases": [
+  {
+   "id": "CALL-01",
+   "reason": "product_not_delivered",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_fe81717cf356 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_fe81717cf356"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-02",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_a22893507746 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_a22893507746"
+   ],
+   "turns": [
+    {
+     "say": "कौन?"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-04",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_bac4ee7a448d of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_bac4ee7a448d"
+   ],
+   "turns": [
+    {
+     "say": "हलो। हाँ बोलो। हाँ हाँ।"
+    },
+    {
+     "say": "Correct."
+    },
+    {
+     "say": "नहीं, आया नहीं है।"
+    },
+    {
+     "say": "हाँ हाँ है।"
+    },
+    {
+     "say": "Yes, yes."
+    },
+    {
+     "say": "Yes, yes.",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-05",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_1d540bd9f203 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_1d540bd9f203"
+   ],
+   "turns": [
+    {
+     "say": "हाँ बोलिए।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-06",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_97e492dab125 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_97e492dab125"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, कुबिंदर सिंह जी से हो रही है।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-07",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_558fcc5176e0 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_558fcc5176e0"
+   ],
+   "turns": [
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "दे दिया।"
+    },
+    {
+     "say": "हाँ जी, उनसे ही हो रही है।"
+    },
+    {
+     "say": "नहीं आया था।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "थी लेकिन वो आया नहीं। पता नहीं, उन्होंने फोन नहीं उठाया।"
+    },
+    {
+     "say": "आया नहीं उसका। हाँ यार, आपने लगवा लिया ऐसे ही।"
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "cancel_no_service"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-08",
+   "reason": "not_haier_product",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_015ad3330ba1 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_015ad3330ba1"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "जी। जी। हाँ।"
+    },
+    {
+     "say": "मेरे।"
+    },
+    {
+     "say": "का प्रोडक्ट। हाँ जी।"
+    },
+    {
+     "say": "ये सही करके नहीं दे रहे आपके जो ये टेक्नीशियन है।"
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "हाँ यार, ये हमारे पास है।",
+     "post_close": true
+    },
+    {
+     "say": "अरे, वो सही कब होगा ये?",
+     "post_close": true
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "कोई वो। सर ये कभी गैस खत्म बता रहे हैं, कभी कुछ बता रहे हैं।",
+     "post_close": true
+    },
+    {
+     "say": "रिजेक्ट नहीं करना है, उसको सही करवाना है, आगे भेजो उसको रिक्वेस्ट को बड़े अधिकारी के पास।",
+     "post_close": true
+    },
+    {
+     "say": "खराब ही हो गया है वो तो।",
+     "post_close": true
+    },
+    {
+     "say": "देते हैं।",
+     "post_close": true
+    },
+    {
+     "say": "ठीक। हाँ।",
+     "post_close": true
+    },
+    {
+     "say": "ठीक है।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "never_outcome": [
+     "cancel_no_service"
+    ]
+   }
+  },
+  {
+   "id": "CALL-09",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_6d38e14ab427 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_6d38e14ab427"
+   ],
+   "turns": [
+    {
+     "say": "हाँ भैया, आ गए। नहीं, अभी तो नहीं। हेलो।"
+    },
+    {
+     "say": "नहीं बोल रहे मैडम, आप कॉल ही मत करो। यहाँ पे पैसे की कोई कमी नहीं है और हमें कोई चीज़ की ज़रूरत नहीं है। ज़िंदगी से बहुत परेशान हैं।"
+    },
+    {
+     "say": "नहीं। बाद में।",
+     "post_close": true
+    },
+    {
+     "say": "कहाँ से बात कर रही हो मैडम आप?",
+     "post_close": true
+    },
+    {
+     "say": "अभी तो अभी आया है। मैडम, 5-10 बार कॉल कर दिया मैडम, अभी तक कोई टेक्निकल और कोई घर पे नहीं आ रहा है संभालने के लिए। रोड चला रखी है क्या मैडम ये संस्था आपने?",
+     "post_close": true
+    },
+    {
+     "say": "11,800 में। जी मैडम।",
+     "post_close": true
+    },
+    {
+     "say": "कल ही 2 बार कॉल आ गई थी, तब भी नहीं आया कोई।",
+     "post_close": true
+    },
+    {
+     "say": "नहीं।",
+     "post_close": true
+    },
+    {
+     "say": "अरे मेरा अभी-अभी ना हुआ है, अभी-अभी हुआ है।",
+     "post_close": true
+    },
+    {
+     "say": "जी मैडम, बताइए।",
+     "post_close": true
+    },
+    {
+     "say": "तो पैसे मेरे पास था साहब, बारह हजार ही है भाई, सबसे पहले मेरे घर पे आओगे।",
+     "post_close": true
+    },
+    {
+     "say": "अभी ये ही चाहिए।",
+     "post_close": true
+    },
+    {
+     "say": "होइ जाएगा।",
+     "post_close": true
+    },
+    {
+     "say": "आओ, अभी मैं दे देता हूँ।",
+     "post_close": true
+    },
+    {
+     "say": "5 मिनट में आ रहा हूँ, ले बैठो तो।",
+     "post_close": true
+    },
+    {
+     "say": "और तीन-चार दिन हो गए मैडम, कंप्लेंट करते-करते। बताओ क्या करें?",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "cancel_no_service"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-10",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_9c03274c3b69 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_9c03274c3b69"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "मेरा काम हो गया है।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "कर दूँ।",
+     "post_close": true
+    },
+    {
+     "say": "ओके, हो गया है पूरा।",
+     "post_close": true
+    },
+    {
+     "say": "नहीं, थैंक यू।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ]
+   }
+  },
+  {
+   "id": "CALL-11",
+   "reason": "not_haier_product",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_72d2f8334862 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_72d2f8334862"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "कॉल आया था और वो चला गया था ना उसने खोली हमारी हमारी एल ई डी हायर कंपनी की ही है। वो सब। पैसे लेने के बहाने होते हैं। और पैसे भी चार्ज करके ले गया था, आधे घंटे टीवी चली थी, उसके बाद खराब हो गई थी। चली नहीं रही है जब से। और 4 महीने से टी वी खराब है, 4 महीने से 3 बार आ गए। 10 मिनट चलती है, खराब हो जाती है, आधे 1 मिनट चलती है, खराब हो जाती है।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "जी।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-12",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_91ba7fb4364a of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "नमस्ते। हाँ जी।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ जी है।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "जी, जी, जी।"
+    },
+    {
+     "say": "रिपीट करिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-14",
+   "reason": "product_not_delivered",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_ed92f57226da of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_ed92f57226da"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "बताइए।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "Yes, ma'am."
+    },
+    {
+     "say": "27वीं के लिए कीजिएगा।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-15",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e3ce0e5ef734 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_e3ce0e5ef734"
+   ],
+   "turns": [
+    {
+     "say": "हेलो। दे थोड़ी देर में।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-17",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_5f4fe4e287bd of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_5f4fe4e287bd"
+   ],
+   "turns": [
+    {
+     "say": "हेलो। Now being recorded."
+    },
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी बोलो मैम, कौन है?"
+    },
+    {
+     "say": "हाँ, मैं। हाँ जी।"
+    },
+    {
+     "say": "मैम हो गया। हो गई ठीक।"
+    },
+    {
+     "say": "हाँ जी, हुई थी।"
+    },
+    {
+     "say": "नहीं मैम, ठीक हो गई। अब मैकेनिक आए थे।"
+    },
+    {
+     "say": "हाँ जी। नहीं, हायर मशीन वाले आए थे।"
+    },
+    {
+     "say": "कोई दिक्कत नहीं, दिक्कत नहीं थी उसमें। वो बस बता के रहे कि ऐसे होता है। ठीक है, मैं करूँगा।"
+    },
+    {
+     "say": "हाँ जी। ठीक हो गई।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-18",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_2ecfdd5c3364 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_2ecfdd5c3364"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "हाँ, आवाज़ कट रही है।"
+    },
+    {
+     "say": "हेलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-19",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_b0106906bac0 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_b0106906bac0"
+   ],
+   "turns": [
+    {
+     "say": "हाँ ना, मैं जानता हूँ। हलो। देना चाहिए ना। हेलो। कॉल। जी सर, हेलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-20",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_8ea55ca3040f of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_8ea55ca3040f"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-22",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e2a4dff3d7f3 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_e2a4dff3d7f3"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-23",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_865fab692589 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_865fab692589"
+   ],
+   "turns": [
+    {
+     "say": "ये तो रख लो, बुझो। हेलो। हेलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-25",
+   "reason": "product_not_delivered",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_7cf0bb4d29ac of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_7cf0bb4d29ac"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "नहीं, नहीं।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-26",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_be572ff163b0 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_be572ff163b0"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "नमस्ते, बोलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-27",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_64faef0e4250 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_64faef0e4250"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी मैम, बताइए।"
+    },
+    {
+     "say": "हाँ मैम, हो गया और कर दिया उन्होंने, टीवी इंस्टॉल कर दी।"
+    },
+    {
+     "say": "नहीं मैडम जी।"
+    },
+    {
+     "say": "हाँ जी। कर दूँगा। कुछ नहीं।"
+    },
+    {
+     "say": "हाँ, एक दिन में।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-28",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_533aa87d05dd of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_533aa87d05dd"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "विजिट हुई थी।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "Yes."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-29",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_6bd3876b3821 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_6bd3876b3821"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-30",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_0a1dc4f939c7 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_0a1dc4f939c7"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "हेलो, हाँ नमस्कार। नमस्कार।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-31",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_205129e392bb of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_205129e392bb"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "जी जी।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "जी हाँ।"
+    },
+    {
+     "say": "टेक्नीशियन हमारे घर पर आया ही नहीं था। मना तो तब करेंगे मैडम।"
+    },
+    {
+     "say": "रिक्वायरमेंट है एक साल के अंदर कोई भी जो सर्विस फ्री होती है कोई सर्विस नहीं की गई है। बिल्कुल भी कंपनी तरफ से कोई सर्विस हमें प्रोवाइड नहीं की गई।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "जी कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-32",
+   "reason": "product_not_delivered",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_0c60c6434ab0 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_0c60c6434ab0"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ, ओके। हाँ, अभी।"
+    },
+    {
+     "say": "राम राम। अब इसके इस प्रॉब्लम से फिर पहले भी एरियर जमा करता तब से देता है सर। देंगे ना उनको। हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं नहीं, वो कर गया, कर गया, सही कर गया, कोई दिक्कत नहीं मुझे।"
+    },
+    {
+     "say": "क्यों, कल करते हैं। कर दिया।",
+     "post_close": true
+    },
+    {
+     "say": "कल दे तो दिया। तकनीशियन का एक कॉल आया था कि हमारा। क्या नाम है? ए वन स्टार से। कर तो दिया उसने, और क्या चाहिए मुझे?",
+     "post_close": true
+    },
+    {
+     "say": "यार, एआई को छोड़ के तुम किसी इंसान को तो फोन दे दो, तो मैं उससे बात कर लूँगा। क्या मतलब है ये?",
+     "post_close": true
+    },
+    {
+     "say": "क्यों? हाँ तो ठीक है, तुम फोन। काट सकती है।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "cancel_no_service"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-33",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_2d543b02e3e2 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_2d543b02e3e2"
+   ],
+   "turns": [
+    {
+     "say": "मैंने कंप्लेंट डाल रखी है ए सी की।"
+    },
+    {
+     "say": "कहाँ जाना है? आ दिए हैं, उनका 2 नंबर का। लड़के की। शाम को बताओ, हेलो। तो मधु का तो लोन डले हो रहा।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "हाँ। भैया। नहीं, अभी तो नहीं। हाँ। अब ले पधारो। अरे, आ जा, आ जा। हेलो, यस। अब तो आ गया, अब घर ही छोड़ के।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "हाँ जी, यस यस।"
+    },
+    {
+     "say": "Yes."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-34",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_558f2c926c2e of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_558f2c926c2e"
+   ],
+   "turns": [
+    {
+     "say": "Hi, if you record your name and reason for calling, I'll see if this person is available."
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-35",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_417929519ca4 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_417929519ca4"
+   ],
+   "turns": [
+    {
+     "say": "बोल रहा हूँ।"
+    },
+    {
+     "say": "बोल रहा हूँ।"
+    },
+    {
+     "say": "हाँ जी, हाँ जी।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "ना तो।"
+    },
+    {
+     "say": "बिल्कुल है। उनके जो फाल्ट है, वो आपके टेक्नीशियन की समझ में नहीं आ रहा।"
+    },
+    {
+     "say": "बिल्कुल करो।"
+    },
+    {
+     "say": "यस कर दो।"
+    },
+    {
+     "say": "आप टेक्नीशियन भेजेंगी कि नहीं?",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-36",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_bf9bbd8d9381 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ],
+   "turns": [
+    {
+     "say": "हाँ। बड़ी।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं।"
+    },
+    {
+     "say": "नहीं।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ]
+   }
+  },
+  {
+   "id": "CALL-37",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_c6e17890f89e of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_c6e17890f89e"
+   ],
+   "turns": [
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "हाँ, अभी हो गई। नहीं, हमारी वॉशिंग मशीन तो ठीक हो गई है, हमें अब रिपेयर नहीं करवानी।"
+    },
+    {
+     "say": "नहीं नहीं, कोई रिक्वायरमेंट नहीं है।"
+    },
+    {
+     "say": "ठीक है।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service",
+     "redispatch_completion",
+     "close_completed_other",
+     "close_completed"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-38",
+   "reason": "product_not_delivered",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_d560227812c2 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_d560227812c2"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ हाँ।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-39",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_2606b6a2a1e5 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_2606b6a2a1e5"
+   ],
+   "turns": [
+    {
+     "say": "अभी।"
+    },
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "नहीं मैम, कोई विजिट नहीं। मतलब आए थे, उन्होंने देखा था और फिर उन्होंने बोला ये चीज़ लगेगी। फिर उसके बाद मैंने फ्रिज चला के देखा तो फ्रिज चल पड़ा था। जी, लेकिन उसमें आवाज़ की प्रॉब्लम है। वो मैंने उनको बताया कि आवाज़ में प्रॉब्लम है, फ्री में बहुत तेज आवाज़ आ रही है। फिर उसके बाद कोई आया ही नहीं वो।"
+    },
+    {
+     "say": "हैं मैम, आकर एक बार चेक कर लें दोबारा। आए थे लेकिन वो दोबारा चेक करने कोई आया नहीं उसको।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "never_outcome": [
+     "cancel_no_service"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-40",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_bb42f2cfc9b2 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ],
+   "turns": [
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "विजिट हुआ था।"
+    },
+    {
+     "say": "अभी तो अब। सही करके किया कल। तो आप देखिए। आज चला के चलेगा तो। एक दो दिन में पता चलेगा।"
+    },
+    {
+     "say": "आज तो ठीक है मैम, आप 2-4 रोज चलाएंगे तभी पता चलेगा।"
+    },
+    {
+     "say": "नहीं, हायर का टेक्निकल। किया, लेकिन वो टाइम बहुत 15 दिन लगा है। 15 दिन से चक्कर कटवाए। 15 दिन तक कंपनी में फोन करते रहे, करते रहे। उसके बाद जाके मसला हल हुआ। टाइम ज़्यादा लगा है बहुत।"
+    },
+    {
+     "say": "नहीं, अभी तो कोई नहीं है। क्यों? ठीक है मैम। कोई काम नहीं हो रहा था आज। ठीक काम ही है। हलो। हाँ जी।"
+    },
+    {
+     "say": "हलो। ठीक है मैम, टाइम लगा लेकिन हुआ तो सही लेकिन टाइम लगा बहुत।"
+    },
+    {
+     "say": "बा। नहीं नहीं। टेक्नीशियन हायर का सेट किया हुआ।"
+    },
+    {
+     "say": "नहीं हायर का टेक्नीशियन सही किया था।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ],
+    "max_same_question": 2
+   }
+  },
+  {
+   "id": "CALL-42",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_079003f59d4b of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_079003f59d4b"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-43",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_a335fdbd51a8 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_a335fdbd51a8"
+   ],
+   "turns": [
+    {
+     "say": "Hi, if you record your name and Waiting for calling. I'll see if this person is available. हलो।"
+    },
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "ठीक है।"
+    },
+    {
+     "say": "Yes?"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "No, no technician called me. I didn't receive any call from the technician."
+    },
+    {
+     "say": "No, no."
+    },
+    {
+     "say": "Yes, I I do require."
+    },
+    {
+     "say": "Yes."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-44",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_8dd9d45bcec4 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_8dd9d45bcec4"
+   ],
+   "turns": [
+    {
+     "say": "उनके भाई से हो जाएगा जी।"
+    },
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "आहो, ठीक है।"
+    },
+    {
+     "say": "हाँ, हेलो।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "नहीं, मना नहीं किए हैं।"
+    },
+    {
+     "say": "ठीक।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "cancel_no_service"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-45",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_a834ea5eb2da of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_a834ea5eb2da"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, हो रही है।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-47",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_94f9eabbd7fb of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_94f9eabbd7fb"
+   ],
+   "turns": [
+    {
+     "say": "हैलो।"
+    },
+    {
+     "say": "हम्म।"
+    },
+    {
+     "say": "मैम ऑलरेडी हो चुकी है, आपसे रिक्वेस्ट है कि अब दोबारा फ़ोन ना करें।"
+    },
+    {
+     "say": "अभी नहीं।"
+    }
+   ],
+   "expect": {
+    "nodes_none": [
+     "n_apologize_no_visit"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-48",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_ec4c5f4d5522 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_ec4c5f4d5522"
+   ],
+   "turns": [
+    {
+     "say": "अभी नहीं होगा। बिल।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-49",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_cbfe7ec2c298 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_cbfe7ec2c298"
+   ],
+   "turns": [
+    {
+     "say": "बताइए।"
+    },
+    {
+     "say": "हाँ बताइए।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "अभी जाके देखेंगे जी, दो दिन दुकान बंद थी।"
+    },
+    {
+     "say": "अभी देखेंगे जी, जाके 2 दिन दुकान बंद थी।"
+    }
+   ],
+   "expect": {
+    "nodes_none": [
+     "n_resolved_how_q",
+     "n_unit_ok_pending_apology"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-50",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_393d734727c3 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_393d734727c3"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हैं जी?"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-52",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_57ba0d9e578c of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_57ba0d9e578c"
+   ],
+   "turns": [
+    {
+     "say": "अच्छा सर। हाँ हाँ, मैं सुन रहा हूँ। अभी। बोलिए।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-54",
+   "reason": "no_response",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_37d33a1825c2 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_37d33a1825c2"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "जी नमस्कार।"
+    },
+    {
+     "say": "जी नमस्कार।"
+    },
+    {
+     "say": "जी जी।"
+    },
+    {
+     "say": "मैम, कॉल आया था लेकिन विज़िट नहीं हुई थी।"
+    },
+    {
+     "say": "करते चलो। बिल्कुल रिक्वायरमेंट है।"
+    },
+    {
+     "say": "कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-55",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_324231bf92ae of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_324231bf92ae"
+   ],
+   "turns": [
+    {
+     "say": "जी। नहीं जाना, हेलो।"
+    },
+    {
+     "say": "हलो। आने वाला है, दो मिनट में वो। रीना, नहीं मैडम तो घर पे होंगे। हाँ हाँ, वो उसका घरवाला ही आ रहा है ना, दो मिनट में। सुरेश भाई के साथ है, बस तुम बैठो पाँच मिनट। हलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-56",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_60f6b5248a47 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_60f6b5248a47"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "मैम मूवी विजिट पार्क पे डल गया।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-57",
+   "reason": "not_haier_product",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_6652c97047d0 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_6652c97047d0"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "नमस्कार। Safety to enhance the availability of your product. हलो।"
+    },
+    {
+     "say": "कॉल कर दीजिए। हाँ बताएँ।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ, आया था।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "No."
+    },
+    {
+     "say": "No, no.",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-58",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_2f4353ba2fd7 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_2f4353ba2fd7"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-59",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_1e5683d0681a of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_1e5683d0681a"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "Yes ma'am."
+    },
+    {
+     "say": "Yes ma'am."
+    },
+    {
+     "say": "यस मैम, रिक्वायरमेंट है पर ऑलमोस्ट आफ्टर 25 डेज।"
+    },
+    {
+     "say": "अभी। नमस्ते, नमस्ते। हेलो। हेलो।"
+    },
+    {
+     "say": "Yes ma'am."
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch",
+     "cancel_service_later"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-60",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_0c4b3122bdd1 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_0c4b3122bdd1"
+   ],
+   "turns": [
+    {
+     "say": "हेलो, यस।"
+    },
+    {
+     "say": "सॉरी, इंग्लिश प्लीज। Please."
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "Sorry, do you speak English?"
+    },
+    {
+     "say": "अच्छा।"
+    },
+    {
+     "say": "I did not deny any service. But is this from the higher company for the installation?"
+    },
+    {
+     "say": "Are you calling for Are you calling from Haier installation?"
+    },
+    {
+     "say": "I did not decline the service because delivery of AC will only happen tomorrow. Installation is supposed to happen on Friday."
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "Yes, but only on Friday."
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "To the 27th. 7th of November.",
+     "post_close": true
+    },
+    {
+     "say": "I request. Technician to visit on 27th of November.",
+     "post_close": true
+    },
+    {
+     "say": "No, that's it.",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-61",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_58e0c147c47a of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_58e0c147c47a"
+   ],
+   "turns": [
+    {
+     "say": "जी।"
+    },
+    {
+     "say": "हाँ जी, हुई थी। पेमेंट भी हो गई, काम भी हो गया।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ जी।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch_completion"
+    ]
+   }
+  },
+  {
+   "id": "CALL-62",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_609062fcbaac of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_609062fcbaac"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी बोलिए।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-63",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_8e20e04698d5 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_8e20e04698d5"
+   ],
+   "turns": [
+    {
+     "say": "हलो।"
+    },
+    {
+     "say": "हाँ बोलिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-64",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_b71467ac66ea of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_b71467ac66ea"
+   ],
+   "turns": [
+    {
+     "say": "हलो। चाहिए। हलो। अभी नहीं मिल जाएगा। हलो।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-65",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_f47205fb8254 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_f47205fb8254"
+   ],
+   "turns": [
+    {
+     "say": "अभी नहीं चाहिए। हैलो। हलो।"
+    },
+    {
+     "say": "मान तो। गवर्नमेंट ने बोल दिया वो। हाँ जी।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-66",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_cb7f928abdd2 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_cb7f928abdd2"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "अभी नहीं।"
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-67",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_fba92c1f6d20 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "हाँ जी, मेरे पास कॉल आया था। इवन वो आए भी थे। ये बात बिलकुल गलत है कि मैंने उनको बाद में आने के लिए बोला, क्योंकि वो जिस दिन आए थे वो अकेले आए थे। और वो यह बोल रहे थे। कि ये एक दिन से नहीं हो पाएगा, इसके लिए दो आदमी चाहिए और वो अकेले आए थे। तो इसमें मेरी क्या गलती हुई?"
+    },
+    {
+     "say": "मैंने कोई सर्विस के लिए मना नहीं किया था। उन्होंने मुझसे पूछा था ये घर कहाँ पर पड़ेगा? उसका मैंने बाकायदा उनको एड्रेस बताया। और बोला भी था स्पेसिफिकली कि मेरे को डी-इंस्टॉलिंग करानी है।"
+    },
+    {
+     "say": "अब बिल्कुल है मैडम।"
+    },
+    {
+     "say": "बिल्कुल कर दीजिए, पर ये जो पिछली बार टेक्नीशियन आए थे वो नहीं चाहिए मेरे को, कोई नया टेक्नीशियन। चाहिए और जो मेरा जल्द से जल्द काम कर दे।"
+    },
+    {
+     "say": "बिल्कुल कीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-68",
+   "reason": "no_response",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_abfdbc4b4c3d of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_abfdbc4b4c3d"
+   ],
+   "turns": [
+    {
+     "say": "जी बताइए।"
+    },
+    {
+     "say": "हाँ, कल विजिट हुई थी।"
+    },
+    {
+     "say": "वो तो मैं नहीं जानती, लेकिन। कंप्लेन के लिए 1.5 महीने तक वेट करना तो मुझे समझ नहीं आया। मुझे बाहर से ही कराना पड़ा, जबकि मैंने एएनसी करा रखी है। ठीक है, आपके लोगों के पास में, हायर के पास में पार्ट्स ही नहीं रहते हैं। कभी कुछ नहीं है, कभी यह नहीं है, वह नहीं है। तो एक। मतलब आप समझ लीजिए ना। कि फेस्टिवल टाइम हो और। डेढ़ महीने फ्रिज खराब रहे तो कैसा चलेगा?"
+    },
+    {
+     "say": "अब उस।"
+    },
+    {
+     "say": "हलो।"
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "unverified_no_action"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-69",
+   "reason": "customer_refused_visit",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e7daa74893b9 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_e7daa74893b9"
+   ],
+   "turns": [
+    {
+     "say": "जी मैडम, उससे पिंटू से बात हो रही है। हाँ जी, वो ही है।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "नहीं मैडम, सर्विस के लिए मना तो नहीं करें हमने।"
+    },
+    {
+     "say": "जी हाँ मैडम, उसको रिप्लेस करवाने के लिए।"
+    },
+    {
+     "say": "जी मैडम।"
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ, अभी।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CALL-70",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e0494c888008 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_e0494c888008"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "हाँ, लेट हुई थी बट लेट हुई थी।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "No."
+    },
+    {
+     "say": "अपने आप।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_resolved"
+    ]
+   }
+  },
+  {
+   "id": "CALL-71",
+   "reason": "refused_to_pay",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e991e753916b of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_e991e753916b"
+   ],
+   "turns": [
+    {
+     "say": "हलो। हाँ जी। नमस्कार जी। हाँ जी बोलिए।"
+    },
+    {
+     "say": "हाँ, दो दिन में। 9999999999."
+    },
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "say": "हाँ।"
+    },
+    {
+     "say": "मेरा प्रोडक्ट तो अभी। अंडर वारंटी है मेरा प्रोडक्ट, अंडर वारंटी है, मैं कल को पेमेंट करूँगा।"
+    },
+    {
+     "say": "रिक्वेस्ट फॉरवर्ड कर दो, बट मैं पेमेंट नहीं करूँगा।"
+    },
+    {
+     "say": "जी, मैं पेमेंट नहीं करूँगा।"
+    }
+   ],
+   "expect": {
+    "never_outcome": [
+     "unverified_no_action"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-73",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_57e6de928bee of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_57e6de928bee"
+   ],
+   "turns": [
+    {
+     "say": "You have to."
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-74",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_b762e64798b8 of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_b762e64798b8"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "हाँ जी मैम।"
+    },
+    {
+     "say": "एक विजिट हुई थी मैम।"
+    },
+    {
+     "say": "हाँ जी मैम।"
+    },
+    {
+     "say": "हाँ जी मैम, कर दो।"
+    },
+    {
+     "say": "हाँ जी मैम, कर दीजिए।"
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "आवाज़ आ रही है आपको मेरी?",
+     "post_close": true
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "हाँ जी मैम, भेज दूँगी। दीजिए, भेज दीजिए मैम। प्रॉब्लम है मेरी वॉशिंग मशीन में।",
+     "post_close": true
+    },
+    {
+     "say": "हेलो।",
+     "post_close": true
+    },
+    {
+     "say": "वॉशिंग मशीन में प्रॉब्लम है मैम। वो टेक्नीशियन को बोला तो था मैंने, वो बोला मैं आगे फॉरवर्ड कर दूँगा आपकी दिक्कत को।",
+     "post_close": true
+    },
+    {
+     "say": "हाँ जी मैम।",
+     "post_close": true
+    },
+    {
+     "say": "उसमें मुझे नहीं पता, उसमें। उसने क्या फीडबैक दिया आपको?",
+     "post_close": true
+    },
+    {
+     "say": "लेकिन मेरी मशीन वाइब्रेट कर रही है अभी।",
+     "post_close": true
+    },
+    {
+     "say": "और स्पेन वाला भी। काम नहीं कर रही है।",
+     "post_close": true
+    },
+    {
+     "say": "हाँ जी।",
+     "post_close": true
+    },
+    {
+     "say": "प्रॉपर काम नहीं कर रहा है। वो गड़गड़ गड़गड़ गड़गड़ ऐसे बहुत देर तक आवाज़ करता है वो।",
+     "post_close": true
+    },
+    {
+     "say": "Yes ma'am.",
+     "post_close": true
+    },
+    {
+     "say": "ठीक। ठीक है मैम।",
+     "post_close": true
+    },
+    {
+     "say": "ठीक है मैम, प्लीज़। प्लीज थोड़ा जल्दी करवा देना।",
+     "post_close": true
+    },
+    {
+     "say": "पर जल्दी करना मैडम।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "CALL-76",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_0b27dfa2ff3c of 2026-11-25, caller turns replayed in order",
+   "patterns": [],
+   "source_calls": [
+    "cv_0b27dfa2ff3c"
+   ],
+   "turns": [
+    {
+     "say": "Your call has been forwarded to voicemail. The person you're trying to reach is not available. Add the tone. Please record your message. When you have finished recording, you may hang up."
+    }
+   ],
+   "expect": {
+    "open_ok": true
+   }
+  }
+ ]
+}

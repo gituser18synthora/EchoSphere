@@ -37,6 +37,18 @@ class LanguagePack:
     canonical_yes: frozenset[str] = frozenset()     # words that name a YES canonical
     canonical_no: frozenset[str] = frozenset()
     stop_tokens: frozenset[str] = frozenset()       # never a knowledge topic
+    # Whole words of a reply that carry no answer of their own. Each set is a
+    # CATEGORY (every script, spelling and common speech-to-text rendering of
+    # it), not a list of the forms one call happened to contain.
+    courtesy_words: frozenset[str] = frozenset()    # forms of address: sir, ma'am, please
+    attention_words: frozenset[str] = frozenset()   # contact checks: hello, hmm, "boliye"
+    thanks_words: frozenset[str] = frozenset()      # thank you / dhanyavaad / welcome
+    farewell_words: frozenset[str] = frozenset()    # bye / tata / alvida
+    intensifier_words: frozenset[str] = frozenset()  # "bilkul": strengthens a yes OR a no
+    # Yes words that are also a DESCRIPTION: "ठीक है" agrees to a proposal ("may
+    # I forward it?") but describes the product at a status question ("does
+    # it still have a problem?"). A subset of bare_yes.
+    agreement_words: frozenset[str] = frozenset()
 
     # ── regex fragments ─────────────────────────────────────────────────────
     affirm_tokens: tuple[str, ...] = ()             # bare confirmations
@@ -58,6 +70,8 @@ class LanguagePack:
     hangup_negation: tuple[str, ...] = ()           # "don't hang up" (negations win)
     hangup_patterns: tuple[str, ...] = ()           # full regexes, any one ends the call
     dnc_patterns: tuple[str, ...] = ()              # "never call me again"
+    dnc_patterns_extra: tuple[str, ...] = ()        # the rest of the do-not-call category
+    hangup_report: tuple[str, ...] = ()             # "he hung up" / "the call dropped": not a request
     emergency: tuple[str, ...] = ()
     consent_refusal: tuple[str, ...] = ()           # "don't record"
     smalltalk: str = ""                             # whole-utterance smalltalk regex

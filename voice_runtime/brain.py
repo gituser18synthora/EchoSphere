@@ -103,7 +103,11 @@ from shared.orchestration.delivery import delivery_instructions
 from shared.orchestration.deterministic_answers import (
     ASK_KIND_HUB,
     DeterministicAnswer,
+    attention_only as _attention_only_reply,
+    closing_reaction,
+    resolve_reaction,
     resolve_short_answer,
+    yes_no_polarity,
 )
 from shared.orchestration.phrases import canned
 from voice_runtime.stt_recovery import STTFinalMissingFrame
@@ -261,6 +265,10 @@ logger = logging.getLogger(__name__)
 # After farewell playback, leave enough time for a caller's last question to
 # open a confirmed turn. Raw VAD activity also delays the final commit.
 _WORKFLOW_CLOSE_GRACE_S = 0.75
+# Upper bound for a workflow's ``closingFollowups`` (start node config): the
+# replies the bot gives after the closing line before it ends the call.
+_MAX_CLOSING_FOLLOWUPS = 5
+_FAREWELL_SENTENCE_SPLIT = re.compile(r"(?<=[।.!?])\s+")
 
 
 def interim_is_stability_reference(frame) -> bool:
@@ -1112,6 +1120,16 @@ class ConversationBrain(FrameProcessor):
         # The paused hub's edges ({tokens, signals}; engine ``awaitingEdges``).
         self._pending_hub_edges: list[dict] | None = None
         self._open_turn_pending_hub_edges: list[dict] | None = None
+        # The paused hub's semantic answer options ({id, meaning}; engine
+        # ``awaitingOptions``): offered to the decision model, which returns
+        # the id of the option the caller's reply means.
+        self._pending_hub_options: list[dict] | None = None
+        self._open_turn_pending_hub_options: list[dict] | None = None
+        # How that hub reads a plain yes: "agreement" (a proposal: "ठीक है" /
+        # "ok" agree) or "explicit" (only yes / haan / ji do); engine
+        # ``awaitingPlainYes``.
+        self._pending_hub_plain_yes: str | None = None
+        self._open_turn_pending_hub_plain_yes: str | None = None
         # Whether an exact-wording / compliance line can follow the paused
         # workflow step (engine ``awaitingExactAhead``).
         self._pending_exact_ahead = False
@@ -1413,6 +1431,26 @@ class ConversationBrain(FrameProcessor):
         self._pending_workflow_close: tuple[int, str] | None = None
         self._workflow_close_task: asyncio.Task | None = None
         self._workflow_farewell_text = ""
+        # Seconds of the farewell that had played when the caller cut it, None
+        # when it was heard out; a farewell cut early is spoken once more
+        # before the line closes on a mere acknowledgement.
+        self._farewell_cut_played: float | None = None
+        self._farewell_replayed = False
+        # Replies given after the closing line, and the workflow's own bound
+        # for them (``closingFollowups`` on its start node; None = unbounded,
+        # the behaviour of every workflow that does not declare it).
+        self._closing_followups = 0
+        self._closing_followup_limit: int | None = None
+        # The authored courtesy that ends the terminal line ("…धन्यवाद, आपका
+        # दिन शुभ रहे।"): spoken again after a follow-up answer so the call
+        # never ends on a bare answer and never on an improvised goodbye.
+        self._terminal_farewell_tail = ""
+        # The turn that completed the workflow: the hub it answered, that
+        # hub's answer options and the option the reply resolved to. A caller
+        # who answers that question AGAIN after the closing line (changing or
+        # correcting the answer) re-enters the flow there instead of leaving
+        # a contested, empty outcome behind.
+        self._terminal_turn: dict | None = None
         # The completed flow stays completed when its farewell is interrupted.
         # Follow-up questions must not replay its terminal nodes or tools.
         self._completed_workflow: str | None = None
@@ -1722,7 +1760,12 @@ class ConversationBrain(FrameProcessor):
             unheard_reply_pending = (
                 isinstance(frame, UserStartedSpeakingFrame)
                 and self._open_turn_text is not None
-                and self._completed_workflow is None
+                # The turn that COMPLETED a workflow is never rewound (its
+                # outcome is committed). A follow-up turn after the closing
+                # line is ordinary speech: a caller still talking when its
+                # reply is being prepared is finishing that thought, and the
+                # whole of it must be answered — not the last fragment.
+                and (self._completed_workflow is None or self._open_turn_workflow is None)
                 and not self._reply_audio_started
                 and (self._generation_in_flight() or self._unheard_reply_merge_window_open())
             )
@@ -4120,6 +4163,8 @@ class ConversationBrain(FrameProcessor):
                 self._pending_identifier_confirmation = self._open_turn_pending_identifier_confirmation
                 self._pending_hub_signals = self._open_turn_pending_hub_signals
                 self._pending_hub_edges = self._open_turn_pending_hub_edges
+                self._pending_hub_options = self._open_turn_pending_hub_options
+                self._pending_hub_plain_yes = self._open_turn_pending_hub_plain_yes
                 self._pending_exact_ahead = self._open_turn_pending_exact_ahead
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
                 # The reply whose turn was just rewound no longer belongs to
@@ -5011,6 +5056,8 @@ class ConversationBrain(FrameProcessor):
             "workflow_reply_interrupted", nodes=list(self._reply_nodes),
             played_s=round(played, 2),
         )
+        if self._completed_workflow is not None and self._workflow_farewell_active:
+            self._farewell_cut_played = played
         # Not lost yet: the router reports per-sentence audio for the cut
         # reply; if every sentence but the closing question had played, the
         # caller did hear the content (cv_fd720f2e9024).
@@ -5107,15 +5154,12 @@ class ConversationBrain(FrameProcessor):
 
     @staticmethod
     def _attention_only_turn(text: str) -> bool:
-        """A contact check contains no answer to a business question."""
-        # Include Indic combining marks by tokenizing punctuation/space instead.
-        words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
-        vocabulary = {
-            "hello", "helo", "hallo", "hi", "hey", "हेलो", "हैलो", "हलो",
-            "ji", "jee", "जी", "sir", "ma'am", "madam", "mam", "सर", "मैडम",
-        }
-        attention = {"hello", "helo", "hallo", "hi", "hey", "हेलो", "हैलो", "हलो"}
-        return bool(words and len(words) <= 6 and set(words) <= vocabulary and set(words) & attention)
+        """A contact check contains no answer to a business question.
+
+        The word category lives in the language packs (``attention_words``):
+        every spelling of hello, greetings, "boliye / bataiye", listening
+        hums, with or without a yes word or a form of address."""
+        return _attention_only_reply(text)
 
     def _short_barge_in_context(self, text: str) -> str | None:
         """Context for the transcript arbiter; no routing or state mutation.
@@ -5161,17 +5205,13 @@ class ConversationBrain(FrameProcessor):
         return None
 
     def _closing_acknowledgement(self, text: str) -> bool:
-        """Bounded, content-free farewell reactions must not reopen a flow."""
-        if self._attention_only_turn(text) or is_filler_only(text):
-            return True
-        words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
-        vocabulary = {
-            "yes", "yeah", "yep", "haan", "han", "ha", "हाँ", "हां", "ji", "jee", "जी",
-            "ok", "okay", "theek", "thik", "ठीक", "hai", "है", "thanks", "thank", "you",
-            "thankyou", "dhanyavaad", "dhanyawad", "धन्यवाद", "shukriya", "शुक्रिया",
-            "bye", "goodbye", "sir", "madam", "mam", "सर", "मैडम", "hmm", "hm", "हम्म",
-        }
-        return bool(words and len(words) <= 6 and set(words) <= vocabulary)
+        """Bounded, content-free farewell reactions must not reopen a flow.
+
+        The whole category, not a word list of one call: acknowledgements,
+        thanks, goodbyes, returned greetings, contact checks and hums in
+        every script and spelling (``deterministic_answers.closing_reaction``).
+        """
+        return is_filler_only(text) or closing_reaction(text)
 
     async def _retain_completed_close(
         self, text: str, audio_started_at: float | None,
@@ -5188,6 +5228,23 @@ class ConversationBrain(FrameProcessor):
             route="closing_acknowledgement",
         ))
         self._recorder.add_event("workflow_closing_acknowledgement", workflow=self._completed_workflow)
+        farewell = self._workflow_farewell_text
+        cut, self._farewell_cut_played = self._farewell_cut_played, None
+        if (
+            cut is not None and farewell and not self._farewell_replayed
+            # ~14 characters a second: cut before roughly 60% had played.
+            and cut < 0.6 * (len(farewell) / 14.0)
+        ):
+            # The caller's "ठीक है" landed on the first words of the closing
+            # line: they agreed to hear it, they have not heard it. Say it
+            # once in full, then close.
+            self._farewell_replayed = True
+            self._recorder.add_event(
+                "workflow_farewell_replayed", workflow=self._completed_workflow,
+                played_s=round(cut, 2),
+            )
+            self._begin_reply_tracking()
+            await self._say(farewell)
         await self._close_workflow_completed(self._completed_workflow)
 
     @staticmethod
@@ -5441,6 +5498,16 @@ class ConversationBrain(FrameProcessor):
         token = self._workflow_close_serial
         self._pending_workflow_close = (token, workflow_name)
         self._workflow_farewell_text = self._last_bot_reply
+        self._farewell_cut_played = None
+        if (self._closing_followup_limit is not None
+                and not self._terminal_farewell_tail and not self._closing_followups):
+            sentences = [
+                part.strip() for part in
+                _FAREWELL_SENTENCE_SPLIT.split((self._last_bot_reply or "").strip())
+                if part.strip()
+            ]
+            if len(sentences) >= 2:
+                self._terminal_farewell_tail = sentences[-1]
         self._disarm_silence_timer()
         self._recorder.add_event("workflow_closing_started", workflow=workflow_name)
         # A control frame, ordered behind all TTS contexts and paced output. No
@@ -5461,7 +5528,16 @@ class ConversationBrain(FrameProcessor):
         self, text: str, decision: RouteDecision, started: float,
         orchestrated: ConversationDecision | None, tool_instruction: str = "",
     ) -> None:
-        """Answer a last question without replaying the completed workflow."""
+        """Answer a last question without replaying the completed workflow.
+
+        A workflow that declares ``closingFollowups`` (start node config)
+        gets the bounded variant below; every other workflow keeps the
+        behaviour it had.
+        """
+        if self._closing_followup_limit is not None:
+            await self._answer_closing_followup_bounded(
+                text, decision, started, orchestrated, tool_instruction)
+            return
         self._workflow_farewell_active = False
         self._unheard_reply = None
         facts = collected_facts_block(getattr(self._recorder, "workflow_slots", {}) or {})
@@ -5522,6 +5598,155 @@ class ConversationBrain(FrameProcessor):
         )
         if close_after_reply:
             await self._close_workflow_completed(self._completed_workflow)
+
+    async def _answer_closing_followup_bounded(
+        self, text: str, decision: RouteDecision, started: float,
+        orchestrated: ConversationDecision | None, tool_instruction: str = "",
+    ) -> None:
+        """The follow-up of a workflow that declares ``closingFollowups``.
+
+        Bounded: every follow-up reply is followed by the closing courtesy and
+        the hang-up, except one clarification the decision asked for. The
+        second reply always closes — a caller cannot be kept on a finished
+        call by a chain of "anything else?" turns, and a spoken goodbye is
+        always followed by the line actually closing.
+        """
+        self._workflow_farewell_active = False
+        self._unheard_reply = None
+        self._farewell_cut_played = None
+        self._closing_followups += 1
+        last = self._closing_followups >= int(self._closing_followup_limit or 0)
+        facts = collected_facts_block(getattr(self._recorder, "workflow_slots", {}) or {})
+        from shared.orchestration.workflow_corrections import correction_from_state
+        correction = correction_from_state(getattr(self._recorder, "call_state", None))
+        # Use the validated decision, never punctuation in generated speech,
+        # to decide whether the bot is still waiting for caller input.
+        # Without a decision (engine failed) nothing says the caller is done:
+        # the call stays open for that turn, as it does for a clarification.
+        close_after_reply = bool(
+            last or (orchestrated is not None and not orchestrated.needs_clarification)
+        )
+        tail = self._terminal_farewell_tail if close_after_reply else ""
+        self._recorder.add_event(
+            "workflow_closing_followup", workflow=self._completed_workflow,
+            count=self._closing_followups, closes=close_after_reply,
+        )
+        await self._generate_reply(
+            text, decision, started,
+            extra_system=(
+                "\n\n# Caller continued before disconnect\n"
+                "The workflow has completed, but the call is still connected. "
+                "The caller continued during the farewell: listen and respond "
+                "to this new turn even if an earlier instruction says to stay "
+                "silent after closing. Do not restart the workflow, repeat its "
+                "questions or side effects. Report a new action only when "
+                "the current turn's tool results confirm it. Answer "
+                "only from the conversation, verified caller context, collected "
+                "facts below and retrieved knowledge; never invent timings or "
+                "promises. Speak only about the caller's concern: never "
+                "describe what was noted, forwarded, pending, under review or "
+                "what you understood earlier. "
+                "Never say a cancellation/referral cannot be changed unless an "
+                "actual tool result proves that restriction. "
+                + (
+                    "The caller explicitly contested the previous outcome. "
+                    "Acknowledge what they now say in one short sentence; do "
+                    "not reaffirm the old outcome and do not claim a new "
+                    "action was done. "
+                    if correction else ""
+                )
+                + (
+                    (
+                        "Answer in one or two short sentences. Do not ask a "
+                        "question, do not thank the caller and do not say "
+                        "goodbye: the closing line is spoken right after "
+                        "your answer."
+                        if tail else
+                        "Answer the concern briefly, then close politely "
+                        "without asking another question."
+                    )
+                    if close_after_reply else
+                    "The caller's turn is not ready for closing. Invite the "
+                    "question they have not asked yet, or ask the one brief "
+                    "clarification you need. Do not say goodbye and do not "
+                    "ask whether they need anything else."
+                )
+                + facts
+                + tool_instruction
+            ),
+        )
+        if close_after_reply:
+            if tail and tail not in (self._last_bot_reply or ""):
+                await self._say(tail)
+            await self._close_workflow_completed(self._completed_workflow)
+
+    def _terminal_turn_reanswerable(self) -> bool:
+        """The last question of the completed flow declared answer options
+        and its turn ran no tool: a changed answer can be routed again."""
+        terminal = self._terminal_turn
+        return bool(terminal is not None and terminal["options"] and not terminal["side_effects"])
+
+    def _closing_reanswer_option(
+        self, orchestrated: ConversationDecision | None,
+    ) -> str | None:
+        """The option the caller's post-closing words give to the LAST
+        question they answered, when the decision named one; None when they
+        did not answer it again (or that turn cannot be reopened)."""
+        terminal = self._terminal_turn
+        if (
+            terminal is None or terminal["reopened"] or terminal["side_effects"]
+            or not terminal["options"] or orchestrated is None
+            or orchestrated.source != "llm" or not orchestrated.option
+        ):
+            return None
+        offered = {str(option.get("id")) for option in terminal["options"]}
+        return orchestrated.option if orchestrated.option in offered else None
+
+    async def _reopen_completed_workflow(self) -> bool:
+        """Put the flow back at the question its last turn answered.
+
+        The caller changed that answer after the closing line. The engine
+        state returns to the moment before the terminal turn (no node of it
+        ran a tool), the announced outcome is withdrawn and the caller's new
+        words are then routed as the answer at that question.
+        """
+        terminal = self._terminal_turn
+        if terminal is None or self._workflows is None:
+            return False
+        name = terminal["workflow"]
+        try:
+            rolled = await self._workflows.rollback_last_turn(
+                session_id=self._recorder.session_id, workflow_name=name,
+            )
+        except Exception:  # noqa: BLE001 — a failed reopen keeps the closed state
+            rolled = False
+        if not rolled:
+            return False
+        terminal["reopened"] = True
+        self._cancel_workflow_close("answer_changed")
+        self._workflow_farewell_active = False
+        self._farewell_cut_played = None
+        self._completed_workflow = None
+        self._completed_workflow_id = None
+        self._active_workflow = name
+        self._pending_workflow_question = terminal["question"]
+        self._pending_ask_shape = None
+        self._pending_identifier_confirmation = False
+        self._pending_hub_signals = terminal["signals"]
+        self._pending_hub_edges = terminal["edges"]
+        self._pending_hub_options = terminal["options"]
+        self._pending_hub_plain_yes = terminal["plain_yes"]
+        self._pending_exact_ahead = terminal["exact_ahead"]
+        slots = dict(getattr(self._recorder, "workflow_slots", {}) or {})
+        for key in self._terminal_outcome_slots:
+            slots.pop(key, None)
+        self._recorder.workflow_slots = slots
+        self._terminal_outcome_slots = set()
+        self._recorder.add_event(
+            "workflow_reopened_after_closing", workflow=name,
+            option_before=terminal["option"],
+        )
+        return True
 
     def _record_late_workflow_correction(
         self, text: str, decision: ConversationDecision | None,
@@ -6442,12 +6667,48 @@ class ConversationBrain(FrameProcessor):
                     and any(word in salutations for word in words))
 
     def _pickup_hello_pending(self, text: str) -> bool:
-        return bool(
+        if not (
             self._opening_greeting and self._hearing_probe_pending is None
             and not self._workflow_ever_routed and self._active_workflow is None
             and not self._identity.confirmed and not self._closing
-            and self._pickup_hello_only(text)
-        )
+        ):
+            return False
+        return self._pickup_hello_only(text) or self._pickup_response_before_question(text)
+
+    @staticmethod
+    def _greeting_question_heard_after(text: str) -> float:
+        """Seconds of greeting audio after which its closing question (the
+        name it asks for) has reached the caller: the sentences before it at
+        ~14 characters a second, plus the first half of the question itself."""
+        sentences = [
+            part for part in _FAREWELL_SENTENCE_SPLIT.split((text or "").strip()) if part.strip()
+        ]
+        if not sentences:
+            return 0.0
+        question = sentences[-1]
+        before = max(0, len((text or "").strip()) - len(question))
+        return before / 14.0 + min(1.5, len(question) / 28.0)
+
+    def _pickup_response_before_question(self, text: str) -> bool:
+        """A pickup response to a greeting whose question was not played yet.
+
+        People answer the phone with "हाँ", "जी", "हाँ जी बोलिए", "हेलो हाँ
+        जी" before the bot has said who it wants. Cut off in its first words,
+        the greeting never asked "am I speaking with …?", so that word cannot
+        be the answer to it (DEMO 2026-11-25: identity was "confirmed" this
+        way on 12 of 77 calls and the caller then heard a long explanation
+        from an unknown voice). The greeting is spoken again, once; a reply
+        to the full question is the identity answer as before.
+        """
+        opening = self._opening_greeting
+        if (
+            not opening or opening["heard"] or opening["recovered"]
+            or not opening["interrupted"]
+        ):
+            return False
+        if not (_attention_only_reply(text) or yes_no_polarity(text) == "yes"):
+            return False
+        return float(opening["played"] or 0.0) < self._greeting_question_heard_after(opening["text"])
 
     def _interrupt_opening_greeting(self) -> None:
         opening = self._opening_greeting
@@ -6914,6 +7175,20 @@ class ConversationBrain(FrameProcessor):
             decision, active_workflow=self._active_workflow,
             allow_affirm_entry=not self._workflow_ever_routed,
         )
+        reanswer = self._closing_reanswer_option(orchestrated) if completed_followup else None
+        if reanswer is not None and reanswer != (self._terminal_turn or {}).get("option"):
+            # The caller answered the last question again, differently
+            # ("नहीं नहीं, cancel मत करो", "अरे कर दो ना"): the flow goes back
+            # to that question and routes the new answer.
+            reopened_workflow = (self._terminal_turn or {}).get("workflow")
+            if await self._reopen_completed_workflow():
+                completed_followup = False
+                decision = RouteDecision(
+                    kind=RouteKind.WORKFLOW, action=reopened_workflow,
+                    confidence=1.0, reason="closing_answer_changed", signal=signal,
+                )
+            else:
+                reanswer = None
         if completed_followup and decision.kind == RouteKind.WORKFLOW:
             # The terminal workflow is already committed. A closing
             # interruption is a question about that outcome, not permission
@@ -7002,6 +7277,13 @@ class ConversationBrain(FrameProcessor):
             )
         terminal_correction = bool(
             completed_followup
+            # Repeating the same answer confirms the outcome; it contests
+            # nothing. And where the last question can be answered again, a
+            # changed answer re-enters the flow there (above): a remark that
+            # changes no answer leaves the recorded outcome in place instead
+            # of blanking it ("खराब ही हो गया है वो तो" after a re-dispatch).
+            and reanswer is None
+            and not self._terminal_turn_reanswerable()
             and self._record_late_workflow_correction(text, orchestrated)
         )
         will_run_tool = bool(
@@ -7237,6 +7519,16 @@ class ConversationBrain(FrameProcessor):
                 await self._redirect_off_goal(
                     orchestrated, plan, decision, text, started
                 )
+            elif completed_followup and reanswer is not None:
+                # The caller repeated the answer the closing line was built
+                # on: the outcome stands. The closing courtesy, then the end.
+                self._recorder.add_event(
+                    "workflow_closing_reaffirmed", workflow=self._completed_workflow,
+                    option=reanswer,
+                )
+                if self._terminal_farewell_tail:
+                    await self._say(self._terminal_farewell_tail)
+                await self._close_workflow_completed(self._completed_workflow)
             elif completed_followup:
                 await self._answer_workflow_closing_followup(
                     text, decision, started, orchestrated,
@@ -7356,6 +7648,7 @@ class ConversationBrain(FrameProcessor):
                         orchestrated is not None and orchestrated.context_question
                         and orchestrated.needs_clarification
                     ),
+                    **await self._answer_option_inputs(text, orchestrated),
                 )
             elif decision.reason == "entry_reprompt":
                 from shared.orchestration.phrases import entry_question_retry
@@ -7733,6 +8026,21 @@ class ConversationBrain(FrameProcessor):
         ):
             return None
         pending = self._pending_ask()
+        if self._pending_ask_shape is None and self._pending_hub_options:
+            # "hello" / "hmm" / "thank you" at a hub with answer options is
+            # not an answer: the hub re-asks at once, no decision call.
+            reaction = resolve_reaction(text)
+            if reaction is not None:
+                return reaction
+            if (
+                self._pending_hub_plain_yes == "explicit"
+                and yes_no_polarity(text) is not None
+                and yes_no_polarity(text, agreement=False) is None
+            ):
+                # "ठीक है" / "ok" at a question about a state ("is there
+                # still a problem?") may describe that state: the decision
+                # reads it against the hub's options, no word list does.
+                return None
         if self._pending_ask_shape is None and (
             self._pending_hub_edges is not None or self._pending_hub_signals is not None
         ):
@@ -7746,6 +8054,70 @@ class ConversationBrain(FrameProcessor):
             text, pending.kind, options=pending.options, question=pending.question,
             synonyms=(self._pending_ask_shape or {}).get("synonyms"),
         )
+
+    def _offered_answer_option(
+        self, orchestrated: ConversationDecision | None
+    ) -> str | None:
+        """The decision's answer option when it names one the paused hub
+        offered this turn; None otherwise (no decision, no options offered,
+        or an id that was not on offer)."""
+        chosen = getattr(orchestrated, "option", None)
+        if not chosen or not self._pending_hub_options:
+            return None
+        offered = {str(option.get("id")) for option in self._pending_hub_options}
+        if chosen not in offered:
+            self._recorder.add_event("answer_option_unknown", option=str(chosen)[:64])
+            return None
+        return chosen
+
+    async def _answer_option_inputs(
+        self, text: str, orchestrated: ConversationDecision | None,
+    ) -> dict:
+        """``answer_option`` / ``answer_option_judged`` for this workflow turn.
+
+        The decision's own option when it stated one. A model decision that
+        left the key out judged nothing about the options: the reply then gets
+        one focused second reading (question + reply + options only) before
+        the authored labels are left to guess from its words.
+        """
+        if (
+            orchestrated is None or orchestrated.source != "llm"
+            or not self._pending_hub_options
+        ):
+            return {"answer_option": None, "answer_option_judged": False}
+        if orchestrated.option_stated:
+            return {
+                "answer_option": self._offered_answer_option(orchestrated),
+                "answer_option_judged": True,
+            }
+        if orchestrated.context_question:
+            return {"answer_option": None, "answer_option_judged": False}
+        offered = {str(option.get("id")) for option in self._pending_hub_options}
+        started = time.perf_counter()
+        engine = self._goal_engine
+        judged, chosen = await engine.choose_option(
+            self._pending_workflow_question or self._last_bot_reply, text,
+            "; ".join(
+                f"{option['id']} = {option.get('meaning') or option['id']}"
+                for option in self._pending_hub_options
+            ),
+            timeout=min(1.5, engine.timeout_seconds),
+        )
+        usage, engine.last_usage = engine.last_usage, None
+        if usage is not None:
+            counters = self._recorder.usage
+            counters["decision_llm_requests"] = counters.get("decision_llm_requests", 0) + 1
+            counters["decision_llm_input_tokens"] = (
+                counters.get("decision_llm_input_tokens", 0) + usage[0])
+            counters["decision_llm_output_tokens"] = (
+                counters.get("decision_llm_output_tokens", 0) + usage[1])
+        if chosen is not None and chosen not in offered:
+            chosen = None
+        self._recorder.add_event(
+            "answer_option_reread", judged=judged, option=chosen,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
+        return {"answer_option": chosen, "answer_option_judged": judged}
 
     def _deterministic_answer_decision(
         self, answer: DeterministicAnswer
@@ -7974,6 +8346,13 @@ class ConversationBrain(FrameProcessor):
                 state["options_offered"] = list(pending.options)
         if self._workflow_identity_pending():
             state["expected_answer"] = "identity confirmation (yes/no)"
+        elif self._active_workflow and self._pending_hub_options:
+            # The paused hub names what each possible answer MEANS; the
+            # decision returns the id the caller's reply expresses.
+            state["answer_options"] = "; ".join(
+                f"{option['id']} = {option.get('meaning') or option['id']}"
+                for option in self._pending_hub_options
+            )
         if self._pending_context_clarification is not None and self._active_workflow:
             state["context_clarification"] = dict(self._pending_context_clarification)
             state["pending_question"] = (
@@ -7982,6 +8361,7 @@ class ConversationBrain(FrameProcessor):
             )
             state["expected_answer"] = "clarification of the caller's question; no business consent"
             state.pop("options_offered", None)
+            state.pop("answer_options", None)
         if self._completed_workflow is not None and self._active_workflow is None:
             state["workflow_stage"] = f"completed:{self._completed_workflow}"
             state["call_connected"] = True
@@ -7994,6 +8374,25 @@ class ConversationBrain(FrameProcessor):
                 "answer_from_knowledge. A genuinely new action keeps its "
                 "configured intent/tool route."
             )
+            terminal = self._terminal_turn
+            if (
+                terminal is not None and terminal["options"]
+                and not terminal["reopened"] and not terminal["side_effects"]
+            ):
+                state["answer_options"] = "; ".join(
+                    f"{option['id']} = {option.get('meaning') or option['id']}"
+                    for option in terminal["options"]
+                )
+                state["pending_question"] += (
+                    " The last question the caller answered before the closing "
+                    f"line was: \"{terminal['question']}\""
+                    + (f", understood as option \"{terminal['option']}\"."
+                       if terminal["option"] else ".")
+                    + " Set option ONLY when the caller's new words answer THAT "
+                    "question again (repeating, changing or correcting their "
+                    "answer). For an acknowledgement, thanks, a goodbye, a new "
+                    "question or anything else, option is null."
+                )
             slots = getattr(self._recorder, "workflow_slots", {}) or {}
             fact_sources = {spec.source for spec in self._goal_policy.summary_fields}
             state["recorded_conversational_facts"] = {
@@ -8636,6 +9035,8 @@ class ConversationBrain(FrameProcessor):
         *, signal_authoritative: bool = False,
         identity_resolution: str | None = None,
         context_question_needs_clarification: bool = False,
+        answer_option: str | None = None,
+        answer_option_judged: bool = False,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
         if (self._pending_context_clarification is not None
@@ -8674,11 +9075,15 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_pending_identifier_confirmation = self._pending_identifier_confirmation
         self._open_turn_pending_hub_signals = self._pending_hub_signals
         self._open_turn_pending_hub_edges = self._pending_hub_edges
+        self._open_turn_pending_hub_options = self._pending_hub_options
+        self._open_turn_pending_hub_plain_yes = self._pending_hub_plain_yes
         self._open_turn_pending_exact_ahead = self._pending_exact_ahead
         workflow_started = time.perf_counter()
         result = await self._workflows.handle_turn_detailed(
             signal=signal if signal_authoritative else signal or decision.signal,
             signal_authoritative=signal_authoritative,
+            **({"answer_option": answer_option} if answer_option else {}),
+            **({"answer_option_judged": True} if answer_option_judged else {}),
             **({"identity_resolution": identity_resolution} if identity_resolution is not None else {}),
             session_id=self._recorder.session_id,
             tenant_id=self._config.tenant_id,
@@ -8790,6 +9195,26 @@ class ConversationBrain(FrameProcessor):
         if result.get("status") == "done" and result["done"]:
             self._completed_workflow = workflow_name
             self._completed_workflow_id = result.get("workflowId") or workflow_name
+            limit = result.get("closingFollowups")
+            self._closing_followup_limit = (
+                max(0, min(int(limit), _MAX_CLOSING_FOLLOWUPS))
+                if isinstance(limit, int) and not isinstance(limit, bool) else None
+            )
+            previous_terminal = self._terminal_turn
+            self._terminal_turn = {
+                "workflow": workflow_name,
+                "question": self._open_turn_pending_question,
+                "options": list(self._open_turn_pending_hub_options or []),
+                "plain_yes": self._open_turn_pending_hub_plain_yes,
+                "signals": self._open_turn_pending_hub_signals,
+                "edges": self._open_turn_pending_hub_edges,
+                "exact_ahead": self._open_turn_pending_exact_ahead,
+                "option": result.get("answeredOption"),
+                "side_effects": bool(result.get("turnSideEffects")),
+                # One reopening per call: a second change of mind is answered
+                # and reviewed, the flow is not walked a third time.
+                "reopened": bool(previous_terminal and previous_terminal["reopened"]),
+            }
             self._terminal_outcome_slots = {
                 key for key in result.get("terminalSetSlots") or []
                 if isinstance(key, str) and key in self._recorder.workflow_slots
@@ -8814,6 +9239,15 @@ class ConversationBrain(FrameProcessor):
         self._pending_hub_edges = (
             [dict(e) for e in hub_edges if isinstance(e, dict)]
             if isinstance(hub_edges, list) and not result["done"] else None
+        )
+        hub_options = result.get("awaitingOptions")
+        self._pending_hub_options = (
+            [dict(o) for o in hub_options if isinstance(o, dict) and o.get("id")]
+            if isinstance(hub_options, list) and not result["done"] else None
+        ) or None
+        self._pending_hub_plain_yes = (
+            str(result.get("awaitingPlainYes") or "") or None
+            if self._pending_hub_options else None
         )
         self._pending_exact_ahead = bool(
             result.get("awaitingExactAhead") and not result["done"]
@@ -9028,6 +9462,11 @@ class ConversationBrain(FrameProcessor):
             }
             if result.get("handoffQueue"):
                 control["transfer_queue"] = str(result["handoffQueue"])
+            if result.get("handoffData"):
+                # The handover node's opt-in ``contextArgs`` (e.g. the
+                # dialer's agent number): the telephony side needs them to
+                # place the transfer.
+                control["transfer_data"] = dict(result["handoffData"])
             self._queue_control(control)
         elif result.get("status") == "done" and result.get("done"):
             await self._close_workflow_completed(workflow_name)

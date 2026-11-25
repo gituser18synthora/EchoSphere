@@ -11,12 +11,51 @@ PACK = LanguagePack(
     value_readback_request=(r"(?<![\wऀ-ॿ])(?:batao|bataye|bataiye|bata\s+(?:do|phir|sakt[ei])|(?:kya|kaunsa|kaun\s*sa)\b.{0,60}\b(?:note|likha|likhe)|dobara|phir\s+se|दोबारा|फिर\s+से|बताओ|बताइए|बता\s+(?:दो|सकते|सकती)|(?:क्या|कौन\s*सा).{0,60}(?:नोट|लिखा)|पुष्टि|कन्फर्म|रिपीट)(?![\wऀ-ॿ])",),
     value_readback_negation=(r"(?<![\wऀ-ॿ])(?:mat|मत)(?![\wऀ-ॿ])",),
     caller_value_reference=(r"(?<![\wऀ-ॿ])(?:mera|meri|mere|maine|aapne\b.{0,60}\b(?:note|likha|likhe)|मेरा|मेरी|मेरे|मैंने|आपने.{0,60}(?:नोट|लिखा))(?![\wऀ-ॿ])",),
-    bare_yes=frozenset({"bilkul", "haan", "haanji", "han", "hanji", "jarur", "ji", "sahi", "theek", "thik", "zaroor", "जरूर", "ज़रूर", "जी", "ठीक", "पक्का", "बिलकुल", "बिल्कुल", "सही", "हा", "हाँ", "हाँजी", "हां", "हांजी"}),
-    bare_no=frozenset({"nahi", "nahin", "नही", "नहीं", "ना", "नो"}),
+    bare_yes=frozenset({
+        "bilkul", "haan", "haanji", "han", "hanji", "jarur", "ji", "sahi", "theek", "thik", "zaroor",
+        "जरूर", "ज़रूर", "जी", "ठीक", "पक्का", "बिलकुल", "बिल्कुल", "सही", "हा", "हाँ", "हाँजी", "हां", "हांजी",
+        # the same yes in its other spellings and speech-to-text renderings
+        "haa", "haaan", "hnji", "bilkool", "zarur", "jaroor", "jaroor", "avashya", "chalega",
+        "ठिक", "जरुर", "ज़रुर", "अवश्य", "चलेगा", "हाँँ", "हांँ",
+        # English yes words as Hindi speech-to-text writes them
+        "यस", "येस", "यप", "ओके", "ओक", "श्योर", "शुअर", "करेक्ट", "राइट", "ऑलराइट", "डन",
+    }),
+    bare_no=frozenset({"nahi", "nahin", "नही", "नहीं", "ना", "नो", "nahee", "nahiin", "naa", "नहि", "नहीँ", "नोप"}),
+    courtesy_words=frozenset({
+        "sir", "sar", "saab", "sahab", "saheb", "sahib", "madam", "medam", "maidam", "mam", "maam", "ma'am",
+        "mem", "maim", "didi", "bhaiya", "bhaiyya", "bhaisaab", "behen", "behenji", "uncle", "aunty",
+        "please", "plz", "pls", "kripya",
+        "सर", "साहब", "साब", "साहेब", "मैडम", "मेडम", "मैडेम", "मैम", "मेम", "मैंम", "मॅम", "दीदी", "भैया",
+        "भइया", "भाईसाहब", "बहन", "बहनजी", "अंकल", "आंटी", "प्लीज़", "प्लीज", "कृपया",
+    }),
+    attention_words=frozenset({
+        "hello", "helo", "hallo", "hullo", "halo", "hlo", "hey", "hi",
+        "हेलो", "हैलो", "हलो", "हॅलो", "हल्लो", "हेल्लो", "हैल्लो", "हालो", "एलो", "अलो", "हाय",
+        "namaste", "namaskar", "namashkar", "pranam", "नमस्ते", "नमस्कार", "प्रणाम",
+        "suniye", "sunie", "suno", "sunna", "सुनिए", "सुनिये", "सुनो",
+        "boliye", "bolie", "bolo", "bol", "बोलिए", "बोलिये", "बोलो", "बोल",
+        "bataiye", "bataie", "batao", "बताइए", "बताइये", "बताओ",
+        "kahiye", "kahie", "kaho", "कहिए", "कहिये", "कहो",
+        "hmm", "hm", "hmmm", "hmmmm", "mm", "mhm", "हम्म", "हम्", "हम्म्म", "हम्मम", "हमम", "हूँ", "हूं", "हुं", "हुँ", "ऊँ", "उम्म",
+    }),
+    thanks_words=frozenset({
+        "dhanyavaad", "dhanyawad", "dhanyavad", "dhanyabad", "shukriya", "shukria", "meherbani",
+        "धन्यवाद", "धन्यवाद्", "शुक्रिया", "मेहरबानी",
+        "थैंक्स", "थैंक्यू", "थैंकयू", "थैंक्यु", "थैंकू", "वेलकम",
+    }),
+    farewell_words=frozenset({
+        "alvida", "tata", "अलविदा", "टाटा", "बाय", "बाई", "गुडबाय",
+    }),
+    intensifier_words=frozenset({"bilkul", "bilkool", "ekdam", "बिलकुल", "बिल्कुल", "एकदम"}),
+    agreement_words=frozenset({
+        "theek", "thik", "sahi", "chalega", "ठीक", "ठिक", "सही", "पक्का", "चलेगा",
+        "ओके", "ओक", "करेक्ट", "राइट", "ऑलराइट", "डन",
+    }),
     # "hmm" stays a FILLER here: it becomes a yes only as the whole reply to a
     # pending yes/no question (shared.orchestration.router.is_bare_hmm, used
     # by the router, the brain's fallback signal and yes/no ask resolution).
-    fillers=frozenset({"ab", "are", "arre", "bas", "bhai", "bhi", "hai", "hi", "hmm", "tha", "tho", "to", "toh", "wo", "woh", "ye", "yeh", "अब", "अरे", "जी", "तो", "था", "बस", "भाई", "भी", "ये", "वो", "ही", "है"}),
+    fillers=frozenset({"ab", "are", "arre", "bas", "bhai", "bhi", "hai", "hi", "hmm", "tha", "tho", "to", "toh", "wo", "woh", "ye", "yeh", "अब", "अरे", "जी", "तो", "था", "बस", "भाई", "भी", "ये", "वो", "ही", "है",
+                       "chalo", "chaliye", "चलो", "चलिए", "चलिये"}),
     strip_fillers=frozenset({"are", "arre", "bhai", "tho", "to", "toh", "अरे", "जी", "तो", "भाई"}),
     generic_answer_tokens=frozenset({"accha", "acha", "achha", "han", "hmm", "ok ji", "okay ji", "sahi", "theek", "thik", "अच्छा", "ओके", "ठीक", "सही", "हम्म"}),
     canonical_yes=frozenset({"haan", "ji haan", "जी हाँ", "हाँ"}),
@@ -189,16 +228,41 @@ PACK = LanguagePack(
     hangup_negation=(
         r"""(?:\bmat\b|\bna\b|\bnahin?\b|\bdon'?t\b|\bdo not\b|मत|ना|नहीं)\W*(?:\w+\W+)?(?:kat+\w*|kaat\w*|cut|band|bandh|khat[ae]?m|rakh\w*|hang|disconnect|काट\w*|कट|बंद|ख़?त्म|रख)|(?:kat+n[aei]|kaatn[aei]|काटना|कट करना)\W+(?:mat\b|मत)|(?:kat+\w*|kaat\w*|cut|band|bandh|काट\w*|कट|बंद|rakh\w*|रख\w*|disconnect|hang\s+up)\W+(?:mat|na|nahin?|मत|ना|नहीं|नही)(?![\wऀ-ॿ])""",
     ),
+    # A REPORT that someone hung up or that the line dropped is not a request
+    # to end this call: "टेक्नीशियन ने फोन काट दिया", "usne phone rakh diya
+    # tha", "कॉल कट गया था".
+    hangup_report=(
+        r"""(?:\bne\b|ने)\W+(?:[\wऀ-ॿ']+\W+){0,4}?(?:kaat|kat+|rakh|काट|कट|रख)\W*(?:diya|diye|di|dee|दिया|दिये|दिए|दी)(?![\wऀ-ॿ])""",
+        r"""(?:kaat|kat+|rakh|काट|कट|रख)\W*(?:diya|diye|di|दिया|दिये|दिए|दी)\W+(?:tha|thi|the|था|थी|थे)(?![\wऀ-ॿ])""",
+        r"""(?:kat+|कट)\W*(?:gaya|gayi|gaye|jata|jati|गया|गई|गयी|गए|जाता|जाती)(?![\wऀ-ॿ])""",
+    ),
     hangup_patterns=(
         r"""(?:\b(?:phone|phon|fone|call|kaal)\b|फ़?ोन|फ़ोन|फोन|कॉल|काल)\W*(?:ko\W+|को\W*)?(?:kat+\w*|kaat\w*|cut|band\w*|khat[ae]?m|khatm|rakh\w*|काट\w*|कट|बंद|ख़?त्म|रख)""",
         r"""\b(?:kat+|kaat|cut)\s+(?:kar\w*|kr\w*|do|de|dijiye|dena)\b""",
         r"""(?:काट|कट)\s*(?:कर\s*)?(?:दो|दे|दीजिए|करो|करिए)""",
         r"""\bbas\b.{0,16}\b(?:band|bandh|khat[ae]?m|khatm)\s+kar\w*""",
         r"""बस.{0,16}(?:बंद|ख़?त्म)\s*कर""",
+        # "ठीक है, रखता हूँ" / "चलो रखती हूँ" as the whole turn or its last words.
+        r"""(?:^|[।.,!]|\b(?:theek\s+hai|accha|achha|chalo|chaliye|ok|okay|bas|phir)\b|ठीक\s+है|अच्छा|चलो|चलिए|ओके|बस|फिर)\W*(?:(?:main|mai|mein|मैं|अब|ab)\W+)?(?:rakh(?:ta|ti|te)\W+(?:hoon|hun|hu|hain)|रख(?:ता|ती|ते)\W+(?:हूँ|हूं|हु|हैं))\W*$""",
+        r"""(?:kaat|kat+)\W+rah[aie]\W+(?:hoon|hun|hu|hain)|(?:काट|कट)\W+रह[ाीे]\W+(?:हूँ|हूं|हु|हैं)""",
     ),
     dnc_patterns=(
         r"""(?:dobara|dubara|phir|firse|fir se|aage|kabhi|दोबारा|दुबारा|फिर|आगे|कभी)\s*(?:se\s*|से\s*)?(?:call|phone|कॉल|फोन)?\s*(?:mat|मत|na|नहीं|nahi)\s*(?:kar|कर|karna|करना|karo|करो)""",
         r"""(?:call|phone|कॉल|फोन)\s*(?:mat|मत)\s*(?:kar|कर)\w*|(?:mat|मत)\s*(?:karo|करो|karna|करना)\s*(?:call|phone|कॉल|फोन)""",
+    ),
+    # The whole "stop calling me" category, in every word order callers use
+    # ("कॉल ही मत करो", "दोबारा फ़ोन ना करें", "मत करना कॉल", "कॉल करना बंद
+    # करो", "परेशान मत करो", "मेरा नंबर हटा दो", "आपका कॉल नहीं चाहिए").
+    # An object + a prohibition + an IMPERATIVE: a statement about the past
+    # ("कॉल नहीं आया", "उसने कॉल नहीं किया") and "don't hang up" ("कॉल मत
+    # काटो") never match.
+    dnc_patterns_extra=(
+        r"""(?:calls?|phone|phon|fone|kaal|कॉल(?:्स)?|काल|कौल|फ़ोन|फोन|फ़ोन)(?:\W+[\wऀ-ॿ']+){0,3}?\W+(?:mat|na|naa|nahi|nahin|nhi|मत|ना|न|नहीं|नही)\W*(?:kar(?:o|na|ein|en|e|iye|ie|iyega|iyo)\b|kijiye(?:ga)?\b|kijie\b|keejiye\b|lagan?a\b|lagao\b|milan?a\b|milao\b|करो|करना|करें|करे|करिए(?:गा)?|करिये(?:गा)?|करियो|कीजिए(?:गा)?|कीजिये(?:गा)?|लगाना|लगाओ|लगाइए|मिलाना|मिलाओ|किया\W+करो|kiya\W+karo)""",
+        r"""(?:mat|na|naa|nahi|nahin|nhi|मत|ना|न|नहीं|नही)\W*(?:kar(?:o|na|ein|en|e|iye|ie|iyega|iyo)\b|kijiye(?:ga)?\b|kijie\b|keejiye\b|lagan?a\b|lagao\b|milan?a\b|milao\b|करो|करना|करें|करे|करिए(?:गा)?|करिये(?:गा)?|करियो|कीजिए(?:गा)?|कीजिये(?:गा)?|लगाना|लगाओ|लगाइए|मिलाना|मिलाओ|किया\W+करो|kiya\W+karo)\W+(?:calls?|phone|phon|fone|kaal|कॉल(?:्स)?|काल|कौल|फ़ोन|फोन|फ़ोन)""",
+        r"""(?:dobara|dubara|doobara|phir\s*se|fir\s*se|firse|aage\s*se|aaj\s+ke\s+baad|kabhi|दोबारा|दुबारा|फिर\s*से|आगे\s*से|आज\s+के\s+बाद|कभी)(?:\W+[\wऀ-ॿ']+){0,2}?\W+(?:calls?|phone|phon|fone|kaal|कॉल(?:्स)?|काल|कौल|फ़ोन|फोन|फ़ोन)\W+(?:mat|na|naa|nahi|nahin|nhi|मत|ना|न|नहीं|नही)\W*(?:kar(?:o|na|ein|en|e|iye|ie|iyega|iyo)\b|kijiye(?:ga)?\b|kijie\b|keejiye\b|lagan?a\b|lagao\b|milan?a\b|milao\b|करो|करना|करें|करे|करिए(?:गा)?|करिये(?:गा)?|करियो|कीजिए(?:गा)?|कीजिये(?:गा)?|लगाना|लगाओ|लगाइए|मिलाना|मिलाओ|किया\W+करो|kiya\W+karo)""",
+        r"""(?:(?:calls?|phone|phon|fone|kaal|कॉल(?:्स)?|काल|कौल|फ़ोन|फोन|फ़ोन)|calling|कॉलिंग)\W+(?:(?:karna|करना|aana|आना)\W+)?(?:band|bandh|बंद)\W*(?:kar|कर|kij|कीजि|ho|हो)""",
+        r"""(?:calls?|phone|phon|fone|kaal|कॉल(?:्स)?|काल|कौल|फ़ोन|फोन|फ़ोन)(?:\W+[\wऀ-ॿ']+){0,3}?\W+(?:mat|na|naa|nahi|nahin|nhi|मत|ना|न|नहीं|नही)\W*(?:aan[aie]\W+)?(?:आन[ाीे]\W+)?(?:chahiye|chaiye|चाहिए|चाहिये)""",
+        r"""(?:pareshan|pareshaan|परेशान|tang|तंग|disturb|डिस्टर्ब)\W+(?:mat|मत|na|ना)\W*(?:kar|कर|kij|कीजि)""",
     ),
     emergency=(
         r"""accident (?:ho|हो)""",

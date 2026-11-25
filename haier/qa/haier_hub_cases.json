@@ -1,0 +1,2594 @@
+{
+ "version": 1,
+ "bot_id": "bot_450a4f7b4832",
+ "notes": [
+  "Step-level cases: one workflow question + one caller reply (see run_hub_cases.py).",
+  "*-R* = real replies from the DEMO calls of 2026-11-25 (source_calls); *-U* = the user's permission rule; *-N* = replies not seen in those calls, one per kind of answer in the category.",
+  "Utterances are written the way Sarvam STT returns them. No real name, number or address.",
+  "OK-* = every question/reply pair of the calls that went right on 2026-11-25 (report rows 36, 61, 70): these must keep their destination.",
+  "STATE-* = 'theek hai / ok / sahi' at a question about a state: it may describe the state, so it is never taken as a plain yes there.",
+  "REG-* = steps of haier_test_cases.json that an early version of the answer options broke (BILL-05, CB-04, ID-03, RTP-06, SVC-01)."
+ ],
+ "cases": [
+  {
+   "id": "PERM-R01",
+   "hub": "n_redispatch",
+   "say": "जी।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_72d2f8334862",
+    "cv_205129e392bb"
+   ]
+  },
+  {
+   "id": "PERM-R02",
+   "hub": "n_redispatch",
+   "say": "जी, जी, जी।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ]
+  },
+  {
+   "id": "PERM-R03",
+   "hub": "n_redispatch",
+   "say": "बिल्कुल करो।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_417929519ca4"
+   ]
+  },
+  {
+   "id": "PERM-R04",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "यस कर दो।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_417929519ca4"
+   ]
+  },
+  {
+   "id": "PERM-R05",
+   "hub": "n_redispatch",
+   "say": "जी मैडम।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_e7daa74893b9"
+   ]
+  },
+  {
+   "id": "PERM-R06",
+   "hub": "n_redispatch",
+   "say": "हाँ जी मैम, कर दो।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_b762e64798b8"
+   ]
+  },
+  {
+   "id": "PERM-R07",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "हाँ जी मैम, कर दीजिए।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_b762e64798b8"
+   ]
+  },
+  {
+   "id": "PERM-R08",
+   "hub": "n_redispatch",
+   "say": "27वीं के लिए कीजिएगा।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_ed92f57226da"
+   ]
+  },
+  {
+   "id": "PERM-R09",
+   "hub": "n_redispatch",
+   "say": "Yes, but only on Friday.",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_0c4b3122bdd1"
+   ]
+  },
+  {
+   "id": "PERM-R10",
+   "hub": "n_redispatch",
+   "say": "बिल्कुल कर दीजिए, पर ये जो पिछली बार टेक्नीशियन आए थे वो नहीं चाहिए मेरे को, कोई नया टेक्नीशियन। चाहिए और जो मेरा जल्द से जल्द काम कर दे।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ]
+  },
+  {
+   "id": "PERM-R11",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "बिल्कुल कीजिए।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ]
+  },
+  {
+   "id": "PERM-R12",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "Yes ma'am.",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_1e5683d0681a"
+   ]
+  },
+  {
+   "id": "PERM-R13",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "जी।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_72d2f8334862"
+   ]
+  },
+  {
+   "id": "PERM-R14",
+   "hub": "n_redispatch",
+   "say": "Yes, yes.",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_bac4ee7a448d"
+   ]
+  },
+  {
+   "id": "PERM-R15",
+   "hub": "n_redispatch",
+   "say": "कर दीजिए।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_37d33a1825c2"
+   ]
+  },
+  {
+   "id": "PERM-R16",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "जी कर दीजिए।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   },
+   "source_calls": [
+    "cv_205129e392bb"
+   ]
+  },
+  {
+   "id": "PERM-R17",
+   "hub": "n_redispatch",
+   "say": "रिक्वेस्ट फॉरवर्ड कर दो, बट मैं पेमेंट नहीं करूँगा।",
+   "category": "permission",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified",
+     "n_haier_audit_redispatch_confirm"
+    ]
+   },
+   "source_calls": [
+    "cv_e991e753916b"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "PERM-R18",
+   "hub": "n_redispatch",
+   "say": "थी लेकिन वो आया नहीं। पता नहीं, उन्होंने फोन नहीं उठाया।",
+   "category": "permission",
+   "expect": {
+    "not_to": [
+     "m_n_end_redispatch_thanks",
+     "m_n_end_no_service",
+     "m_n_v2_end_unverified"
+    ]
+   },
+   "source_calls": [
+    "cv_558fcc5176e0"
+   ]
+  },
+  {
+   "id": "PERM-R19",
+   "hub": "n_redispatch",
+   "say": "अभी। नमस्ते, नमस्ते। हेलो। हेलो।",
+   "category": "permission",
+   "expect": {
+    "not_to": [
+     "m_n_end_redispatch_thanks",
+     "m_n_v2_end_unverified",
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_1e5683d0681a"
+   ]
+  },
+  {
+   "id": "PERM-R20",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "रिपीट करिए।",
+   "category": "permission",
+   "expect": {
+    "stay": true
+   },
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ]
+  },
+  {
+   "id": "PERM-R21",
+   "hub": "n_redispatch",
+   "say": "नहीं।",
+   "category": "permission",
+   "expect": {
+    "to": [
+     "n_service_need_clarify"
+    ]
+   },
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ]
+  },
+  {
+   "id": "PERM-U01",
+   "hub": "n_redispatch",
+   "say": "ठीक है।",
+   "category": "permission-rule",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-U02",
+   "hub": "n_redispatch",
+   "say": "हाँ।",
+   "category": "permission-rule",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-U03",
+   "hub": "n_redispatch",
+   "say": "हम्म।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-U04",
+   "hub": "n_redispatch",
+   "say": "हेलो।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-U05",
+   "hub": "n_redispatch",
+   "say": "थैंक यू।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-U06",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "ठीक है।",
+   "category": "permission-rule",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-U07",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "हाँ।",
+   "category": "permission-rule",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-U08",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "हम्म।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-U09",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "हेलो।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-U10",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "थैंक यू।",
+   "category": "permission-rule",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N01",
+   "hub": "n_redispatch",
+   "say": "ओके मैडम।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N02",
+   "hub": "n_redispatch",
+   "say": "हाँ हाँ भेज दो।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N03",
+   "hub": "n_redispatch",
+   "say": "जी बिल्कुल, भेज दीजिए टेक्नीशियन।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N04",
+   "hub": "n_redispatch",
+   "say": "ठीक है, कल भेज देना।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N05",
+   "hub": "n_redispatch",
+   "say": "हाँ, लेकिन सुबह के टाइम भेजना।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N06",
+   "hub": "n_redispatch",
+   "say": "Sure, please go ahead.",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N07",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "हाँ जी सर, आगे बढ़ा दो।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N08",
+   "hub": "n_redispatch",
+   "say": "चलेगा।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N09",
+   "hub": "n_redispatch",
+   "say": "नहीं, मत भेजो।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "n_service_need_clarify"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N10",
+   "hub": "n_redispatch",
+   "say": "नहीं चाहिए अब, रहने दो।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "n_service_need_clarify"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N11",
+   "hub": "n_redispatch",
+   "say": "अभी नहीं, अगले महीने।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "n_future_confirm",
+     "n_v2_future_when"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N12",
+   "hub": "n_redispatch",
+   "say": "कब तक आएगा टेक्नीशियन?",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N13",
+   "hub": "n_redispatch",
+   "say": "हाँ, पर कितने पैसे लगेंगे?",
+   "category": "permission-new",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified",
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N14",
+   "hub": "n_redispatch",
+   "say": "बार-बार फोन मत करो यार।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N15",
+   "hub": "n_redispatch",
+   "say": "हाँ जी हेलो?",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N16",
+   "hub": "n_redispatch",
+   "say": "जी धन्यवाद।",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N17",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "ok ok done",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N18",
+   "hub": "n_redispatch",
+   "say": "क्या?",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N19",
+   "hub": "n_redispatch",
+   "say": "हाँ बोलिए।",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N20",
+   "hub": "n_redispatch",
+   "say": "आवाज़ नहीं आ रही।",
+   "category": "permission-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "PERM-N21",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "थैंक यू मैडम, ठीक है।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N22",
+   "hub": "n_redispatch",
+   "say": "हाँ जी, थैंक यू।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N23",
+   "hub": "n_redispatch",
+   "say": "Okay.",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N24",
+   "hub": "n_redispatch",
+   "say": "ना।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "n_service_need_clarify"
+    ]
+   }
+  },
+  {
+   "id": "SVC-R01",
+   "hub": "n_service_need",
+   "say": "ये सही करके नहीं दे रहे आपके जो ये टेक्नीशियन है।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch",
+     "n_service_need_clarify",
+     "(stay)"
+    ],
+    "not_to": [
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_015ad3330ba1"
+   ]
+  },
+  {
+   "id": "SVC-R02",
+   "hub": "n_apology_visit",
+   "say": "हैं मैम, आकर एक बार चेक कर लें दोबारा। आए थे लेकिन वो दोबारा चेक करने कोई आया नहीं उसको।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_2606b6a2a1e5"
+   ]
+  },
+  {
+   "id": "SVC-R03",
+   "hub": "n_service_need",
+   "say": "नहीं, मना नहीं किए हैं।",
+   "category": "service-need",
+   "expect": {
+    "not_to": [
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_8dd9d45bcec4"
+   ]
+  },
+  {
+   "id": "SVC-R04",
+   "hub": "n_apology_call",
+   "say": "नहीं नहीं, वो कर गया, कर गया, सही कर गया, कोई दिक्कत नहीं मुझे।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_v2_completed_check"
+    ]
+   },
+   "source_calls": [
+    "cv_0c60c6434ab0"
+   ]
+  },
+  {
+   "id": "SVC-R05",
+   "hub": "n_apology_visit",
+   "say": "नहीं नहीं, कोई रिक्वायरमेंट नहीं है।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_c6e17890f89e"
+   ]
+  },
+  {
+   "id": "SVC-R06",
+   "hub": "n_apologize_no_visit",
+   "say": "बिल्कुल है। उनके जो फाल्ट है, वो आपके टेक्नीशियन की समझ में नहीं आ रहा।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_417929519ca4"
+   ]
+  },
+  {
+   "id": "SVC-R07",
+   "hub": "n_service_need",
+   "say": "रिक्वायरमेंट है एक साल के अंदर कोई भी जो सर्विस फ्री होती है कोई सर्विस नहीं की गई है। बिल्कुल भी कंपनी तरफ से कोई सर्विस हमें प्रोवाइड नहीं की गई।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch",
+     "m_warranty_claimed"
+    ]
+   },
+   "source_calls": [
+    "cv_205129e392bb"
+   ]
+  },
+  {
+   "id": "SVC-R08",
+   "hub": "n_service_need",
+   "say": "यस मैम, रिक्वायरमेंट है पर ऑलमोस्ट आफ्टर 25 डेज।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_future_confirm",
+     "n_v2_future_when"
+    ]
+   },
+   "source_calls": [
+    "cv_1e5683d0681a"
+   ]
+  },
+  {
+   "id": "SVC-R09",
+   "hub": "n_service_need",
+   "say": "अभी नहीं।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_v2_future_when",
+     "n_future_confirm",
+     "m_n_end_no_service",
+     "(stay)",
+     "(no workflow turn)"
+    ],
+    "not_to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_cb7f928abdd2",
+    "cv_94f9eabbd7fb"
+   ]
+  },
+  {
+   "id": "SVC-R10",
+   "hub": "n_service_need",
+   "say": "जी हाँ मैडम, उसको रिप्लेस करवाने के लिए।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_e7daa74893b9"
+   ]
+  },
+  {
+   "id": "SVC-R11",
+   "hub": "n_service_need",
+   "say": "अब बिल्कुल है मैडम।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ]
+  },
+  {
+   "id": "SVC-R12",
+   "hub": "n_apology_visit",
+   "say": "करते चलो। बिल्कुल रिक्वायरमेंट है।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_37d33a1825c2"
+   ]
+  },
+  {
+   "id": "SVC-R13",
+   "hub": "n_apology_call",
+   "say": "हाँ हाँ है।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_bac4ee7a448d"
+   ]
+  },
+  {
+   "id": "SVC-R14",
+   "hub": "n_apology_visit",
+   "say": "हाँ जी, यस यस।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_2d543b02e3e2"
+   ]
+  },
+  {
+   "id": "SVC-R15",
+   "hub": "n_service_need",
+   "say": "जी।",
+   "category": "service-need",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_72d2f8334862"
+   ]
+  },
+  {
+   "id": "SVC-N01",
+   "hub": "n_service_need",
+   "say": "हाँ चाहिए, अभी तक ठीक नहीं हुआ है।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N02",
+   "hub": "n_service_need",
+   "say": "नहीं चाहिए अब, हमने बाहर से करवा लिया।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "m_n_end_no_service",
+     "n_v2_completed_check"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N03",
+   "hub": "n_service_need",
+   "say": "ज़रूरत नहीं है।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N04",
+   "hub": "n_service_need",
+   "say": "नहीं जी, धन्यवाद।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N05",
+   "hub": "n_service_need",
+   "say": "पता नहीं, घर पे पूछना पड़ेगा।",
+   "category": "service-need-new",
+   "expect": {
+    "not_to": [
+     "n_redispatch",
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N06",
+   "hub": "n_service_need",
+   "say": "हेलो?",
+   "category": "service-need-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "SVC-N07",
+   "hub": "n_service_need",
+   "say": "सर्विस मतलब? किस चीज़ की?",
+   "category": "service-need-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "SVC-N08",
+   "hub": "n_service_need",
+   "say": "मेरा फ्रिज अभी भी ठंडा नहीं कर रहा है।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N09",
+   "hub": "n_apologize_no_visit",
+   "say": "कोई नहीं आया अभी तक, भेजो किसी को।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N10",
+   "hub": "n_service_need",
+   "say": "अरे वो तो ठीक है लेकिन।",
+   "category": "service-need-new",
+   "expect": {
+    "not_to": [
+     "n_redispatch",
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N11",
+   "hub": "n_service_need",
+   "say": "नहीं नहीं, चाहिए चाहिए।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N12",
+   "hub": "n_service_need",
+   "say": "हाँ... मतलब नहीं, अब नहीं चाहिए।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N13",
+   "hub": "n_service_need",
+   "say": "40 बार कॉल कर चुके हो, परेशान कर दिया।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)",
+     "(stay)",
+     "(no workflow turn)"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N14",
+   "hub": "n_apology_visit",
+   "say": "हम्म।",
+   "category": "service-need-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "SVC-N15",
+   "hub": "n_apology_call",
+   "say": "थैंक यू।",
+   "category": "service-need-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "SVC-N16",
+   "hub": "n_service_need",
+   "say": "ठीक है।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch",
+     "(stay)",
+     "(no workflow turn)",
+     "n_service_need_clarify"
+    ],
+    "not_to": [
+     "m_n_end_no_service"
+    ]
+   }
+  },
+  {
+   "id": "SVC-N17",
+   "hub": "n_service_need_clarify",
+   "say": "हेलो।",
+   "category": "service-need-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "SVC-N18",
+   "hub": "n_service_need_clarify",
+   "say": "जी मैडम।",
+   "category": "service-need-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "CON-R01",
+   "hub": "n_intro_unit_ok",
+   "say": "नहीं मैम, कोई विजिट नहीं। मतलब आए थे, उन्होंने देखा था और फिर उन्होंने बोला ये चीज़ लगेगी। फिर उसके बाद मैंने फ्रिज चला के देखा तो फ्रिज चल पड़ा था। जी, लेकिन उसमें आवाज़ की प्रॉब्लम है।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q",
+     "n_v2_pending_case_check"
+    ],
+    "not_to": [
+     "n_apologize_no_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_2606b6a2a1e5"
+   ]
+  },
+  {
+   "id": "CON-R02",
+   "hub": "n_intro_refused_pay",
+   "say": "हाँ, अभी हो गई। नहीं, हमारी वॉशिंग मशीन तो ठीक हो गई है, हमें अब रिपेयर नहीं करवानी।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_v2_completed_check",
+     "n_reason_refused_pay_q"
+    ],
+    "not_to": [
+     "n_apology_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_c6e17890f89e"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "CON-R03",
+   "hub": "n_intro_unit_ok",
+   "say": "मैम ऑलरेडी हो चुकी है, आपसे रिक्वेस्ट है कि अब दोबारा फ़ोन ना करें।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   },
+   "source_calls": [
+    "cv_94f9eabbd7fb"
+   ]
+  },
+  {
+   "id": "CON-R04",
+   "hub": "n_intro_not_haier",
+   "say": "कॉल आया था और वो चला गया था ना उसने खोली हमारी हमारी एल ई डी हायर कंपनी की ही है। वो सब। पैसे लेने के बहाने होते हैं। और पैसे भी चार्ज करके ले गया था, आधे घंटे टीवी चली थी।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_not_haier_q",
+     "n_v2_paid_status_check"
+    ]
+   },
+   "source_calls": [
+    "cv_72d2f8334862"
+   ],
+   "reason": "not_haier_product"
+  },
+  {
+   "id": "CON-R05",
+   "hub": "n_v2_intro_no_response",
+   "say": "मैम, कॉल आया था लेकिन विज़िट नहीं हुई थी।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_apology_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_37d33a1825c2"
+   ]
+  },
+  {
+   "id": "CON-R06",
+   "hub": "n_intro_refused_visit",
+   "say": "हाँ जी, मेरे पास कॉल आया था। इवन वो आए भी थे। ये बात बिलकुल गलत है कि मैंने उनको बाद में आने के लिए बोला, क्योंकि वो जिस दिन आए थे वो अकेले आए थे।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_refused_q",
+     "n_service_need"
+    ]
+   },
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "CON-R07",
+   "hub": "n_intro_unit_ok",
+   "say": "हाँ मैम, हो गया और कर दिया उन्होंने, इंस्टॉल कर दी।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_v2_completed_check",
+     "n_reason_unit_ok_q"
+    ]
+   },
+   "source_calls": [
+    "cv_64faef0e4250"
+   ]
+  },
+  {
+   "id": "CON-R08",
+   "hub": "n_intro_refused_visit",
+   "say": "मेरा काम हो गया है।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_v2_completed_check"
+    ]
+   },
+   "source_calls": [
+    "cv_9c03274c3b69"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "CON-R09",
+   "hub": "n_intro_refused_pay",
+   "say": "हाँ जी, हुई थी। पेमेंट भी हो गई, काम भी हो गया।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_v2_paid_status_check",
+     "n_v2_completed_check"
+    ]
+   },
+   "source_calls": [
+    "cv_58e0c147c47a"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "CON-R10",
+   "hub": "n_intro_unit_ok",
+   "say": "हाँ, लेट हुई थी बट लेट हुई थी।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q",
+     "(stay)",
+     "(no workflow turn)"
+    ],
+    "not_to": [
+     "n_apologize_no_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "CON-R11",
+   "hub": "n_intro_unit_ok",
+   "say": "एक विजिट हुई थी मैम।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   },
+   "source_calls": [
+    "cv_b762e64798b8"
+   ]
+  },
+  {
+   "id": "CON-R12",
+   "hub": "n_intro_refused_visit",
+   "say": "नहीं, आया नहीं है।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_apology_call"
+    ]
+   },
+   "source_calls": [
+    "cv_bac4ee7a448d"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "CON-R13",
+   "hub": "n_intro_unit_ok",
+   "say": "मैम हो गया। हो गई ठीक।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_v2_completed_check",
+     "n_reason_unit_ok_q"
+    ]
+   },
+   "source_calls": [
+    "cv_5f4fe4e287bd"
+   ]
+  },
+  {
+   "id": "CON-R14",
+   "hub": "n_intro_unit_ok",
+   "say": "हैं जी?",
+   "category": "contact",
+   "expect": {
+    "stay": true
+   },
+   "source_calls": [
+    "cv_393d734727c3"
+   ]
+  },
+  {
+   "id": "CON-R15",
+   "hub": "n_intro_unit_ok",
+   "say": "मैम मूवी विजिट पार्क पे डल गया।",
+   "category": "contact",
+   "expect": {
+    "not_to": [
+     "n_apologize_no_visit",
+     "m_n_v2_end_unverified"
+    ]
+   },
+   "source_calls": [
+    "cv_60f6b5248a47"
+   ]
+  },
+  {
+   "id": "CON-R16",
+   "hub": "n_intro_refused_visit",
+   "say": "सॉरी, इंग्लिश प्लीज। Please.",
+   "category": "contact",
+   "expect": {
+    "stay": true
+   },
+   "source_calls": [
+    "cv_0c4b3122bdd1"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "CON-R17",
+   "hub": "n_intro_unit_ok",
+   "say": "विजिट हुआ था।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "CON-R18",
+   "hub": "n_intro_not_delivered",
+   "say": "नहीं।",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_apology_call"
+    ]
+   },
+   "source_calls": [
+    "cv_ed92f57226da"
+   ],
+   "reason": "product_not_delivered"
+  },
+  {
+   "id": "CON-R19",
+   "hub": "n_intro_refused_visit",
+   "say": "Correct.",
+   "category": "contact",
+   "expect": {
+    "to": [
+     "n_reason_refused_q"
+    ]
+   },
+   "source_calls": [
+    "cv_bac4ee7a448d"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "CON-N01",
+   "hub": "n_intro_unit_ok",
+   "say": "फोन आया था पर कोई आया नहीं घर पे।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_apology_visit"
+    ]
+   }
+  },
+  {
+   "id": "CON-N02",
+   "hub": "n_intro_unit_ok",
+   "say": "हाँ आया था टेक्नीशियन, देख के चला गया।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   }
+  },
+  {
+   "id": "CON-N03",
+   "hub": "n_intro_unit_ok",
+   "say": "ना कोई कॉल ना कोई विजिट।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_apologize_no_visit"
+    ]
+   }
+  },
+  {
+   "id": "CON-N04",
+   "hub": "n_intro_unit_ok",
+   "say": "किसी ने कॉन्टैक्ट ही नहीं किया।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_apologize_no_visit"
+    ]
+   }
+  },
+  {
+   "id": "CON-N05",
+   "hub": "n_intro_unit_ok",
+   "say": "हम्म।",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "CON-N06",
+   "hub": "n_intro_unit_ok",
+   "say": "जी?",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "CON-N07",
+   "hub": "n_intro_unit_ok",
+   "say": "कौन बोल रहा है?",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "CON-N08",
+   "hub": "n_intro_unit_ok",
+   "say": "आया तो था, लेकिन उसने कहा पार्ट नहीं है।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q",
+     "n_v2_pending_case_check"
+    ]
+   }
+  },
+  {
+   "id": "CON-N09",
+   "hub": "n_intro_unit_ok",
+   "say": "हेलो हेलो।",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "CON-N10",
+   "hub": "n_intro_unit_ok",
+   "say": "जी मैम।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   }
+  },
+  {
+   "id": "CON-N11",
+   "hub": "n_intro_unit_ok",
+   "say": "नहीं जी।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_apologize_no_visit"
+    ]
+   }
+  },
+  {
+   "id": "CON-N12",
+   "hub": "n_intro_unit_ok_clarify",
+   "say": "हेलो।",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "CON-N13",
+   "hub": "n_intro_unit_ok_clarify",
+   "say": "थैंक यू।",
+   "category": "contact-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "REA-R01",
+   "hub": "n_reason_refused_pay_q",
+   "say": "टेक्नीशियन हमारे घर पर आया ही नहीं था। मना तो तब करेंगे मैडम।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_apology_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_205129e392bb"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-R02",
+   "hub": "n_reason_refused_q",
+   "say": "मैंने कोई सर्विस के लिए मना नहीं किया था। उन्होंने मुझसे पूछा था ये घर कहाँ पर पड़ेगा? उसका मैंने बाकायदा उनको एड्रेस बताया।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   },
+   "source_calls": [
+    "cv_fba92c1f6d20"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "REA-R03",
+   "hub": "n_reason_refused_q",
+   "say": "नहीं मैडम, सर्विस के लिए मना तो नहीं करें हमने।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   },
+   "source_calls": [
+    "cv_e7daa74893b9"
+   ],
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "REA-R04",
+   "hub": "n_reason_unit_ok_q",
+   "say": "अभी तो अब। सही करके किया कल। तो आप देखिए। आज चला के चलेगा तो। एक दो दिन में पता चलेगा।",
+   "category": "reason",
+   "expect": {
+    "not_to": [
+     "n_unit_ok_pending_apology",
+     "m_n_v2_end_unverified"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "REA-R05",
+   "hub": "n_reason_unit_ok_q_clarify",
+   "say": "आज तो ठीक है मैम, आप 2-4 रोज चलाएंगे तभी पता चलेगा।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "REA-R06",
+   "hub": "n_reason_unit_ok_q",
+   "say": "अभी जाके देखेंगे जी, दो दिन दुकान बंद थी।",
+   "category": "reason",
+   "expect": {
+    "not_to": [
+     "n_resolved_how_q",
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_cbfe7ec2c298"
+   ]
+  },
+  {
+   "id": "REA-R07",
+   "hub": "n_reason_unit_ok_q_clarify",
+   "say": "अभी देखेंगे जी, जाके 2 दिन दुकान बंद थी।",
+   "category": "reason",
+   "expect": {
+    "not_to": [
+     "n_resolved_how_q",
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_cbfe7ec2c298"
+   ]
+  },
+  {
+   "id": "REA-R08",
+   "hub": "n_reason_unit_ok_q",
+   "say": "नहीं मैम, ठीक हो गई। अब मैकेनिक आए थे।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   },
+   "source_calls": [
+    "cv_5f4fe4e287bd"
+   ]
+  },
+  {
+   "id": "REA-R09",
+   "hub": "n_reason_unit_ok_q",
+   "say": "हाँ जी मैम।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_b762e64798b8"
+   ]
+  },
+  {
+   "id": "REA-R10",
+   "hub": "n_reason_unit_ok_q",
+   "say": "हाँ जी है।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ]
+  },
+  {
+   "id": "REA-R11",
+   "hub": "n_reason_unit_ok_q_clarify",
+   "say": "नहीं।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ]
+  },
+  {
+   "id": "REA-R12",
+   "hub": "n_reason_unit_ok_q",
+   "say": "नहीं मैडम जी।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   },
+   "source_calls": [
+    "cv_64faef0e4250"
+   ]
+  },
+  {
+   "id": "REA-R13",
+   "hub": "n_reason_not_haier_q",
+   "say": "का प्रोडक्ट। हाँ जी।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_service_need",
+     "(stay)",
+     "(no workflow turn)"
+    ],
+    "not_to": [
+     "m_n_end_not_haier"
+    ]
+   },
+   "source_calls": [
+    "cv_015ad3330ba1"
+   ],
+   "reason": "not_haier_product"
+  },
+  {
+   "id": "REA-R14",
+   "hub": "n_rtp_warn_q",
+   "say": "मेरा प्रोडक्ट तो अभी। अंडर वारंटी है मेरा प्रोडक्ट, अंडर वारंटी है, मैं कल को पेमेंट करूँगा।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "m_warranty_claimed"
+    ]
+   },
+   "source_calls": [
+    "cv_e991e753916b"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-R15",
+   "hub": "n_reason_refused_pay_q",
+   "say": "हाँ जी।",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_rtp_warn_q"
+    ]
+   },
+   "source_calls": [
+    "cv_e991e753916b"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-R16",
+   "hub": "n_reason_unit_ok_q",
+   "say": "Yes.",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   },
+   "source_calls": [
+    "cv_533aa87d05dd"
+   ]
+  },
+  {
+   "id": "REA-R17",
+   "hub": "n_reason_unit_ok_q",
+   "say": "No.",
+   "category": "reason",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "REA-N01",
+   "hub": "n_rtp_warn_q",
+   "say": "वारंटी में है तो पैसे क्यों दूँ?",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "m_warranty_claimed"
+    ]
+   },
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-N02",
+   "hub": "n_rtp_warn_q",
+   "say": "नहीं दूँगा पैसे।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_payment_declined"
+    ]
+   },
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-N03",
+   "hub": "n_rtp_warn_q",
+   "say": "कितना चार्ज लगेगा?",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_charges_info_q",
+     "(stay)"
+    ]
+   },
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-N04",
+   "hub": "n_bill_charge_q",
+   "say": "हाँ दे देंगे, कोई दिक्कत नहीं।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "reason": "bill_not_available"
+  },
+  {
+   "id": "REA-N05",
+   "hub": "n_reason_unit_ok_q",
+   "say": "चल तो रहा है पर आवाज़ बहुत करता है।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   }
+  },
+  {
+   "id": "REA-N06",
+   "hub": "n_reason_unit_ok_q",
+   "say": "कोई प्रॉब्लम नहीं है अब, सब बढ़िया है।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   }
+  },
+  {
+   "id": "REA-N07",
+   "hub": "n_reason_refused_q",
+   "say": "हाँ, मैंने बोला था बाद में आना।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   },
+   "reason": "customer_refused_visit"
+  },
+  {
+   "id": "REA-N08",
+   "hub": "n_reason_delivered_q",
+   "say": "अभी तक नहीं आया है प्रोडक्ट।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "m_n_end_not_delivered"
+    ]
+   },
+   "reason": "product_not_delivered"
+  },
+  {
+   "id": "REA-N09",
+   "hub": "n_reason_delivered_q",
+   "say": "हाँ कल आ गया।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_v2_delivery_check"
+    ]
+   },
+   "reason": "product_not_delivered"
+  },
+  {
+   "id": "REA-N10",
+   "hub": "n_reason_not_haier_q",
+   "say": "हाँ हायर का ही है, बिल भी है मेरे पास।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   },
+   "reason": "not_haier_product"
+  },
+  {
+   "id": "REA-N11",
+   "hub": "n_reason_not_haier_q",
+   "say": "नहीं, वो तो एलजी का है।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "m_n_end_not_haier"
+    ]
+   },
+   "reason": "not_haier_product"
+  },
+  {
+   "id": "REA-N12",
+   "hub": "n_rtp_warn_q",
+   "say": "हेलो।",
+   "category": "reason-new",
+   "expect": {
+    "stay": true
+   },
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "REA-N13",
+   "hub": "n_bill_charge_q",
+   "say": "हम्म।",
+   "category": "reason-new",
+   "expect": {
+    "stay": true
+   },
+   "reason": "bill_not_available"
+  },
+  {
+   "id": "REA-N14",
+   "hub": "n_rtp_warn_q",
+   "say": "जी।",
+   "category": "reason-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "WHO-R01",
+   "hub": "n_resolved_how_q",
+   "say": "नहीं, हायर का टेक्निकल। किया, लेकिन वो टाइम बहुत 15 दिन लगा है। 15 दिन से चक्कर कटवाए। 15 दिन तक कंपनी में फोन करते रहे, करते रहे। उसके बाद जाके मसला हल हुआ। टाइम ज़्यादा लगा है बहुत।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "WHO-R02",
+   "hub": "n_resolved_how_q",
+   "say": "बा। नहीं नहीं। टेक्नीशियन हायर का सेट किया हुआ।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "WHO-R03",
+   "hub": "n_resolved_how_q",
+   "say": "नहीं हायर का टेक्नीशियन सही किया था।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "WHO-R04",
+   "hub": "n_resolved_how_q",
+   "say": "हाँ जी। नहीं, हायर मशीन वाले आए थे।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   },
+   "source_calls": [
+    "cv_5f4fe4e287bd"
+   ]
+  },
+  {
+   "id": "WHO-R05",
+   "hub": "n_resolved_how_q",
+   "say": "अपने आप।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_auto"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "WHO-R06",
+   "hub": "n_resolved_how_q",
+   "say": "हलो। ठीक है मैम, टाइम लगा लेकिन हुआ तो सही लेकिन टाइम लगा बहुत।",
+   "category": "either-or",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified",
+     "m_n_end_resolved_auto"
+    ]
+   },
+   "source_calls": [
+    "cv_bb42f2cfc9b2"
+   ]
+  },
+  {
+   "id": "WHO-R07",
+   "hub": "n_resolved_how_q",
+   "say": "हाँ जी। ठीक हो गई।",
+   "category": "either-or",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified",
+     "m_n_end_resolved_auto"
+    ]
+   },
+   "source_calls": [
+    "cv_5f4fe4e287bd"
+   ]
+  },
+  {
+   "id": "WHO-R08",
+   "hub": "n_resolved_how_q",
+   "say": "हाँ, एक दिन में।",
+   "category": "either-or",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified",
+     "m_n_end_resolved_auto"
+    ]
+   },
+   "source_calls": [
+    "cv_64faef0e4250"
+   ]
+  },
+  {
+   "id": "WHO-R09",
+   "hub": "n_v2_no_response_status",
+   "say": "वो तो मैं नहीं जानती, लेकिन। कंप्लेन के लिए 1.5 महीने तक वेट करना तो मुझे समझ नहीं आया। मुझे बाहर से ही कराना पड़ा, जबकि मैंने एएनसी करा रखी है। ठीक है, आपके लोगों के पास पार्ट्स ही नहीं रहते।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "n_v2_completed_check"
+    ]
+   },
+   "source_calls": [
+    "cv_abfdbc4b4c3d"
+   ]
+  },
+  {
+   "id": "WHO-R10",
+   "hub": "n_v2_no_response_status_clarify",
+   "say": "हलो।",
+   "category": "either-or",
+   "expect": {
+    "stay": true
+   },
+   "source_calls": [
+    "cv_abfdbc4b4c3d"
+   ]
+  },
+  {
+   "id": "WHO-R11",
+   "hub": "n_v2_no_response_status_clarify",
+   "say": "अब उस।",
+   "category": "either-or",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_unverified"
+    ]
+   },
+   "source_calls": [
+    "cv_abfdbc4b4c3d"
+   ]
+  },
+  {
+   "id": "WHO-R12",
+   "hub": "n_v2_completed_by_q",
+   "say": "जी।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "m_n_v2_end_completed_haier"
+    ]
+   },
+   "source_calls": [
+    "cv_9c03274c3b69"
+   ]
+  },
+  {
+   "id": "WHO-R13",
+   "hub": "n_v2_completed_check",
+   "say": "नहीं।",
+   "category": "either-or",
+   "expect": {
+    "to": [
+     "n_v2_completed_by_q"
+    ]
+   },
+   "source_calls": [
+    "cv_9c03274c3b69"
+   ]
+  },
+  {
+   "id": "WHO-N01",
+   "hub": "n_resolved_how_q",
+   "say": "कंपनी वाले आए थे, उन्होंने ही ठीक किया।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N02",
+   "hub": "n_resolved_how_q",
+   "say": "लोकल मिस्त्री से करवाया।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_auto"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N03",
+   "hub": "n_resolved_how_q",
+   "say": "हमने खुद ही कर लिया।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_auto"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N04",
+   "hub": "n_resolved_how_q",
+   "say": "ठीक ही कहाँ हुआ है, अभी भी खराब है।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N05",
+   "hub": "n_resolved_how_q",
+   "say": "पता नहीं किसने किया।",
+   "category": "either-or-new",
+   "expect": {
+    "not_to": [
+     "m_n_end_resolved_tech",
+     "m_n_end_resolved_auto"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N06",
+   "hub": "n_resolved_how_q",
+   "say": "हेलो।",
+   "category": "either-or-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "WHO-N07",
+   "hub": "n_v2_no_response_status",
+   "say": "हो गया है, बाहर वाले से करवा लिया।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "n_v2_completed_check"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N08",
+   "hub": "n_v2_no_response_status",
+   "say": "अभी पेंडिंग है।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "n_service_need"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N09",
+   "hub": "n_v2_future_when",
+   "say": "परसों आ जाओ।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N10",
+   "hub": "n_v2_future_when",
+   "say": "अगले महीने देखेंगे।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_end_service_later"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N11",
+   "hub": "n_v2_completed_by_q",
+   "say": "नहीं, प्राइवेट वाले से करवाया।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_completed_other"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N12",
+   "hub": "n_haier_followup_n_resolved_how_q_clarify",
+   "say": "हायर वाले ने ही किया था।",
+   "category": "either-or-new",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_tech"
+    ]
+   }
+  },
+  {
+   "id": "WHO-N13",
+   "hub": "n_haier_followup_n_resolved_how_q_clarify",
+   "say": "हेलो।",
+   "category": "either-or-new",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "STOP-N01",
+   "hub": "n_service_need",
+   "say": "दोबारा फोन मत करना।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N02",
+   "hub": "n_intro_unit_ok",
+   "say": "आप कॉल ही मत करो, कोई ज़रूरत नहीं।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N03",
+   "hub": "n_redispatch",
+   "say": "बंद करो ये, क्यों परेशान कर रहे हो।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)",
+     "(stay)",
+     "(no workflow turn)",
+     "n_service_need_clarify"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N04",
+   "hub": "n_reason_unit_ok_q",
+   "say": "Please don't call again.",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N05",
+   "hub": "n_service_need",
+   "say": "इतनी बार कॉल क्यों करते हो?",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)",
+     "(stay)",
+     "(no workflow turn)"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N06",
+   "hub": "n_apology_visit",
+   "say": "मुझे कॉल नहीं चाहिए आपका।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)"
+    ]
+   }
+  },
+  {
+   "id": "OK-36a",
+   "hub": "n_intro_refused_pay",
+   "say": "नहीं।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_apology_visit"
+    ]
+   },
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-36b",
+   "hub": "n_apology_visit",
+   "say": "हाँ।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_redispatch"
+    ]
+   },
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-36c",
+   "hub": "n_service_need_clarify",
+   "say": "नहीं।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-36d",
+   "hub": "n_apology_visit",
+   "say": "नहीं।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "m_n_end_no_service"
+    ]
+   },
+   "source_calls": [
+    "cv_bf9bbd8d9381"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-61a",
+   "hub": "n_v2_paid_status_check",
+   "say": "हाँ।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_v2_completed_by_q"
+    ]
+   },
+   "source_calls": [
+    "cv_58e0c147c47a"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-61b",
+   "hub": "n_v2_completed_by_q",
+   "say": "हाँ जी।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "m_n_v2_end_completed_haier"
+    ]
+   },
+   "source_calls": [
+    "cv_58e0c147c47a"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-61c",
+   "hub": "n_intro_refused_pay",
+   "say": "हाँ जी, हुई थी। पेमेंट भी हो गई, काम भी हो गया।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_v2_paid_status_check"
+    ]
+   },
+   "source_calls": [
+    "cv_58e0c147c47a"
+   ],
+   "reason": "refused_to_pay"
+  },
+  {
+   "id": "OK-70a",
+   "hub": "n_intro_unit_ok",
+   "say": "Yes.",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "OK-70b",
+   "hub": "n_resolved_how_q",
+   "say": "अपने आप।",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "m_n_end_resolved_auto"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "OK-70c",
+   "hub": "n_reason_unit_ok_q",
+   "say": "No.",
+   "category": "worked-on-2026-11-25",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   },
+   "source_calls": [
+    "cv_e0494c888008"
+   ]
+  },
+  {
+   "id": "STATE-N01",
+   "hub": "n_reason_unit_ok_q",
+   "say": "ठीक है।",
+   "category": "status-question-new",
+   "expect": {
+    "not_to": [
+     "n_unit_ok_pending_apology"
+    ]
+   }
+  },
+  {
+   "id": "STATE-N02",
+   "hub": "n_reason_unit_ok_q",
+   "say": "सही चल रहा है अब।",
+   "category": "status-question-new",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   }
+  },
+  {
+   "id": "STATE-N03",
+   "hub": "n_reason_unit_ok_q",
+   "say": "ok है अब तो।",
+   "category": "status-question-new",
+   "expect": {
+    "not_to": [
+     "n_unit_ok_pending_apology"
+    ]
+   }
+  },
+  {
+   "id": "STATE-N04",
+   "hub": "n_v2_completed_check",
+   "say": "ठीक है।",
+   "category": "status-question-new",
+   "expect": {
+    "not_to": [
+     "n_v2_pending_case_check"
+    ]
+   }
+  },
+  {
+   "id": "STATE-N05",
+   "hub": "n_reason_unit_ok_q",
+   "say": "हाँ जी।",
+   "category": "status-question-new",
+   "expect": {
+    "to": [
+     "n_unit_ok_pending_apology"
+    ]
+   }
+  },
+  {
+   "id": "REG-01",
+   "hub": "n_reason_unit_ok_q",
+   "say": "नहीं, अब ठीक है।",
+   "category": "qa-suite-regression",
+   "expect": {
+    "to": [
+     "n_resolved_how_q"
+    ]
+   }
+  },
+  {
+   "id": "REG-02",
+   "hub": "n_service_need",
+   "say": "नहीं, अभी रिक्वायरमेंट नहीं है।",
+   "category": "qa-suite-regression",
+   "reason": "customer_refused_visit",
+   "expect": {
+    "to": [
+     "m_n_end_no_service",
+     "n_future_confirm",
+     "n_v2_future_when"
+    ],
+    "not_to": [
+     "n_redispatch"
+    ]
+   }
+  },
+  {
+   "id": "REG-03",
+   "hub": "n_intro_not_haier",
+   "say": "क्या बार-बार आप लोग कॉल कर रहे हो? क्या कर रहे हो?",
+   "category": "qa-suite-regression",
+   "reason": "not_haier_product",
+   "expect": {
+    "stay": true
+   }
+  },
+  {
+   "id": "REG-04",
+   "hub": "n_intro_bill",
+   "say": "कॉल आया था, पर कोई आया नहीं घर पे।",
+   "category": "qa-suite-regression",
+   "reason": "bill_not_available",
+   "expect": {
+    "to": [
+     "n_apology_visit",
+     "n_haier_bill_state_contact_no_visit"
+    ]
+   }
+  },
+  {
+   "id": "REG-05",
+   "hub": "n_reason_refused_pay_q",
+   "say": "हाँ, वो 900 रुपये मांग रहे थे, इतने पैसे नहीं हैं मेरे पास।",
+   "category": "qa-suite-regression",
+   "reason": "refused_to_pay",
+   "expect": {
+    "to": [
+     "n_rtp_warn_q"
+    ]
+   }
+  }
+ ]
+}

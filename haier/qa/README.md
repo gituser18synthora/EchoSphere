@@ -8,6 +8,9 @@ Nothing here edits the bot, its prompt, its workflow or any server code.
 | `haier_test_cases.json` | The test case set: the 7 payloads, ~90 cases (agree / dispute / no contact / timing / consent / identity / busy / language / audio behaviour), expectations, and the real call IDs each case came from. |
 | `export_config.py` | Read-only export of an environment's effective config (published release, pinned workflow, prompt). |
 | `run_text_cases.py` | Text-level runner: real voice brain + real LLM + the exported workflow/prompt. Fast, repeatable, no audio. |
+| `haier_hub_cases.json` | Step-level cases: one workflow question + one caller reply (183 cases: real replies of the 2026-11-25 DEMO calls, the permission rule, and replies not seen in those calls for every kind of answer). |
+| `run_hub_cases.py` | Step-level runner: pauses a real call at one question, plays one reply through the real brain + decision model + engine, records where the flow went. `--compare BEFORE AFTER` prints a side-by-side table. |
+| `haier_call_replays_2026-11-25.json` | The caller turns of the 65 DEMO phone calls of 2026-11-25 that had caller speech, as conversation cases for `run_text_cases.py --cases`. |
 | `run_voice_cases.py` | Audio-level runner over the FreeSWITCH `mod_audio_fork` websocket protocol: real STT, endpointing, barge-in, TTS. No number is dialled. |
 | `create_session.py` / `fetch_sessions.py` | Helpers used by the voice runner (mint one test session; read the finished transcript/checkpoint). |
 | `summarize_results.py` | Builds the reason × scenario pass/fail matrix from result files. |
@@ -47,7 +50,22 @@ env/bin/python -B haier/qa/run_text_cases.py --code-root storage/tmp/haier_qa/de
     --output storage/tmp/haier_qa/text_demo.json --transcripts storage/tmp/haier_qa/text_demo.txt
 ```
 
-Useful flags: `--only BILL-04,UOK-03` (subset), `--repeat 5` (override repeats), `--concurrency 4`.
+Useful flags: `--only BILL-04,UOK-03` (subset), `--repeat 5` (override repeats), `--concurrency 4`,
+`--decision-timeout 8` (parallel runs slow the decision model down; a decision that exceeds the bot's
+own budget falls back to the authored labels exactly as on a live call, which hides what the model
+would have understood. Use the relaxed budget to judge understanding and the default to judge the
+live budget).
+
+Step-level cases and the replay of a day's calls:
+
+```bash
+env/bin/python -B haier/qa/run_hub_cases.py --snapshot storage/tmp/haier_qa/snapshot_local.raw \
+    --output storage/tmp/haier_qa/hub_local.json --decision-timeout 8
+env/bin/python -B haier/qa/run_hub_cases.py --compare storage/tmp/haier_qa/hub_demo.json storage/tmp/haier_qa/hub_local.json
+env/bin/python -B haier/qa/run_text_cases.py --snapshot storage/tmp/haier_qa/snapshot_local.raw \
+    --cases haier/qa/haier_call_replays_2026-11-25.json --output storage/tmp/haier_qa/calls_local.json \
+    --transcripts storage/tmp/haier_qa/calls_local.txt --decision-timeout 8
+```
 Each case runs `repeat` times (P0 cases 3×) because the decision model is not deterministic.
 
 ## 3. Audio-level run (telephony path)

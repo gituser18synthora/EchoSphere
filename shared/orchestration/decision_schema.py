@@ -136,6 +136,15 @@ class ConversationDecision(BaseModel):
     # Outcome of the question the bot was waiting on (identity confirmation,
     # a yes/no gate): None when no such question was pending or answered.
     decision: str | None = None
+    # Which of the answer options the live state offered for the pending
+    # question the reply means (the option's id), None when it means none of
+    # them. Advisory like every model field: the workflow hub accepts only an
+    # id it declares and ignores anything else.
+    option: str | None = None
+    # Runtime bookkeeping: the model's output carried the "option" key (with
+    # an id or with null). A decision that left the key out judged nothing
+    # about the options; the authored labels then decide as before.
+    option_stated: bool = False
     scope: str = SCOPE_IN
     confidence: float = 0.0
     reason: str = ""
@@ -178,6 +187,15 @@ class ConversationDecision(BaseModel):
             return None
         text = str(v).strip()
         return text[:80] or None
+
+    @field_validator("option", mode="before")
+    @classmethod
+    def _clean_option(cls, v):
+        if v is None or isinstance(v, (dict, list, bool)):
+            return None
+        text = str(v).strip()
+        # The model writes JSON null as a string often enough to matter.
+        return None if not text or text.lower() in ("null", "none") else text[:64]
 
     @field_validator("context_question", mode="before")
     @classmethod
@@ -274,6 +292,11 @@ class ConversationDecision(BaseModel):
             and self.decision not in ("confirmed", "denied")
             and self.next_action in ("answer", "continue_workflow", "clarify", "ask_identity_confirmation")
         )
+        if self.context_question or self.scope != SCOPE_IN:
+            # A question about the call, or an off-goal turn, answers nothing.
+            self.option = None
+        if self.option is not None:
+            self.option_stated = True
         if self.context_question:
             # A question about the call is not an answer to its pending gate.
             # The question itself may still need a narrow clarification of
@@ -316,6 +339,8 @@ class ConversationDecision(BaseModel):
             "intent": self.intent,
             "signal": self.signal,
             "decision": self.decision,
+            "option": self.option,
+            "option_stated": self.option_stated,
             "scope": self.scope,
             "confidence": round(self.confidence, 3),
             "reason": self.reason[:160],
@@ -336,7 +361,7 @@ class ConversationDecision(BaseModel):
 
 # Keys that make a raw model payload recognizable as a decision at all.
 _MEANINGFUL_KEYS = (
-    "intent", "signal", "decision", "scope", "next_action", "nextAction",
+    "intent", "signal", "decision", "option", "scope", "next_action", "nextAction",
     "slots", "entities", "response_text", "responseText", "needs_clarification",
 )
 
@@ -397,6 +422,7 @@ def parse_decision(
         # that would confirm a non-customer; those payloads keep today's
         # redirect. injection_attempt is never touched.
         data["scope"] = SCOPE_IN
+    data["option_stated"] = "option" in raw
     try:
         decision = ConversationDecision.model_validate(data)
     except Exception:  # noqa: BLE001 — malformed output falls back, never raises

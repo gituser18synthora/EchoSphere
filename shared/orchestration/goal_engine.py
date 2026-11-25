@@ -122,6 +122,49 @@ def default_timeout_seconds(model: str | None) -> float:
     return _DEFAULT_TIMEOUT_SECONDS
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
+
+# Live-state label of the paused workflow hub's answer options. It carries its
+# own output rule, so the static system prompt (shared by every bot, cached by
+# the provider) stays as it is and a bot without answer options sees nothing.
+_ANSWER_OPTIONS_LABEL = (
+    'Answer options for the pending question — add "option" to the JSON: the '
+    "ONE id below whose meaning the caller's reply expresses, or null. Judge "
+    "the WHOLE reply by what the caller means, not by single words: a later "
+    "clause can correct an earlier one, 'did not refuse' is not a refusal, "
+    "and describing a problem, a delay or a wish for the work to be done "
+    "answers a need question with yes. A yes or no followed by its reason, a "
+    "condition, a date or an extra remark is still that yes or no unless another option fits "
+    "the remark better: when the reply also states a fact one of the other "
+    "options describes (already paid, work already done, wants it later, do "
+    "not call again), that more specific option is the answer. Use null when "
+    "the reply does not answer the pending question, is too unclear to tell, "
+    "is a question, or is only a greeting or attention word (hello, hmm, "
+    "haan bolo). Options"
+)
+_OPTION_READER_SYSTEM = (
+    "You match a phone caller's reply to the answer options of the question "
+    "the agent just asked. The caller may speak Hindi, English or mixed "
+    "Hinglish in Latin or Devanagari script; the text is speech-to-text "
+    "output and may be fragmentary. Reply with ONLY one JSON object: "
+    '{"option": "<id>"} or {"option": null}.\n'
+    "Choose the ONE id whose meaning the reply expresses. Judge the WHOLE "
+    "reply by what the caller means, not by single words: a later clause can "
+    "correct an earlier one, 'did not refuse' is not a refusal, and "
+    "describing a problem, a delay or a wish for the work to be done answers "
+    "a need question with yes. A yes or no followed by its reason, a condition, "
+    "a date or an extra remark is still that yes or no, unless the reply also states a "
+    "fact one of the other options describes (already paid, work already "
+    "done, wants it later, do not call again): then that more specific "
+    "option is the answer. Use null when the reply does not answer the "
+    "question, is too unclear to tell, is itself a question, or is only a "
+    "greeting or attention word (hello, hmm, haan bolo)."
+)
+# Repeated after the utterance: the key was left out of about one decision in
+# ten when the rule stood only in the live state above it.
+_ANSWER_OPTIONS_REMINDER = (
+    '\n\nOutput reminder: the JSON object MUST contain the key "option": one '
+    "id from the answer options above, or null."
+)
 # Decision rules added 2026-10-09 from a 120-turn labeled live benchmark (four
 # generic bots, adjudicated against this rulebook). The model labelled
 # statements as 'question' (MDND "maine deliver kar diya phir bhi MDND
@@ -778,6 +821,55 @@ class GoalEngine:
         decision.latency_ms = (time.perf_counter() - started) * 1000
         return decision
 
+    async def choose_option(
+        self, question: str, reply: str, options: str, *, timeout: float | None = None,
+    ) -> tuple[bool, str | None]:
+        """A focused second reading of one reply against a hub's answer options.
+
+        Used only when the full decision left the ``option`` key out (it then
+        judged nothing about the options). One small request: the question,
+        the reply and the options. Returns ``(judged, option id or None)``;
+        ``judged`` is False when the request failed or timed out, and the
+        authored labels decide the turn as before. Never raises.
+        """
+        if not self._enabled or not (reply or "").strip() or not (options or "").strip():
+            return False, None
+        user = (
+            f"Question the agent asked:\n{(question or '').strip()[:400]}\n\n"
+            f"Answer options (id = meaning):\n{options}\n\n"
+            f"Caller's reply:\n{reply.strip()[:600]}"
+        )
+        try:
+            result = await asyncio.wait_for(
+                self._llm.generate(
+                    [{"role": "user", "content": user}], system=_OPTION_READER_SYSTEM,
+                    temperature=0.0, max_tokens=24, **self._json_mode_kwargs(),
+                ),
+                timeout=timeout or self._timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — timeout or provider error: nothing judged
+            return False, None
+        self.last_usage = (
+            int(getattr(result, "input_tokens", 0) or 0),
+            int(getattr(result, "output_tokens", 0) or 0),
+        )
+        match = _JSON_BLOCK.search((result.text or "").strip())
+        if match is None:
+            return False, None
+        try:
+            parsed = json.loads(match.group(0))
+        except ValueError:
+            return False, None
+        if not isinstance(parsed, dict) or "option" not in parsed:
+            return False, None
+        chosen = parsed.get("option")
+        if chosen is None or isinstance(chosen, (dict, list, bool)):
+            return True, None
+        chosen = str(chosen).strip()
+        return True, (None if not chosen or chosen.lower() in ("null", "none") else chosen[:64])
+
     def _json_mode_kwargs(self) -> dict:
         """Provider JSON mode for the decision call, when the engine supports it.
 
@@ -802,6 +894,7 @@ class GoalEngine:
             (f"Recent conversation:\n{convo}\n\n" if convo else "")
             + self._live_state_block(state)
             + f"\nCaller's latest utterance:\n{text}"
+            + (_ANSWER_OPTIONS_REMINDER if state.get("answer_options") else "")
         )
         result = await self._llm.generate(
             [{"role": "user", "content": user}],
@@ -1068,6 +1161,7 @@ class GoalEngine:
             ("context_clarification", "Paused caller question and its clarification (not business consent)"),
             ("expected_answer", "Expected answer type"),
             ("options_offered", "Options just offered"),
+            ("answer_options", _ANSWER_OPTIONS_LABEL),
             ("identity_state", "Identity confirmation status"),
             ("missing_slots", "Required values still missing"),
             ("known_info", "Known caller information (masked)"),
