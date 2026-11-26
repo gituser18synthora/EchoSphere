@@ -70,6 +70,7 @@ ENVS = {
 }
 CALLER_VOICES = ["rahul", "shreya", "amit", "simran", "mohit", "tanya", "sumit", "roopa"]
 QUIET_S = 1.5          # bot silence that counts as "finished speaking"
+LATE_REPLY_S = 4.0     # ... when the line is still shorter than its ``min_speech_s``
 SPEECH_DBFS = -32.0    # louder 20 ms frames are bot speech; ambience is ~-45 dBFS
 BOT_WAIT_S = 25.0      # max wait for the bot to speak/finish before proceeding
 END_WAIT_S = 30.0      # after the script, wait for the bot to close the call
@@ -329,15 +330,19 @@ async def run_call(env: str, sid: str, turns: list[dict], voice: Voice, case_see
                     # apart: ``min_speech_s`` (seconds of bot speech the line is
                     # known to have before its last sentence arrives) tells the
                     # end of the line from a pause between two sentences.
-                    # Without it, or if the line turns out shorter, the usual
-                    # 1.5 s of bot silence decides.
+                    # Without it the usual 1.5 s of bot silence decides. With
+                    # it, a line that stays shorter needs LATE_REPLY_S of
+                    # silence: an acknowledgement sound can come two or three
+                    # seconds before the reply itself, and the scripted word
+                    # then landed before the question (2026-11-26, VP8-01).
                     need = float(turn.get("min_speech_s", 0.0))
                     await wait_until(lambda: call.last_bot_start_after(last_caller_end) is not None, BOT_WAIT_S)
 
                     def line_ended(since=last_caller_end):
-                        if (not call.bot_speaking()) and call.now() - call.speech_end() >= QUIET_S:
-                            return True
                         buffered = sum(e - s for s, e in call.bot_segments if s >= since)
+                        quiet_needed = QUIET_S if buffered >= need else LATE_REPLY_S
+                        if (not call.bot_speaking()) and call.now() - call.speech_end() >= quiet_needed:
+                            return True
                         return (buffered >= need and call.now() >= call.speech_end() + delay
                                 and call.now() - call.last_speech_at >= 0.25)
 

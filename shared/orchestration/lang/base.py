@@ -76,6 +76,8 @@ class LanguagePack:
     hangup_patterns: tuple[str, ...] = ()           # full regexes, any one ends the call
     dnc_patterns: tuple[str, ...] = ()              # "never call me again"
     dnc_patterns_extra: tuple[str, ...] = ()        # the rest of the do-not-call category
+    dnc_patterns_weak: tuple[str, ...] = ()         # forms that also occur inside statements: they count only ...
+    dnc_weak_support: tuple[str, ...] = ()          # ... in a short utterance or beside "again / me / please"
     dnc_not_now: tuple[str, ...] = ()               # "don't call me NOW": another time, no revocation ...
     dnc_permanent: tuple[str, ...] = ()             # ... unless "again / ever / never" is also said
     hangup_report: tuple[str, ...] = ()             # "he hung up" / "the call dropped": not a request

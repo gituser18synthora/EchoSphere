@@ -152,12 +152,27 @@ _DNC_PATTERNS: list[re.Pattern] = [
 ]
 _DNC_NOT_NOW = _lang.compile_alternation("dnc_not_now")
 _DNC_PERMANENT = _lang.compile_alternation("dnc_permanent")
+# Forms that also occur inside ordinary statements. A wrong reading ends the
+# call, so they count only where the request is the utterance itself (a few
+# words) or is marked as one ("again", "me", "please").
+_DNC_WEAK: list[re.Pattern] = _lang.compile_any("dnc_patterns_weak")
+_DNC_WEAK_SUPPORT = _lang.compile_alternation("dnc_weak_support")
+_DNC_WEAK_MAX_WORDS = 5
+
+
+def _weak_do_not_call(stripped: str) -> bool:
+    if not any(p.search(stripped) for p in _DNC_WEAK):
+        return False
+    return len(stripped.split()) <= _DNC_WEAK_MAX_WORDS or bool(
+        _DNC_WEAK_SUPPORT is not None and _DNC_WEAK_SUPPORT.search(stripped))
 
 
 def detect_do_not_call(text: str) -> bool:
     """Deterministic 'never call me again' consent revocation."""
     stripped = (text or "").strip()
-    if not stripped or not any(p.search(stripped) for p in _DNC_PATTERNS):
+    if not stripped or not (
+        any(p.search(stripped) for p in _DNC_PATTERNS) or _weak_do_not_call(stripped)
+    ):
         return False
     if (
         _DNC_NOT_NOW is not None and _DNC_NOT_NOW.search(stripped)

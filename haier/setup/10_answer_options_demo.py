@@ -6,9 +6,14 @@ API only (the destination is fixed below): the next workflow revision and one
 release that pins it. Prompts, greeting and summary policy are not touched;
 no server file is copied and no service is restarted.
 
-    HAIER_ADMIN_EMAIL=... HAIER_ADMIN_PASSWORD=... \
+    ECHOSPHERE_SUPER_ADMIN_EMAIL=... ECHOSPHERE_SUPER_ADMIN_PASSWORD=... \
         env/bin/python -B haier/setup/10_answer_options_demo.py           # dry-run
     ... env/bin/python -B haier/setup/10_answer_options_demo.py --apply
+
+It signs in as DEMO's platform super admin (the two variables above; a Haier
+tenant-admin login is not used): publishing a release of this bot needs the
+checklist override, which the API grants to a super admin only (the bot has no
+knowledge base and no Studio scenarios).
 
 Order: deploy the code first and restart the DEMO services, then run this.
 The revision is safe on a runtime that does not know ``answerOptions`` (such a

@@ -24,7 +24,10 @@ _DNC_GAP = (
     r"ही|भी|तो|अब|दोबारा|दुबारा|फिर(?:\s*से)?|कभी(?:\s+भी)?|आगे(?:\s*से)?|वापस|मुझे|मुझको|मेरे\s*को|हमें|"
     r"हमको|आप(?:\s*लोग)?|यहाँ|यहां|इधर|बार[\s-]*बार|प्लीज़|प्लीज|कृपया)"
 )
-_DNC_NOT = r"(?:mat|na|naa|मत|ना|न)"
+# "मत" only ever forbids. "ना / न" also negates a statement ("कॉल ना करे तो…",
+# "कॉल ना करना पड़े"), so it gets a narrower set of verb forms below.
+_DNC_NOT = r"(?:mat|मत)"
+_DNC_NA = r"(?:na|naa|ना|न)"
 _DNC_NAHI = r"(?:nahi|nahin|nhi|नहीं|नही)"
 # After "mat / na" the infinitive is an imperative too ("मत करना"); after
 # "nahi" only an unmistakable imperative counts ("कॉल नहीं करना है" is not one).
@@ -38,6 +41,17 @@ _DNC_DO_STRICT = (
     r"करो|करिए(?:गा)?|करिये(?:गा)?|कीजिए(?:गा)?|कीजिये(?:गा)?|करें|करियो)"
 )
 _DNC_FORBID = rf"(?:{_DNC_NOT}\W*{_DNC_DO}|{_DNC_NAHI}\W*{_DNC_DO_STRICT})"
+# After "ना / न": an unmistakable request form, or the infinitive. Not "करे"
+# (third person: "वो कॉल ना करे तो…"; DEMO-like production text 2026-11-26).
+_DNC_FORBID_WEAK = rf"{_DNC_NA}\W*(?:{_DNC_DO_STRICT}|karna|करना)"
+# An infinitive followed by an auxiliary states something ("कॉल ना करना पड़े"),
+# and a verb followed by "तो" is the condition of another clause.
+_DNC_NOT_AUX = (
+    # "पड़" is written with a combining nukta or as the single letter U+095C.
+    r"(?!\W+(?:pad\w*|hai|tha|thi|hoga|chahiye|chaiye|प(?:ड\u093c?|\u095c)[\wऀ-ॿ]*|है|था|थी|होगा|चाहिए|चाहिये)"
+    rf"(?!{_W}))"
+)
+_DNC_NOT_CONDITION = rf"(?!\W+(?:to|toh|तो)(?!{_W}))"
 # What makes the object part of another phrase: "phone cut", "call transfer",
 # "phone par", "call aaya", "phone number".
 _DNC_COMPOUND = (
@@ -51,9 +65,9 @@ _DNC_STOP = (
     r"ho(?:na|ne)?\W+(?:chahiye|chaiye)|हो(?:ना|ने)?\W+(?:चाहिए|चाहिये))"
 )
 _DNC_EXTRA = (
-    # object (+ particles) + prohibition: "कॉल ही मत करो", "दोबारा फ़ोन ना करें"
-    rf"(?<!{_W}){_DNC_OBJ}(?:\W+{_DNC_GAP}){{0,3}}\W+{_DNC_FORBID}(?!{_W})",
-    # prohibition + object in the same clause: "मत करना कॉल", "ना करें फोन"
+    # object (+ particles) + prohibition: "कॉल ही मत करो", "दोबारा फ़ोन मत करना"
+    rf"(?<!{_W}){_DNC_OBJ}(?:\W+{_DNC_GAP}){{0,3}}\W+{_DNC_FORBID}(?!{_W}){_DNC_NOT_AUX}",
+    # prohibition + object in the same clause: "मत करना कॉल"
     rf"(?<!{_W}){_DNC_FORBID}[\s,]+(?:{_DNC_GAP}[\s,]+){{0,2}}{_DNC_OBJ}(?!{_W})(?![\s,]+{_DNC_COMPOUND}(?!{_W}))",
     # "कॉल करना बंद करो", "कॉल आना बंद होना चाहिए", "कॉलिंग बंद कीजिए", "ये कॉल्स बंद करवाइए"
     rf"(?<!{_W})(?:{_DNC_OBJ}\W+(?:karna|aana|lagana|करना|आना|लगाना)|calling|कॉलिंग|calls|कॉल्स)\W+"
@@ -61,6 +75,21 @@ _DNC_EXTRA = (
     # "आपका कॉल नहीं चाहिए", "कोई कॉल नहीं आना चाहिए"
     rf"(?<!{_W}){_DNC_OBJ}(?:\W+(?:hi|bhi|ab|ही|भी|अब))?\W+(?:{_DNC_NAHI}|mat|मत)\W*"
     rf"(?:(?:aan[aie]|आन[ाीे])\W+)?(?:chahiye|chaiye|चाहिए|चाहिये)(?!{_W})",
+)
+# The same two shapes with "ना / न": "दोबारा फ़ोन ना करें", "ना करें फोन". They
+# count only in a short utterance or beside one of _DNC_WEAK_SUPPORT (the
+# router applies that), because the words also occur inside longer statements.
+_DNC_WEAK = (
+    rf"(?<!{_W}){_DNC_OBJ}(?:\W+{_DNC_GAP}){{0,3}}\W+{_DNC_FORBID_WEAK}(?!{_W}){_DNC_NOT_AUX}{_DNC_NOT_CONDITION}",
+    rf"(?<!{_W}){_DNC_FORBID_WEAK}[\s,]+(?:{_DNC_GAP}[\s,]+){{0,2}}{_DNC_OBJ}(?!{_W})(?![\s,]+{_DNC_COMPOUND}(?!{_W}))",
+)
+# What makes such a sentence a request to the caller of THIS call: "again /
+# ever / from now on", "me / us", "please".
+_DNC_WEAK_SUPPORT = (
+    rf"(?<!{_W})(?:dobara|dubara|doobara|phir\s*se|fir\s*se|firse|kabhi|aage\s*se|aaj\s+ke\s+baad|hamesha|ab|"
+    r"baar\s*baar|bar\s*bar|mujhe|mujhko|mere\s*ko|hume|humein|hamein|humko|please|plz|request|"
+    r"दोबारा|दुबारा|फिर\s*से|कभी|आगे\s*से|आज\s+के\s+बाद|हमेशा|अब|बार[\s-]*बार|मुझे|मुझको|मेरे\s*को|हमें|हमको|"
+    rf"प्लीज़|प्लीज|कृपया|रिक्वेस्ट)(?!{_W})",
 )
 # "Don't call me NOW" asks for another time; it revokes nothing — unless the
 # caller also says never / again ("अभी के बाद दोबारा कॉल मत करना").
@@ -337,6 +366,8 @@ PACK = LanguagePack(
     ),
     # The whole "stop calling me" category (built above, see _DNC_*).
     dnc_patterns_extra=_DNC_EXTRA,
+    dnc_patterns_weak=_DNC_WEAK,
+    dnc_weak_support=_DNC_WEAK_SUPPORT,
     dnc_not_now=_DNC_NOT_NOW,
     dnc_permanent=_DNC_PERMANENT,
     emergency=(

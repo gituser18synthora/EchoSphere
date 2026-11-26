@@ -117,6 +117,8 @@ DNC = [
     "अभी के बाद दोबारा कॉल मत करना", "never call me", "do not contact me", "don't ever ring me",
     # "now" as "from now on" / "immediately" is still a revocation
     "अभी से कॉल मत करना", "कल से फोन मत करना", "stop calling me now", "stop calling me right now",
+    # "ना / न" instead of "मत": a short request, or one marked by "again / me / please"
+    "प्लीज़ कॉल ना करें", "mujhe call na karein", "कॉल ना करना", "फोन ना करो यार",
 ]
 NOT_DNC = [
     "कॉल नहीं आया", "कोई कॉल नहीं आया था", "फोन नहीं उठाया", "टेक्नीशियन ने कॉल नहीं किया", "कॉल मत काटो",
@@ -136,6 +138,12 @@ NOT_DNC = [
     "don't call me now", "don't call right now, call later",
     # no word for the call: left to each bot's own flow, not a platform revocation
     "परेशान मत करो", "don't disturb me", "तंग मत करो यार",
+    # "ना" inside a statement: somebody else not calling, a condition, "so that I need not call"
+    # (a production caller, 2026-11-26: "... call na kare ..." = if he comes without calling)
+    "टेक्नीशियन आने से पहले एक बार कॉल करे, कॉल ना करे तो मैं घर पर नहीं मिलूँगा",
+    "आने से पहले एक बार कॉल करते, कॉल ना करे आसले आमी थाकबो ना",
+    "वो कॉल ना करें तो मैं खुद कर लूँगा", "मुझे दोबारा कॉल ना करना पड़े इसलिए अभी बता दीजिए",
+    "call na kare to main kya karun", "टेक्नीशियन ने बोला था कॉल ना करें वो खुद आएगा", "कॉल ना करना है मुझे",
 ]
 
 

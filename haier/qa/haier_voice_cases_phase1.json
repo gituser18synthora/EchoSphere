@@ -738,7 +738,7 @@
    "modes": [
     "voice"
    ],
-   "title": "One-word 'haan' over the last 0.4 s of the first question -> it is the answer, next question follows",
+   "title": "One-word 'haan' over the last 0.4 s of the first question -> it answers that question: at once, or after the question is asked again at once when the background guard held the word; never lost, no hearing check",
    "patterns": [
     "P5"
    ],
@@ -754,6 +754,10 @@
      "note": "aimed 0.4 s before the end of the line; the result records the real position (bot_remaining_s)"
     },
     {
+     "say": "हाँ जी।",
+     "note": "answers the first question when it was asked again (events: quiet_answer_reasked), else the second one. Two words on purpose: a lone 0.3 s word is sometimes not detected at all (2026-11-26: 1 of 37), which is not what this case is about"
+    },
+    {
      "hangup": true,
      "after": "bot_start",
      "delay": 3.0
@@ -764,11 +768,15 @@
      "मना किया था"
     ],
     "max_gap_after": {
-     "1": 5.0
+     "1": 5.0,
+     "2": 5.0
     },
     "say_none": [
      "सुन पा रहे"
     ],
+    "say_count_max": {
+     "कोई call आया था": 2
+    },
     "open_ok": true
    }
   },
