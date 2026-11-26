@@ -117,6 +117,13 @@ _PHRASES: dict[str, dict[str, str]] = {
         "en": "Sure, I am on the line. Take your time.",
         "hi": "जी बिल्कुल, मैं line पर हूँ।",
     },
+    # First check-in after the quiet a caller asked for ("ek minute ruko",
+    # "thoda time dijiye") is spent: the bot is still waiting — it does not
+    # ask whether the caller can hear it.
+    "hold_checkin": {
+        "en": "I am still on the line. Please tell me when you are ready.",
+        "hi": "जी, मैं line पर ही हूँ। जब आप ready हों, तो बताइए।",
+    },
     "repeat_none": {
         "en": "I haven't said anything yet.",
         "hi": "अभी तक मैंने कुछ नहीं कहा है।",
@@ -336,6 +343,10 @@ _PHRASES_ML_TA: dict[str, dict[str, str]] = {
     "hold_ack": {
         "ml": "തീർച്ചയായും, ഞാൻ ലൈനിൽ ഉണ്ട്. സമയമെടുത്തോളൂ.",
         "ta": "கண்டிப்பாக, நான் இணைப்பில் இருக்கிறேன். நிதானமாகச் செய்யுங்கள்.",
+    },
+    "hold_checkin": {
+        "ml": "ഞാൻ ലൈനിൽ തന്നെയുണ്ട്. നിങ്ങൾ തയ്യാറാകുമ്പോൾ പറയൂ.",
+        "ta": "நான் இணைப்பிலேயே இருக்கிறேன். நீங்கள் தயாரானதும் சொல்லுங்கள்.",
     },
     "repeat_none": {
         "ml": "ഞാൻ ഇതുവരെ ഒന്നും പറഞ്ഞിട്ടില്ല.",

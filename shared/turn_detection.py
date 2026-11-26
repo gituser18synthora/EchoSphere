@@ -94,6 +94,18 @@ TURN_DETECTION_FIELDS: tuple[dict[str, Any], ...] = (
     {"group": "turn_detection", "key": "silence_prompt_seconds", "section": "no_response", "label": "Silence prompt timeout", "description": "Seconds of caller silence before the bot first asks whether the caller can hear it. Minimum 5 seconds, maximum 15 seconds.", "input": "number", "valueType": "integer", "unit": "seconds", "min": 5.0, "max": 15.0, "step": 1.0, "default": {"browser": 15.0, "telephony": 15.0}, "recommended": {"browser": 15.0, "telephony": 15.0}},
     {"group": "turn_detection", "key": "silence_retry_seconds", "section": "no_response", "label": "Silence retry interval", "description": "Seconds of continued silence between one check-in prompt and the next. Minimum 5 seconds, maximum 15 seconds.", "input": "number", "valueType": "integer", "unit": "seconds", "min": 5.0, "max": 15.0, "step": 1.0, "default": {"browser": 15.0, "telephony": 15.0}, "recommended": {"browser": 15.0, "telephony": 15.0}},
     {"group": "turn_detection", "key": "silence_max_prompts", "section": "no_response", "label": "Silence prompts before closing", "description": "How many check-in prompts the bot speaks before it closes the call politely. Minimum 1, maximum 5.", "input": "number", "valueType": "integer", "unit": "prompts", "min": 1.0, "max": 5.0, "step": 1.0, "default": {"browser": 3.0, "telephony": 3.0}, "recommended": {"browser": 3.0, "telephony": 3.0}},
+    # Hold / wait (voice_runtime.brain ``_acknowledge_hold``): how long the bot
+    # stays quiet after a caller asked it to wait ("ek minute ruko", "thoda time
+    # dijiye") before its one "I am still on the line" check-in; the ladder
+    # above takes over after that. The default equals the platform setting
+    # (SILENCE_HOLD_GRACE_SECONDS), which still applies while a tenant leaves
+    # the field at its default.
+    {"group": "turn_detection", "key": "silence_hold_grace_seconds", "section": "no_response", "label": "Hold wait time", "description": "Seconds the bot stays quiet after the caller asks it to wait (for example \"one minute\", \"give me some time\") before it says it is still on the line. The silence prompts above follow after that. Minimum 15 seconds, maximum 120 seconds.", "input": "number", "valueType": "integer", "unit": "seconds", "min": 15.0, "max": 120.0, "step": 5.0, "default": {"browser": 45.0, "telephony": 45.0}, "recommended": {"browser": 45.0, "telephony": 45.0}},
+    # A wait request is honoured when the decision model labels the turn as one
+    # AND the words say so (shared.orchestration.hold_intent). OFF by default:
+    # with this on, a confident label alone is enough when the words are in a
+    # form or language the platform has no wording for.
+    {"group": "turn_detection", "key": "hold_trust_decision_enabled", "section": "no_response", "label": "Trust the model for unlisted wait requests", "description": "When the caller asks the bot to wait in words or a language the platform does not list, accept the decision model's own confident reading (not a question, no number in the reply) and wait. Off: such a turn is handled as a normal reply.", "input": "toggle", "valueType": "boolean", "unit": "on/off", "min": 0.0, "max": 1.0, "step": 1.0, "default": {"browser": 0.0, "telephony": 0.0}, "recommended": {"browser": 0.0, "telephony": 0.0}},
     # Background-speech guard (voice_runtime.caller_level): a per-call
     # baseline of the caller's OWN speech level, learned from accepted
     # multi-word turns; speech this far below it is treated as another person

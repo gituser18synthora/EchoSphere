@@ -113,6 +113,11 @@ from shared.orchestration.deterministic_answers import (
     without_stray_fragments,
     yes_no_polarity,
 )
+from shared.orchestration.hold_intent import (
+    explicit_wait_request,
+    hold_counter_evidence,
+    hold_evidence,
+)
 from shared.orchestration.phrases import canned
 from voice_runtime.stt_recovery import STTFinalMissingFrame
 from shared.orchestration.placeholders import (
@@ -540,6 +545,19 @@ _UNHEARD_REPLY_MERGE_WINDOW_S = 8.0
 # by a caller who had listened came after 7.9 s or more. Two seconds is below
 # the shortest complete question the bot asks and above every early cut seen.
 _REPLY_HEARD_MIN_S = 2.0
+# Hold / wait handling (see shared.orchestration.hold_intent and
+# ``_acknowledge_hold``).  A model 'hold' label is honoured with wait wording
+# at this confidence; without any wording only for a tenant that opted in,
+# and then at the higher one.
+_HOLD_LABEL_MIN_CONFIDENCE = 0.6
+_HOLD_TRUST_MIN_CONFIDENCE = 0.9
+# One wait = one acknowledgement.  A repeated request extends the quiet, but
+# never beyond this many grace periods from the first request (a carrier's
+# "your call is on hold" loop repeats every few seconds for minutes).
+_HOLD_EPISODE_MAX_GRACES = 3
+# A bare "haan" / "ji" / "ok" this soon after the acknowledgement answers the
+# acknowledgement, not the question that is waiting.
+_HOLD_ACK_REPLY_WINDOW_S = 8.0
 # Generic answers only: a question, a request, an identifier or a correction
 # says something on its own and is handled exactly as before.
 _UNHEARD_BLOCKED_SIGNALS = frozenset({"affirm", "refusal"})
@@ -790,6 +808,7 @@ class ConversationBrain(FrameProcessor):
         speaker_tap=None,
         held_segment_guard: bool = False,
         unheard_reply_guard: bool = False,
+        hold_trust_decision: bool = False,
         user_speech_timeout: float = 1.2,
         smart_turn_active: bool = False,
     ) -> None:
@@ -1228,6 +1247,14 @@ class ConversationBrain(FrameProcessor):
         # business question the silence ladder temporarily interrupted.
         self._hearing_probe_pending: dict | None = None
         self._hold_requested_at: float | None = None
+        # One wait episode: first request → the caller's next real turn or the
+        # first check-in.  Repeated requests inside it are not acknowledged
+        # again (``_acknowledge_hold``).
+        self._hold_episode_started_at: float | None = None
+        self._hold_acknowledged_at: float | None = None
+        # Tenant opt-in: honour a confident decision-layer 'hold' that carries
+        # no known wait wording (other languages, unlisted phrasings).
+        self._hold_trust_decision = bool(hold_trust_decision)
         # The bot reply a barge-in cut short, remembered until the speech that
         # caused it is classified: a telephony recording notice restores it.
         self._interrupted_reply: str | None = None
@@ -5147,7 +5174,20 @@ class ConversationBrain(FrameProcessor):
             return False
         if self._bot_speaking or self._turn_active:
             return False
+        generation = self._pending_missing_stt_generation
         self._pending_missing_stt_generation = None
+        if self._hold_active():
+            # The caller asked for time and is doing something else (talking
+            # to someone, turning pages). Speech that produced no transcript
+            # is not a failed answer: asking the waiting question again two
+            # seconds after "I am on the line" (DEMO cv_9b2f1839a044) is the
+            # opposite of waiting.
+            self._recorder.add_event(
+                "stt_final_missing_ignored", generation=generation,
+                reason="hold_active",
+            )
+            self._arm_silence_timer()
+            return False
         if self._stt_repeat_prompts >= 2:
             return False
         self._cancel_workflow_close("stt_final_missing")
@@ -5243,11 +5283,17 @@ class ConversationBrain(FrameProcessor):
         policy = self._silence_policy
         if self._silence_prompts < policy.max_prompts:
             self._silence_prompts += 1
-            self._hold_requested_at = None  # the hold grace is spent
+            # The quiet the caller asked for is spent: the first prompt after
+            # it says the bot is still waiting ("can you hear me?" is the
+            # wrong question to someone who asked for time); the ladder and
+            # the close after it are the normal ones.
+            after_hold = self._hold_requested_at is not None and self._silence_prompts == 1
+            self._end_hold("grace_spent")
             self._recorder.flush_event_soon(
                 "silence_prompt",
                 attempt=self._silence_prompts,
                 max_prompts=policy.max_prompts,
+                after_hold=after_hold,
             )
             self._naturalness.set_turn_criticality(True, "silence_prompt")
             if self._hearing_probe_pending is None:
@@ -5256,7 +5302,8 @@ class ConversationBrain(FrameProcessor):
                     "nodes": list(self._reply_nodes),
                 }
             await self._say(
-                canned(policy.prompt_key(self._silence_prompts),
+                canned("hold_checkin" if after_hold
+                       else policy.prompt_key(self._silence_prompts),
                        self._conversation_language)
             )
             return
@@ -5289,9 +5336,78 @@ class ConversationBrain(FrameProcessor):
         await self._say(canned(SILENCE_CLOSE_KEY, self._conversation_language))
         await self.push_frame(EndWorkerFrame(reason=NO_RESPONSE_END_REASON))
 
+    def _hold_active(self) -> bool:
+        """A wait the caller asked for is running: acknowledged, and its
+        quiet period (``hold_grace_seconds``) is not over."""
+        return (
+            self._hold_requested_at is not None
+            and time.monotonic() - self._hold_requested_at
+            < self._silence_policy.hold_grace_seconds
+        )
+
+    def _end_hold(self, reason: str) -> None:
+        """The wait is over (the caller spoke again, or the check-in fired):
+        the next silence is measured with the normal ladder again."""
+        if self._hold_requested_at is None and self._hold_episode_started_at is None:
+            return
+        self._hold_requested_at = None
+        self._hold_episode_started_at = None
+        self._hold_acknowledged_at = None
+        self._recorder.add_event("hold_ended", reason=reason)
+
+    def _hold_ack_reply(self, text: str, signal: str | None, decision: RouteDecision) -> bool:
+        """A bare acknowledgement of the hold acknowledgement itself.
+
+        "जी बिल्कुल, मैं line पर हूँ।" → "हाँ।" / "जी।" / "ok": the caller is
+        not back and has not answered the waiting question (DEMO
+        cv_9b2f1839a044: each such word was answered and the Visit ID
+        question re-asked, twice in three seconds, while the caller was still
+        looking). Only inside a running wait, only within a few seconds of
+        the acknowledgement, only one or two words that are nothing but a
+        yes / hmm.
+        """
+        if (
+            self._hold_acknowledged_at is None or not self._hold_active()
+            or time.monotonic() - self._hold_acknowledged_at > _HOLD_ACK_REPLY_WINDOW_S
+            or decision.kind in (RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY)
+        ):
+            return False
+        words = [w for w in re.split(r"[\s,.!?।॥]+", text or "") if w]
+        if not 1 <= len(words) <= 2:
+            return False
+        return (
+            signal in (None, "affirm")
+            and (classify_user_signal(text) == "affirm" or is_bare_hmm(text))
+        )
+
     async def _acknowledge_hold(self, decision: RouteDecision) -> None:
-        """Caller asked the bot to wait: acknowledge briefly and stay put."""
-        self._hold_requested_at = time.monotonic()
+        """Caller asked the bot to wait: acknowledge ONCE and stay put.
+
+        The same wait asked for again ("एक मिनट रुको" … "एक मिनट वेट करो", or a
+        carrier's "your call has been put on hold" announcement every few
+        seconds — twelve acknowledgements in one call on DEMO,
+        cv_db7bcc7adfb9) is not acknowledged again: the caller has heard that
+        the bot is waiting. It extends the quiet period instead, up to
+        ``_HOLD_EPISODE_MAX_GRACES`` grace periods from the first request, so
+        a loop cannot keep the call open for ever.
+        """
+        now = time.monotonic()
+        grace = self._silence_policy.hold_grace_seconds
+        if self._hold_episode_started_at is not None and self._hold_active():
+            ceiling = self._hold_episode_started_at + _HOLD_EPISODE_MAX_GRACES * grace
+            extended = now + grace <= ceiling
+            if extended:
+                self._hold_requested_at = now
+            self._recorder.add_event(
+                "hold_extended",
+                workflow=self._active_workflow,
+                route=decision.kind.value,
+                extended=extended,
+            )
+            return
+        self._hold_episode_started_at = now
+        self._hold_requested_at = now
+        self._hold_acknowledged_at = now
         self._recorder.add_event(
             "hold_acknowledged",
             workflow=self._active_workflow,
@@ -7586,24 +7702,82 @@ class ConversationBrain(FrameProcessor):
                 or self._hmm_affirm(text)
             )
         if signal == "hold" and classify_user_signal(text) != "hold":
-            # A model 'hold' the deterministic hold lexicon does not
-            # corroborate is dropped. Honouring it makes the bot acknowledge
-            # and then WAIT in silence: on live MDND calls "Koi nahi hai sir"
-            # (an answer to "whom did you hand the order to?") and "haan
-            # bataiye kya bol rahe ho sir" (spoken right after the first
-            # hold acknowledgement — a hold loop) were both labelled hold.
-            # The lexicon covers ruko / hold on / line par raho / kat mat
-            # karo … in Hindi, Hinglish and English; a genuine hold phrased
-            # outside it merely continues the turn, which costs far less
-            # than a false wait. Same double-check the workflow engine
-            # applies to 'question' labels with looks_like_question().
-            self._recorder.add_event(
-                "hold_label_rejected",
-                source="decision" if orchestrated is not None else "classifier",
+            # A model 'hold' is not acted on by itself. Honouring a wrong one
+            # makes the bot acknowledge and then WAIT in silence: on live
+            # MDND calls "Koi nahi hai sir" (an answer to "whom did you hand
+            # the order to?") and "haan bataiye kya bol rahe ho sir" (spoken
+            # right after the first hold acknowledgement — a hold loop) were
+            # both labelled hold. The command lexicon (ruko / hold on / line
+            # par raho / kat mat karo …) is the first corroboration.
+            #
+            # It is not the only one: callers mostly ask for TIME or say what
+            # they are doing ("जी, मुझे थोड़ा टाइम दीजिए, मैं देख रहा हूँ।",
+            # "can you just give me some time so that I can check the VID?",
+            # "Please stay on the line." — DEMO cv_274f233cec5a,
+            # cv_1f3a067e03ab: labelled hold at 0.98-0.99, dropped here, sent
+            # to the workflow as an unmatched answer, two "sorry, I did not
+            # understand" and then the ask's fallback edge). Such wording
+            # corroborates the label too, unless the same turn says the wait
+            # is refused, already over, or carries the answer
+            # (shared.orchestration.hold_intent).
+            source = "decision" if orchestrated is not None else "classifier"
+            confidence = getattr(
+                orchestrated if orchestrated is not None else classification,
+                "confidence", None,
             )
-            signal = None
-            if classification is not None:
-                classification.signal = None
+            try:
+                confidence = None if confidence is None else float(confidence)
+            except (TypeError, ValueError):
+                confidence = None
+            evidence = hold_evidence(text)
+            counter = hold_counter_evidence(text)
+            # Wording absent: only the decision layer's own confident,
+            # non-question reading is left. Recorded for every tenant
+            # (``would_trust``), acted on for a tenant that opted in.
+            would_trust = bool(
+                evidence is None and counter is None and orchestrated is not None
+                and confidence is not None and confidence >= _HOLD_TRUST_MIN_CONFIDENCE
+                and not looks_like_question(text)
+            )
+            if evidence is not None and counter is None and (
+                confidence is None or confidence >= _HOLD_LABEL_MIN_CONFIDENCE
+            ):
+                self._recorder.add_event(
+                    "hold_label_corroborated", source=source, evidence=evidence,
+                )
+            elif would_trust and self._hold_trust_decision:
+                self._recorder.add_event(
+                    "hold_label_corroborated", source=source, evidence="decision_trusted",
+                )
+            else:
+                self._recorder.add_event(
+                    "hold_label_rejected", source=source, evidence=evidence,
+                    counter=counter, would_trust=would_trust,
+                )
+                signal = None
+                if classification is not None:
+                    classification.signal = None
+        elif (
+            signal in (None, "question") and orchestrated is None and self._policy is None
+            and getattr(classification, "source", "regex") in ("regex", "none")
+        ):
+            # No model read this turn (the decision call failed, or the
+            # classifier ran out of its budget and fell back to regex), so
+            # there is no label to corroborate. Wording that asks the BOT for
+            # time or to stay on the line still means what it says (LOCAL
+            # voice run 2026-11-26: "जी मुझे थोड़ा टाइम दीजिए मैं देख रहा हूँ" at a
+            # Terminal ID ask, classifier timeout at 2.0 s → "sorry, I did
+            # not understand"). Bots with a domain policy keep their own
+            # reading: on a collections call "thoda time dijiye" asks for
+            # more time to pay. The regex 'question' shape does not stand in
+            # the way ("can you give me some time so that I can check?");
+            # a question ABOUT time ("kitna time lagega?") is no request.
+            explicit = explicit_wait_request(text)
+            if explicit is not None:
+                self._recorder.add_event(
+                    "hold_label_corroborated", source="wording", evidence=explicit,
+                )
+                signal = "hold"
         # Opening fallback must see the semantic understanding, even when
         # classification found no configured business intent to upgrade.
         decision = replace(decision, signal=signal)
@@ -7991,6 +8165,12 @@ class ConversationBrain(FrameProcessor):
         # rewind can also drop the transcript entry.
         self._open_turn_record = turn
         unheard = None if completed_followup else self._take_unheard_reply(text, signal)
+        # The wait the caller asked for ends with their next real turn. A
+        # bare "haan" / "ji" right after the acknowledgement only answers the
+        # acknowledgement: no reply, and the wait goes on.
+        hold_ack_reply = self._hold_ack_reply(text, signal, decision)
+        if signal != "hold" and not hold_ack_reply:
+            self._end_hold("caller_turn")
 
         try:
             if decision.kind == RouteKind.CALL_CONTROL:
@@ -7999,6 +8179,11 @@ class ConversationBrain(FrameProcessor):
                     await self._handle_call_control(decision)
             elif decision.kind == RouteKind.HANDOFF:
                 await self._handle_handoff(decision)
+            elif hold_ack_reply:
+                self._recorder.add_event(
+                    "hold_ack_reply_ignored", workflow=self._active_workflow,
+                    signal=signal,
+                )
             elif signal == "hold" and decision.kind in (
                 RouteKind.CHAT, RouteKind.CLARIFY, RouteKind.KNOWLEDGE,
                 RouteKind.INTENT, RouteKind.WORKFLOW, RouteKind.TOOL,

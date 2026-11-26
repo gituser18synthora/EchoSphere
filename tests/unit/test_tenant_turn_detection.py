@@ -152,7 +152,8 @@ def test_silence_prompt_seconds_api_validation_enforces_range_and_whole_seconds(
 
 def test_silence_ladder_fields_share_the_no_response_section():
     fields = {f["key"]: f for f in TURN_DETECTION_FIELDS if f["section"] == "no_response"}
-    assert set(fields) == {"silence_prompt_seconds", "silence_retry_seconds", "silence_max_prompts"}
+    assert set(fields) == {"silence_prompt_seconds", "silence_retry_seconds", "silence_max_prompts",
+                           "silence_hold_grace_seconds", "hold_trust_decision_enabled"}
     assert (fields["silence_retry_seconds"]["min"], fields["silence_retry_seconds"]["max"]) == (5.0, 15.0)
     assert (fields["silence_max_prompts"]["min"], fields["silence_max_prompts"]["max"]) == (1.0, 5.0)
     for transport in ("browser", "telephony"):

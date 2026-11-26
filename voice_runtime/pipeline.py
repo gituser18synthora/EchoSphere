@@ -152,8 +152,9 @@ def resolve_silence_policy(turn: dict[str, float]) -> SilencePolicy:
     first-prompt wait, retry interval and prompt count come from it (a
     snapshot written before a field existed has no key and keeps that
     field's schema default). Bounds are enforced by the schema already; the
-    clamp here only guards a corrupt cached value. The post-hold grace stays
-    a platform setting.
+    clamp here only guards a corrupt cached value. The post-hold grace is the
+    platform setting (``SILENCE_HOLD_GRACE_SECONDS``) until the tenant moves
+    "Hold wait time" off its default — then the tenant's value applies.
     """
     base = SilencePolicy.from_settings(get_settings())
 
@@ -168,11 +169,17 @@ def resolve_silence_policy(turn: dict[str, float]) -> SilencePolicy:
             value = default
         return min(high, max(low, value))
 
+    hold_grace = base.hold_grace_seconds
+    if "silence_hold_grace_seconds" in turn:
+        configured = _turn_value("silence_hold_grace_seconds")
+        if configured != TURN_DETECTION_DEFAULTS["browser"]["silence_hold_grace_seconds"]:
+            hold_grace = configured
     return replace(
         base,
         prompt_seconds=_turn_value("silence_prompt_seconds"),
         retry_seconds=_turn_value("silence_retry_seconds"),
         max_prompts=int(round(_turn_value("silence_max_prompts"))),
+        hold_grace_seconds=hold_grace,
     )
 
 
@@ -1293,9 +1300,9 @@ def build_voice_pipeline(
         # streaming identifier came out invalid. Lazy — no client is built
         # unless a recovery runs.
         batch_transcriber=build_batch_transcriber(config),
-        # No-response ladder: first-prompt wait, retry interval and prompt
-        # count are the tenant's Turn Detection values (per transport); the
-        # post-hold grace remains a platform setting.
+        # No-response ladder: first-prompt wait, retry interval, prompt count
+        # and the quiet after a wait request are the tenant's Turn Detection
+        # values (per transport).
         silence_policy=resolve_silence_policy(turn),
         latency_filler=latency_filler,
         caller_level=caller_level,
@@ -1305,6 +1312,9 @@ def build_voice_pipeline(
         # A reply cut before the caller could hear its question is repeated
         # instead of answered by the yes/no spoken over it (tenant opt-in).
         unheard_reply_guard=turn["unheard_reply_guard_enabled"] >= 0.5,
+        # A confident decision-layer 'hold' without known wait wording is
+        # honoured only for a tenant that opted in (brain hold guard).
+        hold_trust_decision=turn.get("hold_trust_decision_enabled", 0.0) >= 0.5,
         # Continuation-vs-new-turn boundary while a reply is unheard derives
         # from the tenant's own pause window (brain._CONTINUATION_GAP_*).
         user_speech_timeout=turn["user_speech_timeout"],

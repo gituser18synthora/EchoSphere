@@ -64,10 +64,14 @@ PACK = SignalPack(
         name='agent_request', priority=50, entry=True,
         pattern=r"""\b(?:agent|customer care|supervisor|manager|human|representative)\b|insaan se|aadmi se|एजेंट|कस्टमर केयर|इंसान से|आदमी से|सुपरवाइज़र|मैनेजर""",
     ),
-    # "Wait a moment / stay on the line" — a HOLD, not a callback.
+    # "Wait a moment / stay on the line" — a HOLD, not a callback.  वेट and
+    # line/लाइन count as whole words only: "प्राइवेट लिमिटेड" and "क्लाइन पे"
+    # were acknowledged as holds on DEMO (cv_671f59b01d2b, cv_ba7bd69eca05).
+    # Requests for time ("थोड़ा टाइम दीजिए", "give me a minute") are not listed
+    # here on purpose: they only corroborate a model label (hold_intent.py).
     SignalSpec(
         name='hold', priority=70, off_script=True,
-        pattern=r"""^(?!.*(?:call ?back|call (?:me )?later|(?<![\wऀ-ॿ])(?:baad (?:mein|me)|बाद में)|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)))(?=.*(?:(?:ek|do|एक|दो|one|two|a|paanch|panch|पाँच|पांच|thoda|थोड़ा|\d+)?\s*(?:minutes?|mins?|mint|seconds?|secs?|moment|मिनट|मिनिट|सेकंड|सेकेंड|पल)\s*(?:ruk|रुक|hold|wait|do(?![\w])|दो|dijiye|दीजिए|dena|देना|de(?![\w])|दे(?![\wऀ-ॿ]))|^\W*(?:haan\s+|हाँ\s+|ji\s+|जी\s+|bas\s+|बस\s+|just\s+)?(?:ek|एक|one|1|do|दो|two|2|a)\s*(?:minute|min|mint|मिनट|मिनिट|second|sec|सेकंड|moment)\W*$|(?<![\wऀ-ॿ])(?:ruk(?:o|iye|iyega|na|\s+ja(?:o|iye|na)?)|रुको|रुकिए|रुकिये|रुकना|रुक\s*जा(?:ओ|इए|ना)?|thehr\w*|ठहर\w*)|\bhold(?:\s+on|\s+karo|\s+kijiye|\s+the\s+line)?\b|होल्ड|\bhang\s+on\b|\bwait(?:\s+(?:a\s+)?(?:minute|moment|second|sec|karo|kijiye|kar))?\b(?!ing)|वेट|(?:line|लाइन)\s*(?:par|pe|pr|पर|पे)|(?:rakh|रख)(?:na|o|iye|ना|ो|िए)?\s*(?:mat|मत|nahi|nahin|नहीं|नही)|(?:kat+\w*|kaat\w*|cut|काट\w*|कट|band|बंद)\s*(?:mat|मत|na|ना|nahi|nahin|नहीं|नही)|(?:mat|मत)\s*(?:kat+\w*|kaat\w*|cut|काट\w*|कट|rakh\w*|रख\w*|band|बंद)|don'?t\s+(?:hang\s+up|disconnect|cut|go)|do\s+not\s+(?:hang\s+up|disconnect|cut)|(?:abhi|अभी)\s*(?:aata|aaya|aati|aayi|आता|आया|आती|आई)))""",
+        pattern=r"""^(?!.*(?:call ?back|call (?:me )?later|(?<![\wऀ-ॿ])(?:baad (?:mein|me)|बाद में)|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)))(?=.*(?:(?:ek|do|एक|दो|one|two|a|paanch|panch|पाँच|पांच|thoda|थोड़ा|\d+)?\s*(?:minutes?|mins?|mint|seconds?|secs?|moment|मिनट|मिनिट|सेकंड|सेकेंड|पल)\s*(?:ruk|रुक|hold|wait|do(?![\w])|दो|dijiye|दीजिए|dena|देना|de(?![\w])|दे(?![\wऀ-ॿ]))|^\W*(?:haan\s+|हाँ\s+|ji\s+|जी\s+|bas\s+|बस\s+|just\s+)?(?:ek|एक|one|1|do|दो|two|2|a)\s*(?:minute|min|mint|मिनट|मिनिट|second|sec|सेकंड|moment)\W*$|(?<![\wऀ-ॿ])(?:ruk(?:o|iye|iyega|na|\s+ja(?:o|iye|na)?)|रुको|रुकिए|रुकिये|रुकना|रुक\s*जा(?:ओ|इए|ना)?|thehr\w*|ठहर\w*)|\bhold(?:\s+on|\s+karo|\s+kijiye|\s+the\s+line)?\b|होल्ड|\bhang\s+on\b|\bwait(?:\s+(?:a\s+)?(?:minute|moment|second|sec|karo|kijiye|kar))?\b(?!ing)|(?<![ऀ-ॣ])वेट(?![ऀ-ॣ])|(?<![\wऀ-ॣ])(?:line|लाइन)\s*(?:par|pe|pr|पर|पे)|(?:rakh|रख)(?:na|o|iye|ना|ो|िए)?\s*(?:mat|मत|nahi|nahin|नहीं|नही)|(?:kat+\w*|kaat\w*|cut|काट\w*|कट|band|बंद)\s*(?:mat|मत|na|ना|nahi|nahin|नहीं|नही)|(?:mat|मत)\s*(?:kat+\w*|kaat\w*|cut|काट\w*|कट|rakh\w*|रख\w*|band|बंद)|don'?t\s+(?:hang\s+up|disconnect|cut|go)|do\s+not\s+(?:hang\s+up|disconnect|cut)|(?:abhi|अभी)\s*(?:aata|aaya|aati|aayi|आता|आया|आती|आई)))""",
     ),
     # Busy now / call me later.
     SignalSpec(
