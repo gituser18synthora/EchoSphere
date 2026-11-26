@@ -112,6 +112,45 @@ question captures digits (`(\d(?:[\s-]?\d){3,})`, spaces/dashes kept) and
 callers rarely dictate the trailing letter; the 42 digit keys are unique
 (the converter enforces it).
 
+## Terminal ID / Merchant ID / merchant name search (2026-11-26)
+
+Source: `Wordline_with_distance.csv` (same 42 rows; + `ANCHORAPPMID` →
+`merchant_id`, + `distance` → `distance`, converter schema 3; MIDs are
+checked unique, exact and by digit key).
+
+| Search | Matching | Where |
+| --- | --- | --- |
+| Terminal ID (`ANCHORAPPTID`) | exact, case-insensitive; digit key when the letter was lost (unchanged) | `terminal_id*`, `spoken_terminal_id*`, `ANCHORAPPTID`, `tid` |
+| Merchant ID (`ANCHORAPPMID`) | exact, case-insensitive, separators ignored; digit key only when no letter was given | `merchant_id`, `mid`, `ANCHORAPPMID`, `GET /merchants/by-merchant-id/{mid}` |
+| Merchant name (`MERCHANT`) | case-insensitive, partial: exact → partial (word starts / substring) → phonetic (STT spellings, Devanagari) | `merchant_name`, `MERCHANT`, `GET /merchants/search?name=` |
+
+* Explicit form: `POST /merchants/lookup {"search_by": "terminal_id|merchant_id|merchant_name", "query": "…"}`
+  — that one search only; malformed query → `422 invalid_query`.
+* Several merchants for a name → `200 lookup_status: "multiple"` with every
+  candidate (`candidates`, `found_count`, `match_count`, `candidates_spoken`)
+  and **no** merchant / `found` / `verified` keys. Nothing is picked.
+* Hits now also carry `merchant_id` and `distance` (unit not stated in the export).
+* The bot's free-text "MID and outlet name" answers (`pr_merchant_outlet`,
+  `bat_merchant_outlet` and their `_retry`) are searched as: the id inside
+  (10+ digits = MID, 4-9 = TID), then the rest as an outlet name, with a
+  fourth *words* tier (shared distinctive words; generic words such as
+  MEDICAL / STORE / TRADERS alone never match).
+* Connection (setup/01): schema enum + `multiple`; new mappings `merchant_id`,
+  `distance → ctx_distance` (the team's visit-timing slot: ≤ 50 → 24-48 h,
+  else 5 working days), `ambiguous → merchant_ambiguous`,
+  `match_count → merchant_match_count`, `candidates_spoken → merchant_candidates`.
+* Workflow (setup/05 + `setup/alternate_lookup.py`, on the team's v57): the
+  "MID and outlet name" answer is looked up — found → the TID read-back
+  chain; several → candidates read out, second answer looked up; not found →
+  one repeat, then the team's "noted" (unverified) step; service down → the
+  "noted" step. A caller with no Terminal ID at the first question now gets
+  the MID / outlet question instead of the close. Prompt: routing rule, MID
+  digit rule, field list.
+* Apply order: `01_api_connection.py --apply` → restart the merchant API →
+  `05_alternate_lookup.py --apply` → `04_go_live.py release --apply`.
+* Tests: `tests/test_merchant_search.py` (API, all 42 records × 3 searches),
+  `tests/test_alternate_lookup.py` (engine replay on v57).
+
 ## Workflow (v11)
 
 Unchanged journeys; after each Terminal ID question:

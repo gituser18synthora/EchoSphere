@@ -5,6 +5,8 @@ field-team export of merchant terminals with an open paper-roll or battery
 ticket.  Columns map one-to-one onto the JSON records the tenant API serves:
 
     ANCHORAPPTID   → terminal_id      (alphanumeric, e.g. ``1231410A``)
+    ANCHORAPPMID   → merchant_id      (optional; 12-15 characters, digits with
+                                       at most one letter, e.g. ``0110656A0007856``)
     MERCHANT       → outlet_name
     Bank Name      → bank_name
     ASSETMODEL     → asset_type       (terminal model)
@@ -12,6 +14,7 @@ ticket.  Columns map one-to-one onto the JSON records the tenant API serves:
     Address        → address          (optional; multi-line, kept line by line)
     Contact Person → contact_person   (optional)
     Type           → issue_type       (+ ``issue_code``, a slug of it)
+    distance       → distance         (optional; a number, kept as int/float)
 
 No value is reshaped beyond whitespace trimming and the contact-number
 digit normalisation, so every record can be traced back to its CSV row.
@@ -19,10 +22,16 @@ The TTS-friendly casing of names, models and addresses is applied by the
 API when it answers (``api/speech.py``), not here.  Header names are
 matched after trimming (the 2026-11-10 export has ``"Contact Person "``).
 ``Address`` and ``Contact Person`` are optional: an older export without
-them, or an empty cell, converts with an empty value.
+them, or an empty cell, converts with an empty value.  ``ANCHORAPPMID`` and
+``distance`` (the 2026-11-26 export ``Wordline_with_distance.csv``) are
+optional the same way: a missing column or empty cell converts to ``""`` /
+``None``.  The unit of ``distance`` is not stated in the export; it is
+served as the number the file holds.
 The converter refuses files whose terminal ids, digit keys (what a caller
-dictates — see the API) or contact numbers collide, because the voice
-workflow resolves callers by exactly those keys.
+dictates — see the API), merchant ids (exact or digit key) or contact
+numbers collide, because the API resolves callers by exactly those keys.
+Merchant *names* may repeat: a name search is a partial match that can
+legitimately return several merchants, and the API reports them all.
 
 Usage (from the repo root)::
 
@@ -47,7 +56,7 @@ TENANT_DIR = Path(__file__).resolve().parent.parent
 CSV_PATH = TENANT_DIR / "Wordline.csv"
 JSON_PATH = TENANT_DIR / "data" / "merchants.json"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 COLUMNS = {
     "ANCHORAPPTID": "terminal_id",
     "MERCHANT": "outlet_name",
@@ -61,10 +70,22 @@ OPTIONAL_COLUMNS = {
     "Address": "address",
     "Contact Person": "contact_person",
 }
-FIELDS = [*COLUMNS.values(), "issue_code", *OPTIONAL_COLUMNS.values()]
-LOOKUP_KEYS = ["terminal_id (digit key)", "contact_number (last 10 digits)"]
+# Added by the 2026-11-26 export (Wordline_with_distance.csv).
+OPTIONAL_SCALAR_COLUMNS = {
+    "ANCHORAPPMID": "merchant_id",
+    "distance": "distance",
+}
+FIELDS = [*COLUMNS.values(), "issue_code", *OPTIONAL_COLUMNS.values(),
+          *OPTIONAL_SCALAR_COLUMNS.values()]
+LOOKUP_KEYS = ["terminal_id (exact or digit key)", "merchant_id (exact or digit key)",
+               "outlet_name (case-insensitive partial match)",
+               "contact_number (last 10 digits)"]
 
 _TERMINAL_ID = re.compile(r"^[A-Z0-9]{4,12}$")
+# 12-15 characters, digits with at most one letter (the export has 12-15
+# digit ids and ``0110656A0007856``-style ids).
+_MERCHANT_ID = re.compile(r"^(?=(?:[A-Z]*\d){10})\d*[A-Z]?\d*$")
+MERCHANT_ID_LENGTH = (10, 16)
 
 
 class ConversionError(ValueError):
@@ -107,6 +128,7 @@ def read_rows(path: Path) -> list[dict[str, str]]:
             "_line": reader.line_num,
             **{c: (row.get(c) or "").strip() for c in COLUMNS},
             **{c: clean_multiline(row.get(c)) for c in OPTIONAL_COLUMNS},
+            **{c: " ".join((row.get(c) or "").split()) for c in OPTIONAL_SCALAR_COLUMNS},
         })
     return rows
 
@@ -117,11 +139,27 @@ def clean_multiline(raw: str | None) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def parse_distance(raw: str) -> int | float | None:
+    """``"65"`` → 65, ``"12.5"`` → 12.5, ``""`` → None; anything else raises."""
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        raise ConversionError(f"distance {value!r} is not a number") from None
+    if number != number or number < 0:  # NaN or negative
+        raise ConversionError(f"distance {value!r} is not a non-negative number")
+    return int(number) if number.is_integer() and "." not in value else number
+
+
 def convert_rows(rows: list[dict[str, str]]) -> list[dict]:
     records: list[dict] = []
     seen_terminal: dict[str, int] = {}
     seen_digits: dict[str, int] = {}
     seen_contact: dict[str, int] = {}
+    seen_mid: dict[str, int] = {}
+    seen_mid_digits: dict[str, int] = {}
     problems: list[str] = []
     for row in rows:
         line = row["_line"]
@@ -134,11 +172,26 @@ def convert_rows(rows: list[dict[str, str]]) -> list[dict]:
         if len(contact) != 10:
             problems.append(f"line {line}: contact number must be 10 digits (got {len(contact)})")
             continue
-        for key, seen, label in (
+        merchant_id = re.sub(r"\s", "", row.get("ANCHORAPPMID", "")).upper()
+        if merchant_id and not (_MERCHANT_ID.match(merchant_id)
+                                and MERCHANT_ID_LENGTH[0] <= len(merchant_id) <= MERCHANT_ID_LENGTH[1]):
+            problems.append(f"line {line}: merchant id {merchant_id!r} is not 10-16 digits "
+                            "with at most one letter")
+            continue
+        try:
+            distance = parse_distance(row.get("distance", ""))
+        except ConversionError as exc:
+            problems.append(f"line {line}: {exc}")
+            continue
+        keys = [
             (terminal_id, seen_terminal, "terminal id"),
             (digits, seen_digits, "terminal digit key"),
             (contact, seen_contact, "contact number"),
-        ):
+        ]
+        if merchant_id:
+            keys += [(merchant_id, seen_mid, "merchant id"),
+                     (re.sub(r"\D", "", merchant_id), seen_mid_digits, "merchant id digit key")]
+        for key, seen, label in keys:
             if key in seen:
                 problems.append(f"line {line}: duplicate {label} (first on line {seen[key]})")
             else:
@@ -155,6 +208,8 @@ def convert_rows(rows: list[dict[str, str]]) -> list[dict]:
         empty = [k for k, v in record.items() if not v]
         record["address"] = row.get("Address", "")
         record["contact_person"] = " ".join(row.get("Contact Person", "").split())
+        record["merchant_id"] = merchant_id
+        record["distance"] = distance
         if empty:
             problems.append(f"line {line}: empty value(s) for {empty}")
             continue

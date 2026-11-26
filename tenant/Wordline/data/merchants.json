@@ -1,8 +1,8 @@
 {
   "_meta": {
     "source": "Wordline.csv",
-    "schema_version": 2,
-    "generated_at": "2026-11-10T14:14:17+00:00",
+    "schema_version": 3,
+    "generated_at": "2026-11-26T14:43:14+00:00",
     "record_count": 42,
     "fields": [
       "terminal_id",
@@ -13,10 +13,14 @@
       "issue_type",
       "issue_code",
       "address",
-      "contact_person"
+      "contact_person",
+      "merchant_id",
+      "distance"
     ],
     "lookup_keys": [
-      "terminal_id (digit key)",
+      "terminal_id (exact or digit key)",
+      "merchant_id (exact or digit key)",
+      "outlet_name (case-insensitive partial match)",
       "contact_number (last 10 digits)"
     ]
   },
@@ -30,7 +34,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "AGARWAL PUBLIC SCHOOL\nBICHOLI MARDANA ROAD\nINDORE MP\nINDORE - 452016, MADHYA PRADESH\nNew ME Contact No.9303333356\nTerminal Line No.0",
-      "contact_person": "K C TIWARI"
+      "contact_person": "K C TIWARI",
+      "merchant_id": "037122019340169",
+      "distance": 65
     },
     {
       "terminal_id": "79260453",
@@ -41,7 +47,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "217 SUNSET RAW HOUSE OPP IDBI BANK GURUKUL ROAD DRIVE IN ROAD MEMNAGAR Ahmedabad Ahmedabad 380052",
-      "contact_person": "Kunal Patel"
+      "contact_person": "Kunal Patel",
+      "merchant_id": "079056026020008",
+      "distance": 58
     },
     {
       "terminal_id": "1231410A",
@@ -52,7 +60,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "SHOP NO AVON PLAZA THAKUR COMPLEX KANDIVALI EAST POISAR EAST",
-      "contact_person": "Dinesh Bhanushali"
+      "contact_person": "Dinesh Bhanushali",
+      "merchant_id": "0110656A0007856",
+      "distance": 33
     },
     {
       "terminal_id": "3137502A",
@@ -63,7 +73,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "PARTH PLAZA MORBI GUJRAT",
-      "contact_person": "MAHENDRA SINGH"
+      "contact_person": "MAHENDRA SINGH",
+      "merchant_id": "0063260A0001914",
+      "distance": 69
     },
     {
       "terminal_id": "3318258A",
@@ -74,7 +86,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "209 A 9 WESTEND RAJENDRA NAGAR\nHUKMAKHEDI A B ROAD INDORE MADHYA PRADESH",
-      "contact_person": "Mili Mandhan"
+      "contact_person": "Mili Mandhan",
+      "merchant_id": "0515700A0452745",
+      "distance": 28
     },
     {
       "terminal_id": "2482073A",
@@ -85,7 +99,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "25 CORPORATION SHOPPING COMPLEX INDRANAGAR ADYAR CHENNAI LM NEAR INDRA NAGAR WATER TANK CITY CHENNAI TAMIL NADU",
-      "contact_person": "K MURUGAVELRAJ"
+      "contact_person": "K MURUGAVELRAJ",
+      "merchant_id": "055057018410016",
+      "distance": 30
     },
     {
       "terminal_id": "3022650A",
@@ -96,7 +112,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "CHENETHABHAVAN NAMPALLY HYDERABAD NAMPALLY 500001 HYDERABAD",
-      "contact_person": "TRIFED"
+      "contact_person": "TRIFED",
+      "merchant_id": "0041181A0003758",
+      "distance": 96
     },
     {
       "terminal_id": "65079917",
@@ -107,7 +125,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "A1 307,SAFDARJUNG ENCLAVE,NEW DELHI,NEW DELHI",
-      "contact_person": "Gaurav Gupta"
+      "contact_person": "Gaurav Gupta",
+      "merchant_id": "202211290028703",
+      "distance": 21
     },
     {
       "terminal_id": "1432421A",
@@ -118,7 +138,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "79 1 RADHA BALLAVE ROAD NAIHATI\nWEST BENGAL",
-      "contact_person": "MANOTOSH BOSE"
+      "contact_person": "MANOTOSH BOSE",
+      "merchant_id": "0450001A0087355",
+      "distance": 61
     },
     {
       "terminal_id": "0710141A",
@@ -129,7 +151,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "BUILDING NO 6 RING ROAD LAJPAT NAGAR 4 NEW DELHI",
-      "contact_person": "KABER BANERJEE"
+      "contact_person": "KABER BANERJEE",
+      "merchant_id": "000011693252111",
+      "distance": 57
     },
     {
       "terminal_id": "2537486A",
@@ -140,7 +164,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "INDIAN ARTISAN SHOP AT HOTEL DELHI",
-      "contact_person": "TAHIR AHMAD BAZAZ"
+      "contact_person": "TAHIR AHMAD BAZAZ",
+      "merchant_id": "0340521A0015982",
+      "distance": 45
     },
     {
       "terminal_id": "1584709A",
@@ -151,7 +177,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "Peringottukara Thrissur KERALA",
-      "contact_person": "Prasanthan K. C"
+      "contact_person": "Prasanthan K. C",
+      "merchant_id": "0741004A0016468",
+      "distance": 50
     },
     {
       "terminal_id": "65019701",
@@ -162,7 +190,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "1/224 GAYATHRI COMPLEX,MAIN ROAD,KOLLENGODE, PALAKKAD-678506 KERALA",
-      "contact_person": "SHAJI KAMALUDHEEN"
+      "contact_person": "SHAJI KAMALUDHEEN",
+      "merchant_id": "606818900013730",
+      "distance": 33
     },
     {
       "terminal_id": "2894358A",
@@ -173,7 +203,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "PROP SHRINIVAS M R NO 298 BY 2997TH CROSS 1ST STAGE DOMLUR KARNATAKA\nBANGALORE URBAN",
-      "contact_person": "SHRINIVAS M R"
+      "contact_person": "SHRINIVAS M R",
+      "merchant_id": "0503120A0025625",
+      "distance": 85
     },
     {
       "terminal_id": "1317317A",
@@ -184,7 +216,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "G 12 JOP PLAZA GROUND FLOOR SECTOR 18 NOIDA",
-      "contact_person": "ANJALI"
+      "contact_person": "ANJALI",
+      "merchant_id": "0580582A0004608",
+      "distance": 99
     },
     {
       "terminal_id": "2592724A",
@@ -195,7 +229,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "SUBROTO PARK NEW DELHI",
-      "contact_person": "R S SINGH"
+      "contact_person": "R S SINGH",
+      "merchant_id": "0141961A0015888",
+      "distance": 98
     },
     {
       "terminal_id": "3011346A",
@@ -206,7 +242,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "DEORIA,MALVIYA ROAD Deoria,near jockey showroom UTTAR PRADESH",
-      "contact_person": "KESHAW PRASAD GUPTA"
+      "contact_person": "KESHAW PRASAD GUPTA",
+      "merchant_id": "0164102A0033996",
+      "distance": 81
     },
     {
       "terminal_id": "1964939A",
@@ -217,7 +255,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "DOOR NO 61 INDIRA NAGAR ZONE 2 MADURAI 625020 TAMIL NADU",
-      "contact_person": "WYT HOSPITALITY SERVICES"
+      "contact_person": "WYT HOSPITALITY SERVICES",
+      "merchant_id": "0900506A0002913",
+      "distance": 80
     },
     {
       "terminal_id": "3167106A",
@@ -228,7 +268,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "19TH FLOOR F WING LOTUS CORPORATE PARK JAY COACH JUNCTION\nOFF WESTERN EXPRESS HIGHWAY GOREGAON EAST",
-      "contact_person": "SPYKAR LIFESTYLES PRIVATE LIMITED"
+      "contact_person": "SPYKAR LIFESTYLES PRIVATE LIMITED",
+      "merchant_id": "0050001A0039027",
+      "distance": 71
     },
     {
       "terminal_id": "81970696",
@@ -239,7 +281,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "Ground floor shop no 16 A floor B block Cushrow Baug SBS Road Electric house MUMBAI",
-      "contact_person": "ANIL PARMAR"
+      "contact_person": "ANIL PARMAR",
+      "merchant_id": "037326006542219",
+      "distance": 86
     },
     {
       "terminal_id": "10964261",
@@ -250,7 +294,9 @@
       "issue_type": "Paper Roll",
       "issue_code": "paper_roll",
       "address": "H NO 03 73/28 KHAJAGUDA SERILINGAMPALLY HYDERABAD",
-      "contact_person": "ARUTLA SHANTHAN KUMAR REDDY"
+      "contact_person": "ARUTLA SHANTHAN KUMAR REDDY",
+      "merchant_id": "037327039980019",
+      "distance": 64
     },
     {
       "terminal_id": "32577872",
@@ -261,7 +307,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "HOUSE NO.14, WARD NO 1 GAJANAN NAGAR ARVI ROAD,\nGRAMPANCHAYAT PIPRI NEGHE WARDHA 442001\nWARDHA - 442001, MAHARASHTRA",
-      "contact_person": "TARUN LAXMANDAS BHATIA"
+      "contact_person": "TARUN LAXMANDAS BHATIA",
+      "merchant_id": "37322008080087",
+      "distance": 38
     },
     {
       "terminal_id": "2305073A",
@@ -272,7 +320,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "WARD NO 12 SHOP NO 14 GOLA BAZAR SHERGHATI GAYA\nMerchant Pin Code - 824211 Merchant State - BIHAR",
-      "contact_person": "NITISH KUMAR"
+      "contact_person": "NITISH KUMAR",
+      "merchant_id": "0552602A0023677",
+      "distance": 70
     },
     {
       "terminal_id": "2544083A",
@@ -283,7 +333,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "M S SADHANA GANADHI QUARE\nMerchant Pin Code\n570001\nMerchant State\nKARNATAKA",
-      "contact_person": "DILIPLKUMAR JAIN"
+      "contact_person": "DILIPLKUMAR JAIN",
+      "merchant_id": "6841004429023",
+      "distance": 97
     },
     {
       "terminal_id": "2957818A",
@@ -294,7 +346,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "BAGA BEACH ROAD OPPOSITE PR ENTERPRISES BAGA BARDEZ\nMerchant Pin Code\n403516\nMerchant State\nGOA",
-      "contact_person": "ALTAF AHMED LATTU"
+      "contact_person": "ALTAF AHMED LATTU",
+      "merchant_id": "0340344A0017888",
+      "distance": 69
     },
     {
       "terminal_id": "1974857A",
@@ -305,7 +359,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "SHOP NO 17, SAIFEE PARK, 680\nDR. MASCARENHAS ROAD, MAZGAON , MUMBAI\nMerchant Pin Code\n400010\nMerchant State\nMAHARASHTRA",
-      "contact_person": "ALI H"
+      "contact_person": "ALI H",
+      "merchant_id": "0791372A0121679",
+      "distance": 62
     },
     {
       "terminal_id": "1132986A",
@@ -316,7 +372,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "SHOP NO 6 G/F TUSHAR RESIDENCY BLDG\nNO A2 MILKAT NO 1060302347 PIMPLE SOUDAGAR RD PIMPRIGAON PIMPRI PUNE\nMerchant Pin Code\n411027\nMerchant State\nMAHARASHTRA",
-      "contact_person": "KAMLESH SOLANKI"
+      "contact_person": "KAMLESH SOLANKI",
+      "merchant_id": "0450462A0000102",
+      "distance": 61
     },
     {
       "terminal_id": "1372318A",
@@ -327,7 +385,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "PLOT NO 13 MOUZA WADGAON NAGPUR ROAD CHANDRAPUR\nMerchant Pin Code\n442401\nMerchant State\nMAHARASHTRA",
-      "contact_person": "SANGITA GOVINDWAR"
+      "contact_person": "SANGITA GOVINDWAR",
+      "merchant_id": "0110041A0010115",
+      "distance": 39
     },
     {
       "terminal_id": "A2129007",
@@ -338,7 +398,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "PROP Anand Shantaram Satam\nSHOP NO 3 VIMALABAI SHOPING CENTRE SHYAM NAGAR MUMBAI\nMerchant Pin Code\n400060\nMerchant State\nMAHARASHTRA",
-      "contact_person": "ANAND SHANTARAM SATAM"
+      "contact_person": "ANAND SHANTARAM SATAM",
+      "merchant_id": "466821290007",
+      "distance": 59
     },
     {
       "terminal_id": "1257524A",
@@ -349,7 +411,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "NO 380,NSK SALAI ARCOT ROAD KODAMBAKKAM,CHENNAI-600024\nMerchant Pin Code\n600024\nMerchant State\nTAMIL NADU",
-      "contact_person": "PELIKAN OFFICE AUTOMATION"
+      "contact_person": "PELIKAN OFFICE AUTOMATION",
+      "merchant_id": "0900285A0001833",
+      "distance": 90
     },
     {
       "terminal_id": "3096651A",
@@ -360,7 +424,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "ELIYARACKAL,KONNI,PATHANAMTHITTA,\nMerchant Pin Code\n689691\nMerchant State\nKERALA",
-      "contact_person": "Thankappan Rajeev"
+      "contact_person": "Thankappan Rajeev",
+      "merchant_id": "0162460A0034535",
+      "distance": 67
     },
     {
       "terminal_id": "3493433A",
@@ -371,7 +437,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "Ground Floor No 48A Sri Ram\nHospital Pandian Nagar Byepass Road West Madurai Ma\nMerchant Pin Code\n625016\nMerchant State\nTAMIL NADU",
-      "contact_person": "Subbiah"
+      "contact_person": "Subbiah",
+      "merchant_id": "0141093A0018926",
+      "distance": 88
     },
     {
       "terminal_id": "65004683",
@@ -382,7 +450,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "MGP 2 598 B C AND D FIRST AND SECOND FLR,METRO PLAZA HIDAYATH NAGAR,UPPALA KASARAGOD KERALA,\nKASARGOD\nMerchant Pin Code\n671322\nMerchant State\nKERALA",
-      "contact_person": "ABDULLA A ARIKADY"
+      "contact_person": "ABDULLA A ARIKADY",
+      "merchant_id": "202104200024972",
+      "distance": 57
     },
     {
       "terminal_id": "2905862A",
@@ -393,7 +463,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "6 46 OLD BAZAR STREET CHOPPADANDI KARIMANGAR 505415\nMerchant Pin Code\n505415\nMerchant State\nTELANGANA",
-      "contact_person": "SHANKAR MEDICAL AND GENERAL STOR"
+      "contact_person": "SHANKAR MEDICAL AND GENERAL STOR",
+      "merchant_id": "0502800A0027154",
+      "distance": 22
     },
     {
       "terminal_id": "3068540A",
@@ -404,7 +476,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "36 DECCAN CHRONICLE HOLDINGS LTD SAROJINI DEVI\nROAD SECUNDERABAD\nMerchant Pin Code\n500003\nMerchant State\nTELANGANA\nVENKATA SRINIVASA SESHA SAI VANG",
-      "contact_person": "VENKATA SRINIVASA SESHA SAI VANG"
+      "contact_person": "VENKATA SRINIVASA SESHA SAI VANG",
+      "merchant_id": "0512100A0132202",
+      "distance": 49
     },
     {
       "terminal_id": "4166725M",
@@ -415,7 +489,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "NO 167 56\nBANU NAGAR MAIN ROAD\nMerchant Pin Code\n600053\nMerchant State\nTAMIL NADU",
-      "contact_person": "N GEETHA"
+      "contact_person": "N GEETHA",
+      "merchant_id": "0446221M0005743",
+      "distance": 92
     },
     {
       "terminal_id": "3440498A",
@@ -426,7 +502,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "SHOP NO 2/3 SITLADEVI TRUST BLDG\nMerchant Pin Code\n400016\nMerchant State\nMAHARASHTRA",
-      "contact_person": "HARI GORI"
+      "contact_person": "HARI GORI",
+      "merchant_id": "0450001A0313929",
+      "distance": 91
     },
     {
       "terminal_id": "3539060A",
@@ -437,7 +515,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "GRAND MAJESTIC MALL GANDHI NAGAR MAJESTIC BANGALORE\nGANDHI NAGAR MAJESTIC BANGALORE 560009\nMerchant Pin Code\n560009\nMerchant State\nKARNATAKA",
-      "contact_person": "USHA"
+      "contact_person": "USHA",
+      "merchant_id": "0040850A0005602",
+      "distance": 29
     },
     {
       "terminal_id": "3139511A",
@@ -448,7 +528,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "15 AMAM VILLA BARAUT ROAD NEAR HP PETROL PUMP\nMerchant Pin Code\n250609\nMerchant State\nUTTAR PRADESH",
-      "contact_person": "YOGENDRA CHAUHAN"
+      "contact_person": "YOGENDRA CHAUHAN",
+      "merchant_id": "0580250A0006553",
+      "distance": 69
     },
     {
       "terminal_id": "3351386A",
@@ -459,7 +541,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "SUPER SHOPING CENTRE FAIZABAD ROAD\nINDIRA NAGAR LUCKNOW FAIZABAD ROAD LUCKNOW\nMerchant Pin Code\n226016\nMerchant State\nUTTAR PRADESH",
-      "contact_person": "SIDDHANT GARG"
+      "contact_person": "SIDDHANT GARG",
+      "merchant_id": "0100194A0000006",
+      "distance": 56
     },
     {
       "terminal_id": "76976654",
@@ -470,7 +554,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "SHOP NO 4 SAMARAPAN CHS HINDU FRIENDS SOC ROAD\nISMAIL YUSUF COLLEGE GATE JOGESHWARI EAST\nMerchant Pin Code\n400060\nMerchant State\nMAHARASHTRA",
-      "contact_person": "GOPAL SINGH"
+      "contact_person": "GOPAL SINGH",
+      "merchant_id": "37326006542026",
+      "distance": 23
     },
     {
       "terminal_id": "73973908",
@@ -481,7 +567,9 @@
       "issue_type": "Battery Issue",
       "issue_code": "battery_issue",
       "address": "46 EAST CANAL ROAD DEHRADUN\nMerchant Pin Code\n248001\nMerchant State\nUTTARAKHAND",
-      "contact_person": "RATIK AURORA"
+      "contact_person": "RATIK AURORA",
+      "merchant_id": "37215018030499",
+      "distance": 94
     }
   ]
 }

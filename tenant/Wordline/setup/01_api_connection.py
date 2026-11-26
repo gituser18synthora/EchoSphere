@@ -31,6 +31,24 @@ Why these settings:
   ``contact_person`` (added 2026-11-10) feed the workflow's record-aware
   request / visit steps; a source missing from the response (an API that
   predates them) is simply not mapped, so the steps fall back to asking.
+* 2026-11-26 (Merchant ID / merchant name search): ``lookup_status`` may
+  also be ``multiple`` (a name matching several merchants; still nothing
+  merchant-specific in the body).  ``ambiguous`` → ``merchant_ambiguous``,
+  ``match_count`` → ``merchant_match_count`` and ``candidates_spoken`` →
+  ``merchant_candidates`` let the workflow say "I found N merchants, such as
+  …" and ask for the full name or Merchant ID.  The engine maps with
+  ``setdefault`` (first value wins for the call), so the workflow reads them
+  only after the FIRST name lookup — the only lookup that can be ambiguous
+  before them — and all three keys exist only on a ``multiple`` body (a miss
+  carries ``found_count: 0``, which would otherwise pin the count at 0).
+  ``merchant_id`` is mapped for the LLM's verified context.  ``distance`` →
+  ``ctx_distance``: the Wordline team's workflow (v57) times the engineer
+  visit on it ("lte 50" → within 24-48 hours, else 5 working days, absent →
+  "as per the service arrangement") and so far read it only from the call
+  data (silent ``prefillFromContext: distance`` asks).  With the record's
+  distance already in the slot the prefill ask is skipped, so a found
+  merchant gets its own distance on inbound calls too; without a found
+  record the call data still decides.
 """
 
 from __future__ import annotations
@@ -47,15 +65,18 @@ from tenant.Wordline.setup.workflow_upgrade import CONNECTION_NAME  # noqa: E402
 RESPONSE_SCHEMA = {
     "type": "object",
     "required": ["lookup_status"],
-    "properties": {"lookup_status": {"type": "string", "enum": ["found", "not_found"]}},
+    "properties": {"lookup_status": {"type": "string",
+                                     "enum": ["found", "multiple", "not_found"]}},
 }
 
 CONNECTION = {
     "name": CONNECTION_NAME,
-    "description": ("Looks up a Wordline merchant terminal by the Terminal ID the "
-                    "caller dictates (or a registered contact number) in the tenant "
-                    "merchant data API (tenant/Wordline/api, CSV-sourced). A miss is "
-                    "HTTP 200 lookup_status=not_found with no mapped fields."),
+    "description": ("Looks up a Wordline merchant by the Terminal ID, the Merchant ID "
+                    "or the merchant name the caller gives (or a registered contact "
+                    "number) in the tenant merchant data API (tenant/Wordline/api, "
+                    "CSV-sourced). A miss is HTTP 200 lookup_status=not_found and a name "
+                    "matching several merchants is lookup_status=multiple, both with no "
+                    "merchant fields mapped."),
     "method": "POST",
     "url": f"{MERCHANT_API_BASE}/merchants/lookup",
     "authType": "api_key",
@@ -92,6 +113,12 @@ CONNECTION = {
         # (TTS-ready from the API).  A service without the fields maps nothing.
         {"source": "address", "target": "address"},
         {"source": "contact_person", "target": "contact_person"},
+        # 2026-11-26: Merchant ID / merchant name search.
+        {"source": "merchant_id", "target": "merchant_id"},
+        {"source": "distance", "target": "ctx_distance"},
+        {"source": "ambiguous", "target": "merchant_ambiguous"},
+        {"source": "match_count", "target": "merchant_match_count"},
+        {"source": "candidates_spoken", "target": "merchant_candidates"},
     ],
     "botId": BOT_ID,
 }

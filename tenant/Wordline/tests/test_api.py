@@ -52,7 +52,8 @@ def test_converter_normalises_and_rejects_collisions(tmp_path):
         "terminal_id": "1231410A", "outlet_name": "Shop A", "bank_name": "Bank",
         "asset_type": "Model", "contact_number": "9892858883",
         "issue_type": "Paper Roll", "issue_code": "paper_roll",
-        "address": "", "contact_person": ""}]          # older export: optional columns absent
+        "address": "", "contact_person": "",
+        "merchant_id": "", "distance": None}]          # older export: optional columns absent
     dupe = tmp_path / "dupe.csv"
     dupe.write_text(
         "ANCHORAPPTID,MERCHANT,Bank Name,ASSETMODEL,Contact No,Type\n"
