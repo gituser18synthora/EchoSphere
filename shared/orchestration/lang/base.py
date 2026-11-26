@@ -42,9 +42,14 @@ class LanguagePack:
     # it), not a list of the forms one call happened to contain.
     courtesy_words: frozenset[str] = frozenset()    # forms of address: sir, ma'am, please
     attention_words: frozenset[str] = frozenset()   # contact checks: hello, hmm, "boliye"
+    # The part of attention_words that asks "are you there?" / "listen": a
+    # caller may cut the bot's speech with one such word. "boliye", a hum or
+    # a returned greeting never does (they invite the bot to go on).
+    contact_words: frozenset[str] = frozenset()
     thanks_words: frozenset[str] = frozenset()      # thank you / dhanyavaad / welcome
     farewell_words: frozenset[str] = frozenset()    # bye / tata / alvida
     intensifier_words: frozenset[str] = frozenset()  # "bilkul": strengthens a yes OR a no
+    lead_in_words: frozenset[str] = frozenset()     # "chalo": neutral beside a yes/no, an answer alone
     # Yes words that are also a DESCRIPTION: "ठीक है" agrees to a proposal ("may
     # I forward it?") but describes the product at a status question ("does
     # it still have a problem?"). A subset of bare_yes.
@@ -71,6 +76,8 @@ class LanguagePack:
     hangup_patterns: tuple[str, ...] = ()           # full regexes, any one ends the call
     dnc_patterns: tuple[str, ...] = ()              # "never call me again"
     dnc_patterns_extra: tuple[str, ...] = ()        # the rest of the do-not-call category
+    dnc_not_now: tuple[str, ...] = ()               # "don't call me NOW": another time, no revocation ...
+    dnc_permanent: tuple[str, ...] = ()             # ... unless "again / ever / never" is also said
     hangup_report: tuple[str, ...] = ()             # "he hung up" / "the call dropped": not a request
     emergency: tuple[str, ...] = ()
     consent_refusal: tuple[str, ...] = ()           # "don't record"

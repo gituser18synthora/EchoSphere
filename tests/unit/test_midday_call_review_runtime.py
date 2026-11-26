@@ -539,3 +539,45 @@ def _events_stub(brain, kind):
     events = brain._recorder.events_of(kind) if hasattr(brain._recorder, "events_of") else [
         data for name, data in brain._recorder.events if name == kind]
     return [{k: v for k, v in dict(e).items() if k not in ("kind", "at")} for e in events]
+
+
+@pytest.mark.asyncio
+async def test_the_synthesis_report_may_arrive_before_the_cut_itself_is_handled():
+    """DEMO 2026-11-25 (problem 5): "haan ji" in the middle of the purpose line
+    answered the question that line had not asked yet. The interruption stops
+    the synthesis first, so its per-sentence report can reach the brain before
+    the brain has handled the cut; the report was then discarded and the reply
+    counted as heard."""
+    brain = make_brain()
+    brain._unheard_reply_guard = True
+    brain._active_workflow = "wf"
+    brain._reply_nodes, brain._reply_text = ["n_ivr"], " ".join(IVR)
+    brain._reply_marker = 9
+    seconds = [5.0, 6.0, 7.0, 6.5, 4.0]
+    # 1. the report arrives first: nothing to measure it against yet
+    brain._on_reply_tts_interrupted(ReplyTTSInterruptedFrame(
+        marker=9, sentences=[(len(t), s) for t, s in zip(IVR, seconds)], texts=list(IVR)))
+    assert brain._unheard_reply is None and brain._reply_cut_report is not None
+    # 2. the cut is handled: the kept report is applied
+    _cut(brain, 21.32)
+    record = brain._unheard_reply
+    assert record is not None and record["reason"] == "question_not_started"
+    assert record["text"] == " ".join(IVR[3:])
+    assert brain._reply_cut_report is None
+    measured = brain._recorder.events_of("reply_cut_measured")[-1]
+    assert measured["sentences"] == 5 and measured["heard"] == 3 and measured["ends_with_question"] is True
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_report_of_an_earlier_reply_is_never_applied_to_the_next_one():
+    brain = make_brain()
+    brain._unheard_reply_guard = True
+    brain._active_workflow = "wf"
+    brain._on_reply_tts_interrupted(ReplyTTSInterruptedFrame(
+        marker=8, sentences=[(len(t), 5.0) for t in IVR], texts=list(IVR)))
+    brain._reply_nodes, brain._reply_text = ["n_ivr"], " ".join(IVR)
+    brain._reply_marker = 9                                  # a newer reply
+    _cut(brain, 21.32)
+    assert brain._unheard_reply is None and brain._reply_cut_report is None
+    await brain.cleanup()

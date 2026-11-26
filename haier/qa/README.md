@@ -8,10 +8,12 @@ Nothing here edits the bot, its prompt, its workflow or any server code.
 | `haier_test_cases.json` | The test case set: the 7 payloads, ~90 cases (agree / dispute / no contact / timing / consent / identity / busy / language / audio behaviour), expectations, and the real call IDs each case came from. |
 | `export_config.py` | Read-only export of an environment's effective config (published release, pinned workflow, prompt). |
 | `run_text_cases.py` | Text-level runner: real voice brain + real LLM + the exported workflow/prompt. Fast, repeatable, no audio. |
-| `haier_hub_cases.json` | Step-level cases: one workflow question + one caller reply (183 cases: real replies of the 2026-11-25 DEMO calls, the permission rule, and replies not seen in those calls for every kind of answer). |
+| `haier_hub_cases.json` | Step-level cases: one workflow question + one caller reply (222 cases: real replies of the 2026-11-25 DEMO calls, the permission rule, and replies not seen in those calls for every kind of answer). |
 | `run_hub_cases.py` | Step-level runner: pauses a real call at one question, plays one reply through the real brain + decision model + engine, records where the flow went. `--compare BEFORE AFTER` prints a side-by-side table. |
 | `haier_call_replays_2026-11-25.json` | The caller turns of the 65 DEMO phone calls of 2026-11-25 that had caller speech, as conversation cases for `run_text_cases.py --cases`. |
 | `run_voice_cases.py` | Audio-level runner over the FreeSWITCH `mod_audio_fork` websocket protocol: real STT, endpointing, barge-in, TTS. No number is dialled. |
+| `haier_voice_cases_phase1.json` | Audio-level cases for the 2026-11-25 review: greeting cut by a pickup word, hello / silence, answers before or over the question, short answers, the call ending after the closing line, speech after the closing, a farewell cut by an acknowledgement. Run with `run_voice_cases.py --cases`. |
+| `local_voice_worker.py` | Starts a LOCAL voice worker on a spare port from the code tree in the working directory, optionally with the turn-detection settings of an exported snapshot (for example DEMO's) for that process only. Nothing is written to a database. |
 | `create_session.py` / `fetch_sessions.py` | Helpers used by the voice runner (mint one test session; read the finished transcript/checkpoint). |
 | `summarize_results.py` | Builds the reason × scenario pass/fail matrix from result files. |
 
@@ -83,6 +85,26 @@ stopping a run) without placing new ones:
 env/bin/python -B haier/qa/run_voice_cases.py --env demo --evaluate-only storage/tmp/haier_qa/voice_demo.json \
     --output storage/tmp/haier_qa/voice_demo.json
 ```
+
+Audio behaviour depends on the tenant's turn-detection settings, and LOCAL and DEMO differ (on
+2026-11-26 DEMO ran the background-speech guard, a 0.6 s endpoint and no ducking; LOCAL did not). To
+judge a change for DEMO, run the worker with DEMO's settings and compare the old code with the new:
+
+```bash
+# new code (working tree) and, in another shell, the deployed commit from an archive
+env/bin/python -B haier/qa/local_voice_worker.py --port 9103 --turn-detection-from storage/tmp/haier_qa/snapshot_demo.raw
+(cd storage/tmp/haier_qa/demo_code && "$OLDPWD/env/bin/python" -B "$OLDPWD/haier/qa/local_voice_worker.py" \
+    --port 9102 --turn-detection-from "$OLDPWD/storage/tmp/haier_qa/snapshot_demo.raw")
+env/bin/python -B haier/qa/run_voice_cases.py --env local --port 9103 --cases haier/qa/haier_voice_cases_phase1.json \
+    --output storage/tmp/haier_qa/voice_new.json
+```
+
+A worker that was started before the code changed serves a mix of old and new modules: restart it, or
+use the launcher above. Turn timing in a case: `after` = `bot_done` (1.5 s after the bot fell silent),
+`bot_start` + `delay`, `bot_end` + `delay` (needs `min_speech_s`, see the runner's docstring) or
+`immediate`; `gain_db` makes a quiet caller. Audio-level expectations: `closes_within_s`, `stays_open`,
+`events_any` / `events_all` / `events_none`, `user_turns_all`, `say_count_min` / `say_count_max`,
+`say_before`, `max_gap_after`.
 
 Run one call at a time on a dev machine: two parallel calls made local workflow steps 5–10× slower. Each call leaves a stereo WAV
 (`storage/tmp/haier_qa/voice_<env>/`, left = caller, right = bot as played).

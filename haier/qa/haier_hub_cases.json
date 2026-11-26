@@ -7,7 +7,8 @@
   "Utterances are written the way Sarvam STT returns them. No real name, number or address.",
   "OK-* = every question/reply pair of the calls that went right on 2026-11-25 (report rows 36, 61, 70): these must keep their destination.",
   "STATE-* = 'theek hai / ok / sahi' at a question about a state: it may describe the state, so it is never taken as a plain yes there.",
-  "REG-* = steps of haier_test_cases.json that an early version of the answer options broke (BILL-05, CB-04, ID-03, RTP-06, SVC-01)."
+  "REG-* = steps of haier_test_cases.json that an early version of the answer options broke (BILL-05, CB-04, ID-03, RTP-06, SVC-01).",
+  "2026-11-26: a stop-calling request must end on the flow's own repeated-calls closing; the platform do-not-call line is never an accepted result for this bot."
  ],
  "cases": [
   {
@@ -557,8 +558,7 @@
    "category": "permission-new",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    }
   },
@@ -1026,7 +1026,6 @@
    "expect": {
     "to": [
      "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)",
      "(stay)",
      "(no workflow turn)"
     ]
@@ -1131,8 +1130,7 @@
    "category": "contact",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    },
    "source_calls": [
@@ -2260,8 +2258,7 @@
    "category": "stop-calling-new",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    }
   },
@@ -2272,8 +2269,7 @@
    "category": "stop-calling-new",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    }
   },
@@ -2285,7 +2281,6 @@
    "expect": {
     "to": [
      "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)",
      "(stay)",
      "(no workflow turn)",
      "n_service_need_clarify"
@@ -2299,8 +2294,7 @@
    "category": "stop-calling-new",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    }
   },
@@ -2312,7 +2306,6 @@
    "expect": {
     "to": [
      "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)",
      "(stay)",
      "(no workflow turn)"
     ]
@@ -2325,8 +2318,7 @@
    "category": "stop-calling-new",
    "expect": {
     "to": [
-     "m_n_v2_end_repeat_calls",
-     "(call_control:do_not_call)"
+     "m_n_v2_end_repeat_calls"
     ]
    }
   },
@@ -2731,6 +2723,91 @@
    "expect": {
     "to": [
      "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N07",
+   "hub": "n_v2_completed_by_q",
+   "say": "अब दोबारा कॉल मत करना।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls"
+    ]
+   },
+   "note": "this question has no stop_calling option: the flow's doNotCallNode takes it"
+  },
+  {
+   "id": "STOP-N08",
+   "hub": "n_ecom_cancel_info",
+   "say": "आप लोग फोन मत किया करो।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N09",
+   "hub": "n_warranty_claim_q_clarify",
+   "say": "Please stop calling me.",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N10",
+   "hub": "n_redispatch",
+   "say": "कॉल करना बंद कीजिए, बहुत हो गया।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls"
+    ]
+   }
+  },
+  {
+   "id": "STOP-N11",
+   "hub": "n_service_need",
+   "say": "रुकिए, फोन मत काटना, मैं बता रहा हूँ।",
+   "category": "stop-calling-new",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)",
+     "(call_control:hangup)",
+     "m_n_end_no_service"
+    ]
+   },
+   "note": "'do not hang up' is the opposite request"
+  },
+  {
+   "id": "STOP-N12",
+   "hub": "n_service_need",
+   "say": "अभी कॉल मत करो, शाम को करना।",
+   "category": "stop-calling-new",
+   "expect": {
+    "not_to": [
+     "m_n_v2_end_repeat_calls",
+     "(call_control:do_not_call)",
+     "m_n_end_no_service"
+    ]
+   },
+   "note": "'not now' asks for another time; it revokes nothing"
+  },
+  {
+   "id": "STOP-N13",
+   "hub": "n_intro_refused_visit",
+   "say": "आज के बाद मुझे कॉल मत करना।",
+   "category": "stop-calling-new",
+   "expect": {
+    "to": [
+     "m_n_v2_end_repeat_calls"
     ]
    }
   }

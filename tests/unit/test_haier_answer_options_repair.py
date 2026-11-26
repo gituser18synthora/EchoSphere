@@ -268,3 +268,127 @@ def test_theek_hai_is_a_yes_except_where_it_may_describe_a_state():
     assert replay(repaired, "n_service_need", "सही है।", "affirm")["answered_option"] == "yes"
     start = next(n for n in repaired["nodes"] if n["kind"] == "start")
     assert start["config"]["closingFollowups"] == 2
+
+
+def _long_chain(conditions: int, behavior: dict | None = None) -> dict:
+    """A question whose matching capture sits behind ``conditions`` routing
+    nodes, like the unit-ok contact question of the reviewed flow (30)."""
+    start = {"id": "start", "kind": "start"}
+    if behavior is not None:
+        start["config"] = {"behavior": dict(behavior)}
+    nodes = [start, {"id": "hub", "kind": "intent", "config": {
+        "prompt": "क्या कोई call आया था?", "correctionCaptureVariable": "route",
+        "alsoCapture": [{"variable": "route", "overwrite": True, "entity": {
+            "dataType": "text", "matchCanonicalValues": False,
+            "synonymPatterns": {"none": [r"कोई नहीं आया"]}}}]}}]
+    edges = [{"id": "e_start", "from": "start", "to": "hub", "label": "next"},
+             {"id": "e_corr", "from": "hub", "to": "c0", "label": "correction"},
+             {"id": "e_else", "from": "hub", "to": "m_unverified", "label": "else"}]
+    for index in range(conditions):
+        last = index == conditions - 1
+        nodes.append({"id": f"c{index}", "kind": "condition", "config": {
+            "variable": "route", "operator": "equals", "value": "none" if last else f"other{index}"}})
+        edges.append({"id": f"t{index}", "from": f"c{index}", "to": "m_apology" if last else "m_unverified",
+                      "label": "true"})
+        edges.append({"id": f"f{index}", "from": f"c{index}",
+                      "to": "m_unverified" if last else f"c{index + 1}", "label": "false"})
+    for node_id, outcome in (("m_apology", "no_contact"), ("m_unverified", "unverified_no_action")):
+        nodes.append({"id": node_id, "kind": "message", "config": {
+            "silent": True, "terminalOutcome": True, "setSlots": {"outcome": outcome}}})
+        edges.append({"id": f"end_{node_id}", "from": node_id, "to": "end", "label": "next"})
+    nodes.append({"id": "end", "kind": "end", "config": {"text": "धन्यवाद।"}})
+    return {"id": "wf_chain", "name": "chain", "nodes": nodes, "edges": edges}
+
+
+def test_a_reply_behind_a_long_routing_chain_no_longer_ends_on_the_error_line():
+    """Four questions of the reviewed flow route through 33 to 36 conditions;
+    the platform walks 30 nodes per turn. "nahi, koi nahi aaya" at the unit-ok
+    contact question ran out of budget and the caller heard "... connecting
+    you to an agent" (QA cases STEP-01, STEP-06, SVC-03)."""
+    from haier.setup.haier_answer_options_repair import MAX_NODE_STEPS
+
+    crashed = replay(_long_chain(34, {"max_ask_retries": 1}), "hub", "नहीं, कोई नहीं आया।")
+    assert crashed["status"] == "error"
+    assert (crashed.get("slots") or {}).get("outcome") is None
+    walked = replay(
+        _long_chain(34, {"max_ask_retries": 1, "max_node_steps": MAX_NODE_STEPS}), "hub", "नहीं, कोई नहीं आया।")
+    assert walked["status"] != "error"
+    assert walked["slots"]["outcome"] == "no_contact"
+
+    def start_behavior(definition):
+        return next(n for n in definition["nodes"] if n["kind"] == "start")["config"]["behavior"]
+
+    # the repair declares that budget and keeps the flow's own knobs
+    plain = fixture()
+    assert start_behavior(apply_answer_options_repair(plain)) == {"max_node_steps": MAX_NODE_STEPS}
+    declared = fixture()
+    next(n for n in declared["nodes"] if n["kind"] == "start")["config"] = {"behavior": {"max_ask_retries": 1}}
+    assert start_behavior(apply_answer_options_repair(declared)) == {
+        "max_ask_retries": 1, "max_node_steps": MAX_NODE_STEPS}
+    generous = fixture()
+    next(n for n in generous["nodes"] if n["kind"] == "start")["config"] = {"behavior": {"max_node_steps": 500}}
+    assert start_behavior(apply_answer_options_repair(generous))["max_node_steps"] == 500
+
+
+def test_a_stop_calling_request_ends_on_the_flows_own_closing_at_every_step(repaired):
+    """The platform's do-not-call line promises a list the platform does not
+    keep. The flow declares its repeated-calls closing for that request; the
+    engine takes it from a question, from the start and after the closing."""
+    from haier.setup.haier_answer_options_repair import DO_NOT_CALL_NODE
+
+    start = next(n for n in repaired["nodes"] if n["kind"] == "start")
+    assert start["config"]["doNotCallNode"] == DO_NOT_CALL_NODE == STOP
+    graph = build_definition_graph(repaired, MemorySaver())
+
+    def turn(state):
+        return asyncio.run(graph.ainvoke(
+            {"user_text": "अब दोबारा कॉल मत करना।", "language": "hi-IN", "call_control": "do_not_call",
+             "signal_authoritative": True, "context_values": {}, "audit": [], "node_retries": {}, **state},
+            {"configurable": {"thread_id": f"haier-dnc-{next(_SERIAL)}"}}))
+
+    # at a question: no answer is read from the words, the flow closes
+    asked = turn({"current_node": "n_service_need", "awaiting": "n_service_need", "slots": {},
+                  "status": "collecting"})
+    assert asked["status"] == "done" and asked["slots"]["outcome"] == "repeat_calls_noted"
+    assert asked["call_control_handled"] == "do_not_call" and asked["call_control"] is None
+    assert asked["answered_option"] is None
+    # before the first step
+    fresh = turn({"slots": {}, "status": "collecting"})
+    assert fresh["status"] == "done" and fresh["slots"]["outcome"] == "repeat_calls_noted"
+    # after the closing line: the outcome already recorded is kept
+    closed = turn({"current_node": None, "awaiting": None, "slots": {"outcome": "redispatch"}, "status": "done"})
+    assert closed["status"] == "done" and closed["slots"]["outcome"] == "redispatch"
+    assert closed["call_control_handled"] == "do_not_call"
+    # a flow that declares no such closing leaves the request to the platform
+    from shared.orchestration.workflow_engine import _call_control_target
+    assert _call_control_target(fixture(), "do_not_call") is None
+    assert _call_control_target(repaired, "hangup") is None
+
+
+def test_no_meaning_is_longer_than_what_the_engine_passes_to_the_model():
+    """The engine cuts a meaning at its limit, silently, and the END is what
+    goes: the first revision's "... is NOT agreement" (permission) and "...
+    is NOT this" (stop calling) never reached the decision model, and a
+    reply saying the product works was taken as consent five times in six."""
+    from haier.setup import haier_answer_options_repair as repair
+    from shared.orchestration.workflow_engine import _MAX_OPTION_MEANING_CHARS
+
+    assert repair.MAX_MEANING_CHARS == _MAX_OPTION_MEANING_CHARS
+    authored = [m for pair in repair._YES_NO_MEANINGS.values() for m in pair]
+    authored += [m for options in repair._CHOICE_OPTIONS.values() for _id, _to, m in options]
+    authored += [m for _id, _to, m in repair._TOPIC_OPTIONS]
+    authored += [m for options in getattr(repair, "_EXTRA_OPTIONS", {}).values() for _id, _to, m in options]
+    too_long = [m for m in authored if len(m) > repair.MAX_MEANING_CHARS]
+    assert not too_long, too_long
+    # the two exclusions that were being cut are inside the limit now
+    permission_yes = repair._YES_NO_MEANINGS["n_redispatch"][0]
+    assert "NOT this" in permission_yes and "product works" in permission_yes
+    stop = next(m for option_id, _to, m in repair._TOPIC_OPTIONS if option_id == "stop_calling")
+    assert "NOT this" in stop and "why the calls keep coming" in stop
+
+
+def test_the_repair_refuses_a_meaning_the_engine_would_cut(monkeypatch):
+    from haier.setup import haier_answer_options_repair as repair
+    monkeypatch.setattr(repair, "MAX_MEANING_CHARS", 20)
+    with pytest.raises(ValueError, match="the engine passes 20"):
+        repair.apply_answer_options_repair(fixture())

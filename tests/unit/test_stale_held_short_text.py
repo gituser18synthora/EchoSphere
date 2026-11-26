@@ -132,3 +132,92 @@ class TestStaleHeldShortText:
 
     def test_threshold_is_a_module_constant(self):
         assert brain_module._HELD_SHORT_MAX_AGE_S == 2.5
+
+
+# ── a question that declares answer options (2026-11-25 review, problems 5, 8) ──
+# "No." 1.7 s into a 6 s question, with its transcript arriving seconds later,
+# was applied as the answer to that question and cancelled the request
+# (DEMO cv_6652c97047d0). Such a question reads the word by when it was SPOKEN
+# and against the question's own length; every other question keeps the rule
+# above (age of the transcript, 2.5 s).
+
+OPTIONS = [{"id": "yes", "meaning": "needs service"}, {"id": "no", "meaning": "does not need service"}]
+REPLY = ("ठीक है। Bill available नहीं होने पर service के charges लागू हो सकते हैं। "
+         "क्या आपको इस request के लिए Haier की तरफ़ से service की requirement है?")
+
+
+async def _word_over_the_question(brain, gate, *, caller, spoken_ago, final_ago, reply_s=8.0, options=OPTIONS):
+    brain._active_workflow = "wf_1c3e59362c51"
+    brain._unheard_reply_guard = True
+    brain._pending_workflow_question = "क्या आपको service की requirement है?"
+    brain._last_bot_reply = REPLY
+    await brain.process_frame(BotStartedSpeakingFrame(), DOWN)
+    await say(brain, gate, caller, during_bot=True, segment_ms=600.0)
+    await settle_turn()
+    assert brain._pending_segments == [caller]
+    now = time.monotonic()
+    brain._pending_newest_final_at = now - final_ago
+    brain._pending_newest_spoken_at = now - spoken_ago
+    brain._reply_text = REPLY
+    brain._reply_nodes = ["n_service_need"]
+    brain._reply_audio_started_at = now - reply_s
+    brain._pending_hub_options = options
+    await brain.process_frame(BotStoppedSpeakingFrame(), DOWN)
+    await settle_turn()
+
+
+class TestWordOverAQuestionWithAnswerOptions:
+    async def test_the_window_is_about_half_the_question(self):
+        brain, _, _ = make_brain(guard=True)
+        brain._reply_text = REPLY
+        brain._reply_audio_started_at = time.monotonic() - 8.0
+        question = REPLY.split("। ")[-1]
+        expected = 0.5 * 8.0 * len(question) / len(REPLY)
+        assert 1.0 < expected < brain_module._HELD_SHORT_MAX_AGE_S
+        assert brain._held_answer_window() == pytest.approx(expected, abs=0.05)
+        brain._reply_text = "ठीक है?"                     # a very short question: never under a second
+        assert brain._held_answer_window() == pytest.approx(brain_module._HELD_SHORT_MAX_AGE_S)
+        brain._reply_text = REPLY
+        brain._reply_audio_started_at = time.monotonic() - 40.0   # a very long one: never over the general limit
+        assert brain._held_answer_window() == brain_module._HELD_SHORT_MAX_AGE_S
+
+    async def test_a_no_spoken_early_whose_transcript_came_late_is_not_the_answer(self):
+        brain, gate, _ = make_brain(guard=True)
+        handled, _ = stub_turn_handler(brain)
+        await _word_over_the_question(brain, gate, caller="No.", spoken_ago=4.3, final_ago=1.5)
+        event = _event(brain, "stale_held_short_recovered")
+        assert event["text"] == "No." and event["action"] == "repeat_pending_question"
+        assert event["age_ms"] >= 4300 and event["max_age_ms"] < 2500.0
+        # the word is kept and the question is asked again; nothing was answered
+        assert brain._unheard_reply["reason"] == "held_answer_before_question_end"
+
+    async def test_the_same_word_without_answer_options_keeps_the_old_rule(self):
+        brain, gate, _ = make_brain(guard=True)
+        handled, _ = stub_turn_handler(brain)
+        await _word_over_the_question(brain, gate, caller="No.", spoken_ago=4.3, final_ago=1.5, options=None)
+        assert "stale_held_short_recovered" not in kinds(brain)
+        assert "stale_held_short_dropped" not in kinds(brain)
+        assert brain._unheard_reply is None
+        assert handled == ["No."]
+
+    async def test_a_word_over_the_last_second_of_the_question_is_its_answer(self):
+        brain, gate, _ = make_brain(guard=True)
+        handled, _ = stub_turn_handler(brain)
+        await _word_over_the_question(brain, gate, caller="हाँ।", spoken_ago=0.8, final_ago=0.2)
+        assert "stale_held_short_recovered" not in kinds(brain)
+        assert brain._unheard_reply is None
+        assert handled == ["हाँ।"]
+
+    async def test_hello_over_the_reply_gets_the_question_again_not_silence(self):
+        brain, gate, _ = make_brain(guard=True)
+        stub_turn_handler(brain)
+        await _word_over_the_question(brain, gate, caller="हेलो?", spoken_ago=5.0, final_ago=4.5)
+        assert _event(brain, "stale_held_short_recovered")["text"] == "हेलो?"
+        assert "stale_held_short_dropped" not in kinds(brain)
+        assert brain._unheard_reply["reason"] == "held_answer_before_question_end"
+
+    async def test_hello_without_answer_options_is_dropped_as_before(self):
+        brain, gate, _ = make_brain(guard=True)
+        handled, _ = stub_turn_handler(brain)
+        await _word_over_the_question(brain, gate, caller="हेलो?", spoken_ago=5.0, final_ago=4.5, options=None)
+        assert "stale_held_short_dropped" in kinds(brain) and handled == []

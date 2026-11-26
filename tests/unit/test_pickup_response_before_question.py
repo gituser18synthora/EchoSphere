@@ -9,11 +9,20 @@ was calling.
 import pytest
 
 from tests.unit.test_pickup_greeting_recovery import (  # noqa: F401 — fixtures
-    GREETING, brain, cut, greet, hello_turn, spoken,
+    GREETING, cut, greet, hello_turn, spoken,
 )
+from tests.unit.test_pickup_greeting_recovery import brain as plain_brain  # noqa: F401 — fixture
 from voice_runtime.brain import ConversationBrain
 
 HEARD_AFTER = ConversationBrain._greeting_question_heard_after(GREETING)
+
+
+@pytest.fixture
+def brain(plain_brain):  # noqa: F811
+    """A call whose flow uses the answer contract (it declares answer options
+    / closingFollowups): the brain learns that in the call's first second."""
+    plain_brain._flow_answer_contract = True
+    return plain_brain
 
 
 def test_the_question_counts_as_heard_only_once_its_name_has_played():
@@ -67,3 +76,43 @@ async def test_the_greeting_is_restarted_once_only(brain):
     assert spoken(brain) == [GREETING, GREETING]
     await cut(brain, played=1.0)
     assert not brain._pickup_response_before_question("हाँ")
+
+
+@pytest.mark.parametrize("text", ["haan", "हाँ जी", "हाँ जी बोलिए", "जी बताइए"])
+async def test_a_flow_without_the_answer_contract_keeps_its_opening(plain_brain, text):  # noqa: F811
+    """Opt-in: for every other bot a pickup "haan" over the greeting is read
+    exactly as before (only a bare "hello" restarts the greeting there)."""
+    await greet(plain_brain)
+    await cut(plain_brain, played=1.0)
+    assert not plain_brain._flow_answer_contract
+    assert not plain_brain._pickup_response_before_question(text)
+    assert not plain_brain._pickup_hello_pending(text)
+    assert plain_brain._pickup_hello_pending("हेलो")
+
+
+async def test_the_contract_is_learnt_from_the_flow_before_its_first_turn():
+    """The opening has no workflow result to learn from: the engine is asked
+    once, in the background, when the call starts."""
+    from unittest.mock import AsyncMock
+    from tests.unit.test_brain_workflow_routing import _WorkflowStub, consumed_result, make_brain
+    import asyncio
+
+    workflow = _WorkflowStub(consumed_result("ok"))
+    workflow.flow_declarations = AsyncMock(return_value={"doNotCallNode": "m_stop", "answerContract": True})
+    learner = make_brain(workflow_engine=workflow)
+    try:
+        assert learner._flow_answer_contract is False
+        await learner._learn_do_not_call_target("wf_entry")
+        assert learner._flow_answer_contract is True
+        assert learner._flow_dnc_targets == {"wf_entry": "m_stop"}
+        await learner._learn_do_not_call_target("wf_entry")
+        assert workflow.flow_declarations.await_count == 1
+        plain = _WorkflowStub(consumed_result("ok"))
+        plain.flow_declarations = AsyncMock(return_value={"doNotCallNode": None, "answerContract": False})
+        other = make_brain(workflow_engine=plain)
+        await other._learn_do_not_call_target("wf_entry")
+        assert other._flow_answer_contract is False and other._flow_dnc_targets == {"wf_entry": None}
+        await other.cleanup()
+    finally:
+        await asyncio.sleep(0)
+        await learner.cleanup()

@@ -1,0 +1,1579 @@
+{
+ "version": 1,
+ "bot_id": "bot_450a4f7b4832",
+ "notes": "Audio-level cases for the 2026-11-25 call review, phase 1: problems 2 (greeting / identity), 3 (hello / silence), 5 (answer before or over the question), 6 (call does not end after the closing), 8 (short answers dropped), 10 (speech after the closing dropped) and 23 (farewell cut by an acknowledgement). Run with run_voice_cases.py --cases. No number is dialled. bot_end turns carry min_speech_s, measured on the reviewed flow; re-measure after a wording change.",
+ "payloads": {
+  "customer_refused_visit": {
+   "customer_name": "Rohan",
+   "product_name": "Split AC",
+   "rejection_reason": "customer_refused_visit",
+   "l3_tagging": "installation",
+   "rejection_reason_label": "the visit was declined when our technician called"
+  }
+ },
+ "global_say_none": [
+  "एजेंट से जोड़ा",
+  "connect you with an agent",
+  "[\\u0600-\\u06FF]"
+ ],
+ "cases": [
+  {
+   "id": "VP2-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Pickup 'haan' 1.0 s into the greeting, then silence -> greeting again, no purpose line on that word",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_fe81717cf356"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।",
+     "after": "bot_start",
+     "delay": 1.0
+    },
+    {
+     "silence": 13
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "events_any": [
+     "pickup_hello_answered",
+     "opening_greeting_recovered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Pickup 'haan ji, boliye' 1.2 s into the greeting, then silence -> greeting again, no purpose line",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।",
+     "after": "bot_start",
+     "delay": 1.2
+    },
+    {
+     "silence": 13
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "events_any": [
+     "pickup_hello_answered",
+     "opening_greeting_recovered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Pickup 'ji' 0.8 s into the greeting, then silence -> greeting again, no purpose line",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "जी।",
+     "after": "bot_start",
+     "delay": 0.8
+    },
+    {
+     "silence": 13
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "events_any": [
+     "pickup_hello_answered",
+     "opening_greeting_recovered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-04",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Pickup 'hello?' 0.8 s into the greeting, then silence -> greeting again (behaviour that already worked)",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हेलो?",
+     "after": "bot_start",
+     "delay": 0.8
+    },
+    {
+     "silence": 13
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "events_any": [
+     "pickup_hello_answered",
+     "opening_greeting_recovered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-05",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "English 'Hello.' 1.0 s into the greeting, then silence -> greeting again, no purpose line",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_ac579d6a4131"
+   ],
+   "turns": [
+    {
+     "say": "Hello.",
+     "after": "bot_start",
+     "delay": 1.0
+    },
+    {
+     "silence": 13
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "events_any": [
+     "pickup_hello_answered",
+     "opening_greeting_recovered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-06",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Pickup 'haan' over the greeting, then a real identity answer to the repeated greeting -> full flow to re-dispatch",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ।",
+     "after": "bot_start",
+     "delay": 1.0
+    },
+    {
+     "say": "हाँ जी, मैं ही बोल रहा हूँ।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_count_max": {
+     "के regarding है": 1
+    },
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "closes_within_s": 16
+   }
+  },
+  {
+   "id": "VP2-07",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "'haan ji' AFTER the complete greeting question -> identity confirmed, purpose line follows (must keep working)",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी।"
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 4.0
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "के regarding है"
+    ],
+    "events_none": [
+     "pickup_hello_answered"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-08",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'hello?' at pickup, before the greeting has started -> the greeting is heard, no purpose line on that word",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_ac579d6a4131"
+   ],
+   "turns": [
+    {
+     "say": "हेलो?",
+     "after": "immediate",
+     "delay": 0.3
+    },
+    {
+     "silence": 12
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "max_gap_after": {
+     "0": 4.0
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-09",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'haan' at pickup, before the greeting has started -> the greeting is heard, identity not taken from that word",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_fe81717cf356"
+   ],
+   "turns": [
+    {
+     "say": "हाँ।",
+     "after": "immediate",
+     "delay": 0.3
+    },
+    {
+     "silence": 12
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "max_gap_after": {
+     "0": 4.0
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP2-10",
+   "reason": "customer_refused_visit",
+   "category": "problem_2",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'haan ji, boliye' at pickup, as the greeting starts -> greeting again, identity not taken from those words",
+   "patterns": [
+    "P2"
+   ],
+   "source_calls": [
+    "cv_fe81717cf356"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।",
+     "after": "immediate",
+     "delay": 0.2
+    },
+    {
+     "silence": 12
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "के regarding है"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP3-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_3",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'hello?' twice at the first question -> the question is asked again within 3 s each time, no unverified closing",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [
+    "cv_7cf0bb4d29ac"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हेलो?"
+    },
+    {
+     "say": "हेलो, हेलो?"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 3.0
+    }
+   ],
+   "expect": {
+    "max_gap_after": {
+     "1": 3.0,
+     "2": 3.0
+    },
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "say_any": [
+     "मना किया था"
+    ],
+    "say_count_min": {
+     "कोई call आया था": 2
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP3-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_3",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Answer in three parts with pauses, then 'hello?' -> the bot speaks within 3.5 s of the hello",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "देखिए, मेरे पास कॉल तो आया था।"
+    },
+    {
+     "say": "लेकिन उस टाइम मैं घर पर नहीं था।",
+     "after": "immediate",
+     "delay": 1.0
+    },
+    {
+     "say": "इसलिए मैंने बोला था बाद में आना।",
+     "after": "immediate",
+     "delay": 1.1
+    },
+    {
+     "say": "हेलो?",
+     "after": "immediate",
+     "delay": 2.5
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 4.0
+    }
+   ],
+   "expect": {
+    "max_gap_after": {
+     "4": 3.5
+    },
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP3-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_3",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller keeps talking in six short parts for ~20 s -> the bot answers within 5 s of the last part",
+   "patterns": [
+    "P3"
+   ],
+   "source_calls": [
+    "cv_fe81717cf356",
+    "cv_b762e64798b8"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "अरे मैडम, मैं आपको बता रहा हूँ।"
+    },
+    {
+     "say": "टेक्नीशियन का कॉल आया था।",
+     "after": "immediate",
+     "delay": 1.6
+    },
+    {
+     "say": "मैंने उसको बोला था कि शाम को आना।",
+     "after": "immediate",
+     "delay": 1.8
+    },
+    {
+     "say": "वो फिर आया ही नहीं।",
+     "after": "immediate",
+     "delay": 1.7
+    },
+    {
+     "say": "उसके बाद कोई कॉल भी नहीं आया।",
+     "after": "immediate",
+     "delay": 1.9
+    },
+    {
+     "say": "अब आप बताइए क्या करना है।",
+     "after": "immediate",
+     "delay": 1.6
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 4.0
+    }
+   ],
+   "expect": {
+    "max_gap_after": {
+     "6": 5.0
+    },
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "user_turns_all": [
+     "शाम",
+     "बताइए"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP5-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_5",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'haan ji' in the middle of the purpose line, then silence -> not taken as the answer to the question that follows",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [
+    "cv_91ba7fb4364a"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ जी।",
+     "after": "bot_start",
+     "delay": 5.0
+    },
+    {
+     "silence": 11
+    },
+    {
+     "hangup": true,
+     "after": "immediate",
+     "delay": 0.2
+    }
+   ],
+   "expect": {
+    "say_none": [
+     "मना किया था",
+     "Confirm करने के लिए धन्यवाद"
+    ],
+    "say_any": [
+     "कोई call आया था"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP5-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_5",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'No.' 1.5 s into the service-need question, then 'haan, chahiye' -> no cancellation, re-dispatch",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [
+    "cv_6652c97047d0"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "No.",
+     "after": "bot_start",
+     "delay": 1.5
+    },
+    {
+     "say": "हाँ, चाहिए सर्विस।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "cancel कर",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP5-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_5",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "Three-word answer over the last 0.7 s of the first question -> it is the answer, next question follows",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।",
+     "after": "bot_start",
+     "delay": 14.6,
+     "note": "aimed 0.7 s before the end of the line; the result records the real position (bot_remaining_s)"
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 3.0
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "मना किया था"
+    ],
+    "max_gap_after": {
+     "1": 4.5
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP5-04",
+   "reason": "customer_refused_visit",
+   "category": "problem_5",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "One-word 'haan' over the last 0.4 s of the first question -> it is the answer, next question follows",
+   "patterns": [
+    "P5"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ।",
+     "after": "bot_start",
+     "delay": 14.9,
+     "note": "aimed 0.4 s before the end of the line; the result records the real position (bot_remaining_s)"
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 3.0
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "मना किया था"
+    ],
+    "max_gap_after": {
+     "1": 5.0
+    },
+    "say_none": [
+     "सुन पा रहे"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP8-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'Yes.' 0.3 s after the permission question -> consent, closing, no hearing check",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [
+    "cv_533aa87d05dd"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "Yes.",
+     "after": "bot_end",
+     "delay": 0.3,
+     "min_speech_s": 2.5
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "सुन पा रहे",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "max_gap_after": {
+     "4": 4.5
+    },
+    "closes_within_s": 16
+   }
+  },
+  {
+   "id": "VP8-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Quiet 'Yes.' (-14 dB) after the permission question, said again when asked again -> consent, no 'can you hear me?'",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [
+    "cv_533aa87d05dd"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "Yes.",
+     "after": "bot_end",
+     "delay": 0.3,
+     "gain_db": -14,
+     "min_speech_s": 2.5
+    },
+    {
+     "say": "Yes.",
+     "gain_db": -14,
+     "delay": 0.4
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "सुन पा रहे",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ],
+    "max_gap_after": {
+     "4": 4.5
+    },
+    "closes_within_s": 18
+   }
+  },
+  {
+   "id": "VP8-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Quiet 'haan ji' (-14 dB) after the first question, said again when asked again -> next question, no 'can you hear me?'",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ जी।",
+     "after": "bot_end",
+     "delay": 0.3,
+     "gain_db": -14,
+     "min_speech_s": 12.0
+    },
+    {
+     "say": "हाँ जी।",
+     "gain_db": -14,
+     "delay": 0.4
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 3.0
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "मना किया था"
+    ],
+    "say_none": [
+     "सुन पा रहे"
+    ],
+    "max_gap_after": {
+     "1": 4.5
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP8-04",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'No.' 0.3 s after the service-need question -> no-service closing within 4.5 s",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [
+    "cv_6bd3876b3821"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "No.",
+     "after": "bot_end",
+     "delay": 0.3,
+     "min_speech_s": 3.0
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_no_service"
+    ],
+    "max_gap_after": {
+     "3": 4.5
+    },
+    "say_none": [
+     "सुन पा रहे"
+    ]
+   }
+  },
+  {
+   "id": "VP8-05",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "'kyon?' after the second question -> answered within 5 s, the word is in the transcript",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "क्यों?",
+     "after": "bot_end",
+     "delay": 0.4,
+     "min_speech_s": 5.0
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 4.0
+    }
+   ],
+   "expect": {
+    "max_gap_after": {
+     "2": 5.0
+    },
+    "user_turns_all": [
+     "क्यों"
+    ],
+    "say_none": [
+     "सुन पा रहे"
+    ],
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP8-06",
+   "reason": "customer_refused_visit",
+   "category": "problem_8",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Slow one-word 'haan' 3.5 s after the first question -> next question",
+   "patterns": [
+    "P8"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ।",
+     "after": "bot_end",
+     "delay": 3.5,
+     "min_speech_s": 12.0
+    },
+    {
+     "hangup": true,
+     "after": "bot_start",
+     "delay": 3.0
+    }
+   ],
+   "expect": {
+    "say_any": [
+     "मना किया था"
+    ],
+    "say_none": [
+     "सुन पा रहे"
+    ],
+    "max_gap_after": {
+     "1": 4.5
+    },
+    "open_ok": true
+   }
+  },
+  {
+   "id": "VP6-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_6",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "'theek hai' as the closing line ends -> the bot ends the call within 6 s, no follow-up reply",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [
+    "cv_015ad3330ba1"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "ठीक है।",
+     "after": "bot_start",
+     "delay": 6.0,
+     "note": "aimed 0.3 s before the end of the line; the result records the real position (bot_remaining_s)"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "closes_within_s": 6,
+    "events_none": [
+     "workflow_closing_followup"
+    ],
+    "say_none": [
+     "और कुछ",
+     "कुछ और",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP6-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_6",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "A question 2 s into the closing line -> one answer with the closing courtesy, then the bot ends the call",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "टेक्नीशियन कब तक आएगा?",
+     "after": "bot_start",
+     "delay": 2.0
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "closes_within_s": 22,
+    "events_all": [
+     "workflow_closing_followup"
+    ],
+    "say_none": [
+     "और कुछ",
+     "कुछ और",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP6-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_6",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Three questions after the closing line -> at most two answers, the bot ends the call",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [
+    "cv_6d38e14ab427"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "टेक्नीशियन कब तक आएगा?",
+     "after": "bot_start",
+     "delay": 2.0
+    },
+    {
+     "say": "और चार्जेस कितने लगेंगे?",
+     "after": "bot_start",
+     "delay": 1.5
+    },
+    {
+     "say": "अच्छा, और वारंटी का क्या होगा?",
+     "after": "bot_start",
+     "delay": 1.5
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "closes_within_s": 25,
+    "say_none": [
+     "और कुछ पूछना",
+     "कुछ और पूछना",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP6-04",
+   "reason": "customer_refused_visit",
+   "category": "problem_6",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Caller silent after the closing line -> the bot ends the call (behaviour that already worked)",
+   "patterns": [
+    "P6"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "closes_within_s": 16,
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP10-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_10",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "Three-part complaint starting 2.5 s into the closing line -> every part is heard and answered once",
+   "patterns": [
+    "P10"
+   ],
+   "source_calls": [
+    "cv_015ad3330ba1"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "देखिए मैडम, मेरा एसी एक महीने से खराब पड़ा है।",
+     "after": "bot_start",
+     "delay": 2.5
+    },
+    {
+     "say": "टेक्नीशियन दो बार आकर बिना ठीक किए लौट गया।",
+     "after": "immediate",
+     "delay": 0.9
+    },
+    {
+     "say": "अब इस बार पक्का ठीक होना चाहिए, नहीं तो मैं शिकायत करूँगा।",
+     "after": "immediate",
+     "delay": 1.0
+    }
+   ],
+   "expect": {
+    "user_turns_all": [
+     "महीने",
+     "लौट",
+     "शिकायत"
+    ],
+    "max_gap_after": {
+     "7": 6.0
+    },
+    "closes_within_s": 30,
+    "say_none": [
+     "दोबारा बोलिए",
+     "फिर से बोलिए",
+     "dobara boliye",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP10-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_10",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Three-part complaint starting as the closing line ends -> every part is heard and answered once",
+   "patterns": [
+    "P10"
+   ],
+   "source_calls": [
+    "cv_6d38e14ab427"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "देखिए मैडम, मेरा एसी एक महीने से खराब पड़ा है।",
+     "after": "bot_start",
+     "delay": 6.1,
+     "note": "aimed 0.2 s before the end of the line; the result records the real position (bot_remaining_s)"
+    },
+    {
+     "say": "टेक्नीशियन दो बार आकर बिना ठीक किए लौट गया।",
+     "after": "immediate",
+     "delay": 0.9
+    },
+    {
+     "say": "अब इस बार पक्का ठीक होना चाहिए, नहीं तो मैं शिकायत करूँगा।",
+     "after": "immediate",
+     "delay": 1.0
+    }
+   ],
+   "expect": {
+    "user_turns_all": [
+     "महीने",
+     "लौट",
+     "शिकायत"
+    ],
+    "max_gap_after": {
+     "7": 6.0
+    },
+    "closes_within_s": 30,
+    "say_none": [
+     "दोबारा बोलिए",
+     "फिर से बोलिए",
+     "dobara boliye",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP10-03",
+   "reason": "customer_refused_visit",
+   "category": "problem_10",
+   "priority": "P0",
+   "repeat": 1,
+   "modes": [
+    "voice"
+   ],
+   "title": "Two-part remark with a 1.6 s pause after the closing line -> both parts in the transcript, answered once",
+   "patterns": [
+    "P10"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "एक बात और बतानी थी।",
+     "after": "bot_start",
+     "delay": 3.0
+    },
+    {
+     "say": "टेक्नीशियन को बोलिएगा कि आने से पहले फोन कर ले।",
+     "after": "immediate",
+     "delay": 1.6
+    }
+   ],
+   "expect": {
+    "user_turns_all": [
+     "बात",
+     "फोन"
+    ],
+    "max_gap_after": {
+     "6": 6.0
+    },
+    "closes_within_s": 30,
+    "say_none": [
+     "दोबारा बोलिए",
+     "फिर से बोलिए",
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP23-01",
+   "reason": "customer_refused_visit",
+   "category": "problem_23",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "voice"
+   ],
+   "title": "'theek hai' 1.2 s into the closing line -> the closing line is spoken once more in full, then the call ends",
+   "patterns": [
+    "P23"
+   ],
+   "source_calls": [
+    "cv_9c03274c3b69"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "ठीक है।",
+     "after": "bot_start",
+     "delay": 1.2
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "events_all": [
+     "workflow_farewell_replayed"
+    ],
+    "closes_within_s": 20,
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  },
+  {
+   "id": "VP23-02",
+   "reason": "customer_refused_visit",
+   "category": "problem_23",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "voice"
+   ],
+   "title": "'theek hai, dhanyavaad' over the last second of the closing line -> no second farewell, the call ends",
+   "patterns": [
+    "P23"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ, कर दीजिए।"
+    },
+    {
+     "say": "ठीक है, धन्यवाद।",
+     "after": "bot_start",
+     "delay": 5.3,
+     "note": "aimed 1.0 s before the end of the line; the result records the real position (bot_remaining_s)"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "events_none": [
+     "workflow_farewell_replayed"
+    ],
+    "closes_within_s": 8,
+    "say_none": [
+     "confirm नहीं कर पाई",
+     "पूरी तरह confirm नहीं हो पाई"
+    ]
+   }
+  }
+ ]
+}

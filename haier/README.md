@@ -123,8 +123,19 @@ sheets), `tenant/Haier/call_transcripts.md` (8 real agent calls),
   fallback for a turn the model did not judge. A bare yes/no word inside a
   longer sentence no longer decides a branch. No route is added (an option may
   only lead where its hub could already go) and no spoken text changes.
+  The same revision sets three things on the start node: `closingFollowups`
+  (at most two replies after the closing line), `behavior.max_node_steps` 120
+  (four questions have routing chains of 33 to 36 conditions; the platform
+  default of 30 nodes per turn ended such a turn on the platform error line)
+  and `doNotCallNode` (a "do not call me again" request ends on this flow's
+  own repeated-calls closing at every step; the platform's line promises a
+  do-not-call list that the platform does not keep).
   `setup/09_answer_options_local.py` saves that revision on the LOCAL bot
   (dry-run by default); it refuses any API that is not on this machine.
+  `setup/10_answer_options_demo.py` is the same for DEMO, for the person who
+  deploys it: destination fixed, dry-run by default, and it refuses a DEMO
+  workflow that is not the reviewed one. Both use
+  `setup/haier_answer_options_publish.py`.
 - `setup/08_publish_demo_repair.py` — dry-run by default; publishes hash-bound,
   validated configuration through the existing DEMO API only. Unchanged prompts
   and summary settings are retained. It never deploys server code or restarts

@@ -264,3 +264,41 @@ def test_an_option_marked_not_on_question_is_never_taken_on_a_question():
     assert outcome(told) == "stop"
     # an ordinary option is still taken on a question-shaped reply
     assert outcome(turn(graph, "बाद में करवा लूँ क्या?", option="later", judged=True)) == "later"
+
+
+async def test_what_a_flow_declares_can_be_read_before_its_first_turn(monkeypatch):
+    """The delivery layer needs two facts before any workflow turn has run
+    (the caller may ask not to be called, or speak over the greeting, in the
+    first seconds): whether the flow has its own stop-calling closing and
+    whether it uses the answer contract. A flow that declares neither reads
+    as such, and so does one that cannot be loaded."""
+    from langgraph.checkpoint.memory import MemorySaver  # noqa: F401 — engine import side effects
+    import shared.orchestration.workflow_engine as we
+
+    declared = {"id": "wf", "nodes": [
+        {"id": "start", "kind": "start", "config": {"closingFollowups": 2, "doNotCallNode": "m_stop"}},
+        {"id": "m_stop", "kind": "message", "config": {"text": "ok"}},
+    ], "edges": []}
+    options_only = {"id": "wf", "nodes": [
+        {"id": "start", "kind": "start"},
+        {"id": "q", "kind": "intent", "config": {"answerOptions": [{"id": "yes", "meaning": "yes", "to": "start"}]}},
+    ], "edges": []}
+    plain = {"id": "wf", "nodes": [{"id": "start", "kind": "start", "config": {"doNotCallNode": "missing"}},
+                                   {"id": "q", "kind": "intent", "config": {}}], "edges": []}
+    engine = we.WorkflowEngine()
+    for definition, expected in (
+        (declared, {"doNotCallNode": "m_stop", "answerContract": True}),
+        (options_only, {"doNotCallNode": None, "answerContract": True}),
+        (plain, {"doNotCallNode": None, "answerContract": False}),
+        (None, {}),
+    ):
+        monkeypatch.setattr(we, "load_workflow_definition", lambda *args, d=definition: d)
+        assert await engine.flow_declarations(tenant_id="t", bot_id="b", workflow_name="wf") == expected
+    assert await engine.call_control_target(
+        tenant_id="t", bot_id="b", workflow_name="wf", control="do_not_call") is None
+
+    def broken(*args):
+        raise RuntimeError("control plane down")
+
+    monkeypatch.setattr(we, "load_workflow_definition", broken)
+    assert await engine.flow_declarations(tenant_id="t", bot_id="b", workflow_name="wf") == {}

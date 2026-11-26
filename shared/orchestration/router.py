@@ -150,14 +150,23 @@ def detect_hangup(text: str) -> bool:
 _DNC_PATTERNS: list[re.Pattern] = [
     *_lang.compile_any("dnc_patterns"), *_lang.compile_any("dnc_patterns_extra"),
 ]
+_DNC_NOT_NOW = _lang.compile_alternation("dnc_not_now")
+_DNC_PERMANENT = _lang.compile_alternation("dnc_permanent")
 
 
 def detect_do_not_call(text: str) -> bool:
     """Deterministic 'never call me again' consent revocation."""
     stripped = (text or "").strip()
-    if not stripped:
+    if not stripped or not any(p.search(stripped) for p in _DNC_PATTERNS):
         return False
-    return any(p.search(stripped) for p in _DNC_PATTERNS)
+    if (
+        _DNC_NOT_NOW is not None and _DNC_NOT_NOW.search(stripped)
+        and not (_DNC_PERMANENT is not None and _DNC_PERMANENT.search(stripped))
+    ):
+        # "Don't call me now, call in the evening": a request for another
+        # time. Only "never / again" makes it a revocation.
+        return False
+    return True
 
 
 _EMERGENCY = _lang.compile_alternation("emergency")

@@ -17,7 +17,25 @@ killAudio clears), which decides when "the bot finished speaking".
 
 Per call it saves a stereo WAV (left = caller, right = bot as played) and the
 session's transcript/checkpoint fetched read-only after the call.
-Options: --only ID[,ID], --repeat N, --cases FILE, --artifacts DIR.
+Options: --only ID[,ID], --repeat N, --cases FILE, --artifacts DIR, --port N
+(local only: a second voice worker started from another code tree).
+
+Turn options: ``after`` ("bot_done" default | "bot_start" | "bot_end" |
+"immediate"; "bot_end" counts ``delay`` from the end of the bot's line,
+negative = over its last words, and needs ``min_speech_s``: the seconds of
+bot speech that line has before its last sentence arrives),
+``delay`` seconds, ``silence`` seconds, ``hangup``, ``noise`` ("babble"),
+``gain_db`` (negative = a quiet caller), ``voice``.
+
+Audio-level expectations (in addition to those of the text harness):
+``closes_within_s`` (the BOT ends the call within N s of the caller's last
+words), ``stays_open`` (the bot must not end the call), ``events_any`` /
+``events_all`` / ``events_none`` (event kinds of the saved call),
+``user_turns_all`` / ``user_turns_none`` (regex over the saved caller turns),
+``say_count_max`` / ``say_count_min`` ({regex: n} over the bot's turns),
+``say_before`` ([regex A, regex B]: a bot turn matching A comes before the
+first one matching B), ``max_dead_air_s`` and ``max_gap_after`` ({turn index:
+seconds} from that caller turn's end to the bot's next speech).
 Test sessions are normal conversations of the bot in that environment
 (channel freeswitch, no caller number, no call id).
 """
@@ -55,6 +73,7 @@ QUIET_S = 1.5          # bot silence that counts as "finished speaking"
 SPEECH_DBFS = -32.0    # louder 20 ms frames are bot speech; ambience is ~-45 dBFS
 BOT_WAIT_S = 25.0      # max wait for the bot to speak/finish before proceeding
 END_WAIT_S = 30.0      # after the script, wait for the bot to close the call
+LOCAL_PORT = 0         # --port: a local voice worker on another port
 
 
 def run_env_script(env: str, script: Path, args: list[str], timeout: int = 120) -> str:
@@ -159,6 +178,9 @@ class Call:
         self.caller_utt: list[dict] = []
         self.log: list[str] = []
         self.kills = 0
+        self.server_closed_at: float | None = None  # the BOT ended the call
+        self.last_speech_at = 0.0   # arrival of the newest bot audio chunk that carried SPEECH
+        self.script_done_at: float | None = None
 
     def now(self) -> float:
         return time.monotonic()
@@ -186,6 +208,8 @@ class Call:
             rms = float(np.sqrt(np.mean(frame ** 2))) or 1.0
             t = start + k / RATE
             if 20 * np.log10(rms / 32768.0) > SPEECH_DBFS:
+                # Ambience is streamed all the time; only speech counts here.
+                self.last_speech_at = now
                 if self.bot_segments and t - self.bot_segments[-1][1] <= 0.35:
                     self.bot_segments[-1][1] = t + len(frame) / RATE
                 else:
@@ -217,6 +241,8 @@ async def run_call(env: str, sid: str, turns: list[dict], voice: Voice, case_see
     rng = random.Random(case_seed)
     speaker = CALLER_VOICES[case_seed % len(CALLER_VOICES)]
     url = ENVS[env]["ws"].format(sid=sid)
+    if env == "local" and LOCAL_PORT:
+        url = url.replace(":9002/", f":{LOCAL_PORT}/")
     async with websockets.connect(url, max_size=None, open_timeout=15, ping_interval=None) as ws:
         call.t0 = time.monotonic()
 
@@ -262,11 +288,14 @@ async def run_call(env: str, sid: str, turns: list[dict], voice: Voice, case_see
             except Exception as exc:  # noqa: BLE001
                 call.close_info = repr(exc)[:200]
             finally:
+                if not call.closed and call.server_closed_at is None:
+                    call.server_closed_at = call.now()
                 call.closed = True
 
         send_task = asyncio.create_task(sender())
         recv_task = asyncio.create_task(receiver())
         last_caller_end = call.t0
+        hung_up = False
 
         async def wait_until(pred, timeout):
             end = time.monotonic() + timeout
@@ -292,12 +321,34 @@ async def run_call(env: str, sid: str, turns: list[dict], voice: Voice, case_see
                     ok = await wait_until(lambda: call.last_bot_start_after(last_caller_end) is not None, BOT_WAIT_S)
                     start = call.last_bot_start_after(last_caller_end) or call.now()
                     await asyncio.sleep(max(0.0, start + delay - call.now()))
+                elif after == "bot_end":
+                    # ``delay`` seconds after the end of the bot speech buffered
+                    # so far; negative = over its last words (an answer given as
+                    # the question finishes). No 1.5 s "bot is done" wait.
+                    # The reply arrives sentence by sentence, up to a second
+                    # apart: ``min_speech_s`` (seconds of bot speech the line is
+                    # known to have before its last sentence arrives) tells the
+                    # end of the line from a pause between two sentences.
+                    # Without it, or if the line turns out shorter, the usual
+                    # 1.5 s of bot silence decides.
+                    need = float(turn.get("min_speech_s", 0.0))
+                    await wait_until(lambda: call.last_bot_start_after(last_caller_end) is not None, BOT_WAIT_S)
+
+                    def line_ended(since=last_caller_end):
+                        if (not call.bot_speaking()) and call.now() - call.speech_end() >= QUIET_S:
+                            return True
+                        buffered = sum(e - s for s, e in call.bot_segments if s >= since)
+                        return (buffered >= need and call.now() >= call.speech_end() + delay
+                                and call.now() - call.last_speech_at >= 0.25)
+
+                    await wait_until(line_ended, BOT_WAIT_S + 30)
                 else:  # immediate: pause after the caller's previous utterance
                     await asyncio.sleep(max(0.0, last_caller_end + delay - call.now()))
                 if call.closed:
                     break
                 if turn.get("hangup"):
                     call.log.append(f"{call.rel(call.now())} caller hangs up")
+                    hung_up = True
                     break
                 if turn.get("silence"):
                     t_s = call.now()
@@ -310,15 +361,23 @@ async def run_call(env: str, sid: str, turns: list[dict], voice: Voice, case_see
                 pcm = await voice.pcm(text, turn.get("voice") or speaker, lang)
                 if turn.get("noise"):
                     pcm = mix_noise(pcm, await babble(voice, len(pcm) / (2 * RATE) + 1.0))
+                if turn.get("gain_db"):
+                    # A quiet caller: the same words further from the phone.
+                    scaled = np.frombuffer(pcm, dtype="<i2").astype(np.float32) * (10 ** (float(turn["gain_db"]) / 20.0))
+                    pcm = np.clip(scaled, -32768, 32767).astype("<i2").tobytes()
                 t_s = call.now()
                 call.queue.extend(pcm)
                 dur = len(pcm) / (2 * RATE)
                 await asyncio.sleep(dur + 0.04)
                 last_caller_end = call.now()
                 call.caller_utt.append({"i": idx, "say": text, "start": call.rel(t_s), "end": call.rel(last_caller_end),
-                                        "bot_speaking_at_start": bool(t_s < call.speech_end())})
+                                        "bot_speaking_at_start": bool(t_s < call.speech_end()),
+                                        # bot speech still to play when the caller began (negative: seconds since it ended)
+                                        "bot_remaining_s": round(call.speech_end() - t_s, 2)})
             # script done: wait for the bot to answer and (ideally) close the call
-            end = time.monotonic() + END_WAIT_S
+            # (a caller who hung up is gone: the line closes at once)
+            call.script_done_at = call.now()
+            end = time.monotonic() + (0.0 if hung_up else END_WAIT_S)
             while time.monotonic() < end and not call.closed:
                 if call.now() - max(call.speech_end(), last_caller_end) > 12.0:
                     break
@@ -403,7 +462,9 @@ async def main(opts) -> int:
             call = await run_call(opts.env, sid, case["turns"], voice, seed)
             rec.update({"caller_utterances": call.caller_utt, "bot_segments": [[call.rel(s), call.rel(e)] for s, e in call.bot_segments],
                         "response_gaps": response_gaps(call), "kills": call.kills, "log": call.log,
-                        "close_info": call.close_info})
+                        "close_info": call.close_info,
+                        "bot_closed_at": call.rel(call.server_closed_at) if call.server_closed_at else None,
+                        "script_done_at": call.rel(call.script_done_at) if call.script_done_at else None})
             wav = outdir / f"{case['id']}_{rep}_{sid}.wav"
             save_wav(call, wav)
             rec["wav"] = str(wav)
@@ -450,6 +511,7 @@ def evaluate_results(opts, results: list[dict], spec: dict, evaluate) -> None:
             worst = max(r["response_gaps"])
             if worst > exp["max_dead_air_s"]:
                 fails.append(f"dead air {worst}s after a caller turn (max {exp['max_dead_air_s']})")
+        fails.extend(audio_failures(r, exp))
         if f.get("missing"):
             fails.append("transcript not persisted")
         r["failures"] = fails
@@ -460,6 +522,64 @@ def evaluate_results(opts, results: list[dict], spec: dict, evaluate) -> None:
     for r in results:
         print(f"{'PASS' if r.get('pass') else 'FAIL'} {r['id']}#{r['repeat']} outcome={r.get('outcome')} {'; '.join(r.get('failures') or [])[:240]}")
     print(f"\n{passed}/{len(results)} voice conversations passed on {opts.env}")
+
+
+def audio_failures(r: dict, exp: dict) -> list[str]:
+    """Expectations only a real call can be held to (see the module docstring)."""
+    fails: list[str] = []
+    f = r.get("fetched") or {}
+    kinds = [e.get("kind") for e in f.get("events") or []]
+    said = [u for u in r.get("caller_utterances") or [] if "end" in u]
+    last_caller_end = said[-1]["end"] if said else 0.0
+    closed_at = r.get("bot_closed_at")
+    if "closes_within_s" in exp:
+        if closed_at is None:
+            fails.append(f"the bot never ended the call (expected within {exp['closes_within_s']}s of the caller's last words)")
+        elif closed_at - last_caller_end > float(exp["closes_within_s"]):
+            fails.append(f"the bot ended the call {round(closed_at - last_caller_end, 1)}s after the caller's last words "
+                         f"(max {exp['closes_within_s']})")
+    if exp.get("stays_open") and closed_at is not None:
+        fails.append(f"the bot ended the call at {closed_at}s; it had to stay open")
+    for kind in exp.get("events_all") or []:
+        if kind not in kinds:
+            fails.append(f"event {kind} did not happen")
+    if exp.get("events_any") and not any(kind in kinds for kind in exp["events_any"]):
+        fails.append(f"none of the events {exp['events_any']} happened")
+    for kind in exp.get("events_none") or []:
+        if kind in kinds:
+            fails.append(f"event {kind} happened {kinds.count(kind)}x")
+    users = r.get("user_turns") or []
+    for pattern in exp.get("user_turns_all") or []:
+        if not any(re.search(pattern, u or "", re.I) for u in users):
+            fails.append(f"the caller's words /{pattern}/ are not in the saved transcript")
+    for pattern in exp.get("user_turns_none") or []:
+        if any(re.search(pattern, u or "", re.I) for u in users):
+            fails.append(f"saved caller turn matches forbidden /{pattern}/")
+    bots = r.get("bot_turns") or []
+    for pattern, limit in (exp.get("say_count_max") or {}).items():
+        n = sum(1 for b in bots if re.search(pattern, b or "", re.I))
+        if n > int(limit):
+            fails.append(f"/{pattern}/ was said {n}x (max {limit})")
+    for pattern, limit in (exp.get("say_count_min") or {}).items():
+        n = sum(1 for b in bots if re.search(pattern, b or "", re.I))
+        if n < int(limit):
+            fails.append(f"/{pattern}/ was said {n}x (min {limit})")
+    order = exp.get("say_before")
+    if order:
+        first = next((i for i, b in enumerate(bots) if re.search(order[0], b or "", re.I)), None)
+        second = next((i for i, b in enumerate(bots) if re.search(order[1], b or "", re.I)), None)
+        if second is not None and (first is None or first > second):
+            fails.append(f"/{order[1]}/ was said before /{order[0]}/")
+    for index, limit in (exp.get("max_gap_after") or {}).items():
+        utt = next((u for u in said if u["i"] == int(index)), None)
+        if utt is None:
+            continue
+        nxt = next((s for s, _e in r.get("bot_segments") or [] if s >= utt["end"]), None)
+        if nxt is None:
+            fails.append(f"the bot never spoke after caller turn {index}")
+        elif nxt - utt["end"] > float(limit):
+            fails.append(f"the bot answered caller turn {index} after {round(nxt - utt['end'], 1)}s (max {limit})")
+    return fails
 
 
 def evaluate_only(opts) -> int:
@@ -483,7 +603,10 @@ if __name__ == "__main__":
     p.add_argument("--output", type=Path)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--artifacts", type=Path, default=REPO / "storage/tmp/haier_qa")
+    p.add_argument("--port", type=int, default=0,
+                   help="local only: the port of the voice worker to test (default 9002)")
     p.add_argument("--evaluate-only", type=Path, nargs="+", default=None,
                    help="merge these finished result files, fetch + evaluate them into --output; places no calls")
     args = p.parse_args()
+    LOCAL_PORT = args.port
     raise SystemExit(evaluate_only(args) if args.evaluate_only else asyncio.run(main(args)))

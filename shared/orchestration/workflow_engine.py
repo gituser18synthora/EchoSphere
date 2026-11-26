@@ -428,6 +428,25 @@ def _closing_followups(definition: dict | None) -> int | None:
     return max(0, value)
 
 
+# Call-control requests a flow may answer with its own closing, and the start
+# node key that names where: a "do not call me again" then ends on the flow's
+# authored line and outcome instead of the delivery layer's generic one.
+_CALL_CONTROL_KEYS = {"do_not_call": "doNotCallNode"}
+
+
+def _call_control_target(definition: dict | None, control: str | None) -> str | None:
+    """The node at which this flow itself answers the call-control request
+    ``control`` (opt-in, start node config); None when it declares none or
+    names a node that does not exist."""
+    key = _CALL_CONTROL_KEYS.get(str(control or ""))
+    if key is None:
+        return None
+    nodes = (definition or {}).get("nodes") or []
+    start = next((n for n in nodes if n.get("kind") == "start"), None)
+    target = str(_node_config(start or {}).get(key) or "").strip()
+    return target if target and any(str(n.get("id")) == target for n in nodes) else None
+
+
 def _awaiting_options(definition: dict | None, node: dict | None) -> list[dict] | None:
     """``awaitingOptions`` for the result payload: the paused intent hub's
     answer options as ``{"id", "meaning"}`` in authored order, None when the
@@ -1473,6 +1492,24 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             current = str(start_node.get("id")) if start_node else None
             awaiting = None
 
+        # A call-control request this flow answers itself (``doNotCallNode``):
+        # wherever the flow stands — before its first step, at a question or
+        # after its closing line — the walk continues at that node. The
+        # utterance answers no question, and an outcome the flow has already
+        # recorded stays: a caller who agreed to a visit and then asks not to
+        # be called again still gets that visit.
+        control = str(state.get("call_control") or "")
+        control_target = _call_control_target(definition, control) if control else None
+        kept_slots: frozenset[str] = frozenset()
+        if control_target is not None:
+            audit.append({"action": "call_control", "control": control,
+                          "from": awaiting or current, "target": control_target})
+            if state.get("status") == "done":
+                kept_slots = frozenset(
+                    name for name, value in slots.items() if value not in (None, ""))
+            awaiting = None
+            current = control_target
+
         readback = configured_readback(
             list(nodes_by_id.values()), text, slots, audit, lang,
             state.get("readback_values"),
@@ -1487,7 +1524,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 "off_script": False, "context_response": False,
                 "semantic_extraction": None, "signal_override": None,
                 "signal_authoritative": False, "option_override": None,
-                "option_judged": False,
+                "option_judged": False, "call_control": None, "call_control_handled": None,
                 "identity_resolution": None, "identity_confirmation": None,
                 "terminal_set_slots": [],
                 "signal": "question", "status": "collecting",
@@ -1643,6 +1680,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         yes_no_polarity(
                             text,
                             agreement=_node_config(node).get("answerAgreementWords") is True,
+                            with_thanks=True,
                         ) if "?" not in text else None
                     )
                     reaction = ("attention" if attention_only(text)
@@ -2037,6 +2075,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     for key, value in set_slots.items():
                         name = str(key or "").strip()
                         if not name or isinstance(value, (dict, list)):
+                            continue
+                        if name in kept_slots:
                             continue
                         slots[name] = value
                         audit.append({"action": "slot_set", "node": current,
@@ -2499,6 +2539,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "signal_authoritative": False,
             "option_override": None,
             "option_judged": False,
+            "call_control": None,
+            "call_control_handled": control if control_target is not None else None,
             "answered_option": _resolved_option(
                 answer_hub, answered_option, trace, awaiting),
             "turn_side_effects": any(
@@ -2724,6 +2766,7 @@ class WorkflowEngine:
         signal_authoritative: bool = False,
         answer_option: str | None = None,
         answer_option_judged: bool = False,
+        call_control: str | None = None,
         identity_resolution: str | None = None,
         initial_slots: dict | None = None,
         context_values: dict | None = None,
@@ -2789,6 +2832,15 @@ class WorkflowEngine:
                 "reply": canned("wf_missing", language),
                 "done": True, "status": "error", "source": "missing",
                 "workflowId": None, "trace": [], "slots": {},
+            }
+
+        if call_control and _call_control_target(definition, call_control) is None:
+            # The flow declares no closing of its own for this request: nothing
+            # is read, run or changed, and the delivery layer handles it.
+            return {
+                "reply": "", "done": False, "status": "unhandled", "source": source,
+                "workflowId": (definition or {}).get("id"), "trace": [], "slots": {},
+                "callControlHandled": None,
             }
 
         thread = {"configurable": {"thread_id": f"{session_id}:{workflow_name}"}}
@@ -2861,6 +2913,7 @@ class WorkflowEngine:
             # options (whatever it chose); False for a deterministic or
             # fallback turn, which leaves the authored labels in charge.
             "option_judged": bool(answer_option_judged),
+            "call_control": str(call_control) if call_control else None,
             "identity_resolution": identity_resolution,
             "identity_confirmation": None,
             "semantic_extraction": None,
@@ -3024,6 +3077,9 @@ class WorkflowEngine:
             # and whether the turn ran an api / handover node.
             "answeredOption": state.get("answered_option"),
             "turnSideEffects": bool(state.get("turn_side_effects")),
+            # The call-control request this turn answered with the flow's own
+            # closing (``doNotCallNode``); None on every ordinary turn.
+            "callControlHandled": state.get("call_control_handled"),
             # The flow's own bound for replies after its closing line.
             "closingFollowups": _closing_followups(definition),
             # How this turn's reply must be delivered (fixed | exact |
@@ -3069,6 +3125,49 @@ class WorkflowEngine:
                 str(node.get("id")): node
                 for node in ((definition or {}).get("nodes") or [])
             }) else False,
+        }
+
+    async def call_control_target(
+        self, *, tenant_id: str, bot_id: str, workflow_name: str, control: str,
+        pinned_versions: dict | None = None,
+    ) -> str | None:
+        """The node at which the named flow answers the call-control request
+        ``control`` itself (see ``_CALL_CONTROL_KEYS``); None when it declares
+        none, is not a saved definition or cannot be loaded. Reads only."""
+        try:
+            definition = await to_thread_abandonable(
+                load_workflow_definition, tenant_id, bot_id, workflow_name,
+                *((pinned_versions,) if pinned_versions else ()),
+            )
+        except Exception:  # noqa: BLE001 — an unknown flow simply declares nothing
+            return None
+        return _call_control_target(definition, control)
+
+    async def flow_declarations(
+        self, *, tenant_id: str, bot_id: str, workflow_name: str,
+        pinned_versions: dict | None = None,
+    ) -> dict:
+        """What the named flow declares for the delivery layer, read before
+        its first turn: ``doNotCallNode`` (see :meth:`call_control_target`)
+        and ``answerContract`` — True when the flow uses the answer contract
+        (``closingFollowups`` on its start node, or ``answerOptions`` on a
+        question). {} when it is not a saved definition. Reads only."""
+        try:
+            definition = await to_thread_abandonable(
+                load_workflow_definition, tenant_id, bot_id, workflow_name,
+                *((pinned_versions,) if pinned_versions else ()),
+            )
+        except Exception:  # noqa: BLE001 — an unknown flow declares nothing
+            return {}
+        if not isinstance(definition, dict):
+            return {}
+        return {
+            "doNotCallNode": _call_control_target(definition, "do_not_call"),
+            "answerContract": _closing_followups(definition) is not None or any(
+                isinstance(_node_config(node).get("answerOptions"), list)
+                and _node_config(node).get("answerOptions")
+                for node in definition.get("nodes") or [] if node.get("kind") == "intent"
+            ),
         }
 
     async def rollback_last_turn(self, *, session_id: str, workflow_name: str,

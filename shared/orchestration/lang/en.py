@@ -14,6 +14,7 @@ PACK = LanguagePack(
     bare_no=frozenset({"na", "nhi", "no", "nope", "nah", "naah"}),
     courtesy_words=frozenset({"sir", "madam", "mam", "maam", "ma'am", "miss", "mister", "please", "plz", "pls", "dear"}),
     attention_words=frozenset({"hello", "helo", "hallo", "hullo", "hi", "hey", "hmm", "hm", "hmmm", "mm", "mhm"}),
+    contact_words=frozenset({"hello", "helo", "hallo", "hullo", "hi", "hey"}),
     thanks_words=frozenset({"thanks", "thankyou", "thanku", "thankx", "thnx", "thx", "welcome"}),
     farewell_words=frozenset({"bye", "goodbye", "byebye", "tata", "cheers"}),
     intensifier_words=frozenset({"absolutely", "definitely"}),
@@ -129,9 +130,18 @@ PACK = LanguagePack(
     dnc_patterns=(
         r"""\b(?:do ?n[o']t|never|stop) call(?:ing)?( me| again| back)?\b|\bremove (?:my|this) number\b|\bstop (?:these|the) calls\b|\btake me off\b|\bunsubscribe\b""",
     ),
+    # The rest of the explicit "stop contacting me" category. "Stop bothering
+    # me" without a contact verb is left to each bot's own flow.
     dnc_patterns_extra=(
-        r"""\b(?:do ?n[o']t|do not|never|stop|quit)\s+(?:ever\s+)?(?:phon(?:e|ing)|ring(?:ing)?|contact(?:ing)?|disturb(?:ing)?|bother(?:ing)?|harass(?:ing)?)(?:\s+me)?\b""",
+        r"""\b(?:do ?n[o']t|do not|never|stop|quit)\s+(?:ever\s+)?(?:phon(?:e|ing)|ring(?:ing)?|contact(?:ing)?)(?:\s+me)?\b""",
         r"""\bno\s+more\s+calls?\b|\bstop\s+calling\b|\bdo\s+not\s+contact\b""",
+    ),
+    # "Don't call me now / today" asks for another time; "again / ever" revokes.
+    dnc_not_now=(
+        r"""\b(?:right\s+now|now|at\s+the\s+moment|today|tonight|later|tomorrow|this\s+(?:morning|afternoon|evening|week)|busy|in\s+a\s+meeting|driving)\b""",
+    ),
+    dnc_permanent=(
+        r"""\b(?:again|ever|never|anymore|any\s+more|from\s+now\s+on|stop|quit|no\s+more)\b""",
     ),
     emergency=(
         r"""\bemergency\b""",

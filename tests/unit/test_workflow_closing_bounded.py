@@ -227,3 +227,39 @@ async def test_a_workflow_that_declares_no_bound_keeps_the_previous_follow_up_be
         assert brain._pending_workflow_close is None
     finally:
         await cleanup(brain)
+
+
+# ── a flow that does not declare closingFollowups keeps what it had ──────────
+
+@pytest.mark.parametrize("text, legacy", [
+    ("ठीक है", True), ("थैंक यू", False), ("thank you", True), ("हेलो", True), ("हम्म", True),
+    # the wider category is only for a flow that declares closingFollowups
+    ("अच्छा", False), ("हाँ सही है।", False), ("हाँ बोलिए।", False), ("आपका भी दिन शुभ रहे", False), ("बाय", False),
+])
+async def test_the_closing_acknowledgement_category_is_opt_in(text, legacy):
+    declared, _, _ = await closed_call(followups=2)
+    plain, _, _ = await closed_call(followups=None)
+    try:
+        assert plain._closing_followup_limit is None and declared._closing_followup_limit == 2
+        assert declared._closing_acknowledgement(text) is True
+        assert plain._closing_acknowledgement(text) is legacy
+    finally:
+        await cleanup(declared)
+        await cleanup(plain)
+
+
+async def test_a_cut_farewell_is_replayed_only_for_a_flow_that_declares_closing_followups():
+    for followups, replayed in ((2, True), (None, False)):
+        brain, _, _ = await closed_call(followups=followups)
+        try:
+            brain._cancel_workflow_close("caller_interruption")
+            brain._workflow_farewell_active = True
+            brain._farewell_cut_played = 0.8                 # cut in its first second
+            before = len(spoken(brain))
+            await brain._handle_turn("ठीक है")
+            said_again = [line for line in spoken(brain)[before:] if "आपका दिन शुभ रहे" in line]
+            assert bool(said_again) is replayed
+            assert ("workflow_farewell_replayed" in brain._recorder.event_kinds()) is replayed
+            assert brain._pending_workflow_close is not None   # the call still ends
+        finally:
+            await cleanup(brain)

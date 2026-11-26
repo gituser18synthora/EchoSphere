@@ -35,6 +35,13 @@ KEEP = {
     "pickup_hello_answered", "opening_greeting_heard", "deterministic_fast_path", "identity_rule",
     "workflow_identity_accepted", "background_suspect_discarded", "turn_latency", "hold_acknowledged",
     "workflow_answer_needs_clarification", "post_hangup_transcript_dropped", "end_call_playout_wait",
+    # closing, greeting and short-answer handling (2026-11-25 review, phase 1)
+    "workflow_closing_acknowledgement", "workflow_farewell_replayed", "workflow_closing_reaffirmed",
+    "workflow_reopened_after_closing", "workflow_outcome_contested", "answer_option_reread",
+    "stt_segment_held_during_bot_audio", "stale_held_short_recovered", "background_suspect_not_dispatched",
+    "filler_only_dropped", "stt_segment_rejected", "stt_segment_appended", "pending_question_resumed",
+    "early_answer_deferred", "early_answer_reasked", "short_segment_retranscribed",
+    "short_segment_retranscribe_failed", "unsupported_language_retranscribe_failed", "backchannel_suppressed",
 }
 
 

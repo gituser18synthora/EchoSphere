@@ -4018,6 +4018,175 @@
      "redispatch"
     ]
    }
+  },
+  {
+   "id": "DNC-01",
+   "reason": "customer_refused_visit",
+   "category": "stop_calling",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'ab dobara call mat karna' at the first question -> Haier's own repeated-calls closing, never the platform do-not-call line",
+   "patterns": [
+    "P11"
+   ],
+   "source_calls": [
+    "cv_94f9eabbd7fb"
+   ],
+   "turns": [
+    {
+     "say": "हाँ जी, बोलिए।"
+    },
+    {
+     "say": "मैम ऑलरेडी हो चुकी है, आपसे रिक्वेस्ट है कि अब दोबारा फ़ोन ना करें।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "repeat_calls_noted"
+    ],
+    "say_any": [
+     "बार-बार call आने के लिए माफ़ी"
+    ],
+    "say_none": [
+     "डू-नॉट-कॉल",
+     "do-not-call",
+     "सूची में डाल"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "DNC-02",
+   "reason": "unit_ok_no_defect",
+   "category": "stop_calling",
+   "priority": "P0",
+   "repeat": 3,
+   "modes": [
+    "text"
+   ],
+   "title": "'call hi mat karo' right at the greeting, before identity -> the same closing and outcome",
+   "patterns": [
+    "P11"
+   ],
+   "source_calls": [
+    "cv_fe81717cf356"
+   ],
+   "turns": [
+    {
+     "say": "आप लोग कॉल ही मत करो, बहुत परेशान कर दिया है।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "repeat_calls_noted"
+    ],
+    "say_any": [
+     "बार-बार call आने के लिए माफ़ी"
+    ],
+    "say_none": [
+     "डू-नॉट-कॉल",
+     "do-not-call",
+     "सूची में डाल",
+     "के regarding है"
+    ],
+    "must_close": true
+   }
+  },
+  {
+   "id": "DNC-03",
+   "reason": "customer_refused_visit",
+   "category": "stop_calling",
+   "priority": "P0",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "Agrees to the visit, then after the closing line 'aur ab dobara call mat karna' -> the apology closing is spoken and the re-dispatch outcome is kept",
+   "patterns": [
+    "P11",
+    "P6"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ बोलो।"
+    },
+    {
+     "say": "हाँ, कॉल आया था।"
+    },
+    {
+     "say": "हाँ, उस टाइम मना कर दिया था।"
+    },
+    {
+     "say": "हाँ, अब इंस्टॉलेशन चाहिए।"
+    },
+    {
+     "say": "हाँ कर दीजिए।"
+    },
+    {
+     "say": "और अब बार-बार कॉल मत करना।",
+     "post_close": true
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_any": [
+     "बार-बार call आने के लिए माफ़ी"
+    ],
+    "say_none": [
+     "डू-नॉट-कॉल",
+     "do-not-call",
+     "सूची में डाल"
+    ]
+   }
+  },
+  {
+   "id": "DNC-04",
+   "reason": "refused_to_pay",
+   "category": "stop_calling",
+   "priority": "P1",
+   "repeat": 2,
+   "modes": [
+    "text"
+   ],
+   "title": "'phone mat kaatna, bata raha hoon' is the opposite request -> the call goes on, nothing is closed",
+   "patterns": [
+    "P11"
+   ],
+   "source_calls": [],
+   "turns": [
+    {
+     "say": "हाँ जी बोलिए।"
+    },
+    {
+     "say": "रुकिए, फोन मत काटना, मैं बता रहा हूँ।"
+    },
+    {
+     "say": "कोई भी नहीं आया यहाँ तो।"
+    },
+    {
+     "say": "हाँ, सर्विस चाहिए।"
+    },
+    {
+     "say": "हाँ।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "redispatch"
+    ],
+    "say_none": [
+     "डू-नॉट-कॉल",
+     "do-not-call",
+     "सूची में डाल",
+     "बार-बार call आने के लिए माफ़ी"
+    ]
+   }
   }
  ]
 }

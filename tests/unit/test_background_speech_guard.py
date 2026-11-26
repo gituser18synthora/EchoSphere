@@ -483,3 +483,94 @@ class TestSpeakerConsistencyShadow:
         await settle_turn()
         assert handled == ["हाँ मैं बोल रहा हूँ"]
         assert "speaker_consistency" not in brain._recorder.event_kinds()
+
+
+# ── a quiet SHORT ANSWER to a question that declares answer options ──────────
+# DEMO 2026-11-25 (cv_533aa87d05dd): a quiet "Yes." to the permission question
+# was held as background. The caller heard six seconds of silence, "can you
+# hear me?", the question again, and said yes three times.
+
+PERMISSION = "क्या technician की visit के लिए मैं आपकी request आगे forward कर दूँ?"
+ANSWER_OPTIONS = [{"id": "yes", "meaning": "agrees"}, {"id": "no", "meaning": "refuses"}]
+
+
+def _at_a_question(brain, *, options=ANSWER_OPTIONS):
+    brain._active_workflow = "wf_1c3e59362c51"
+    brain._pending_workflow_question = PERMISSION
+    brain._pending_hub_options = options
+
+
+def _spoken(brain):
+    from pipecat.frames.frames import TextFrame
+    return [f.text for f in brain._pushed if isinstance(f, TextFrame)]
+
+
+class TestQuietShortAnswer:
+    async def test_a_quiet_yes_is_still_held_but_the_question_is_asked_again_at_once(self):
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await settle_turn()
+        event = level_events(brain)[-1]
+        assert event["action"] == "held" and event["reason"] == "background_quiet"
+        assert len(handled) == 3                               # nothing was accepted
+        assert "quiet_answer_reasked" in brain._recorder.event_kinds()
+        assert _spoken(brain)[-1] == PERMISSION                # the flow's own question, no new wording
+
+    async def test_the_same_answer_again_after_that_is_the_callers(self):
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await settle_turn()
+        await say(brain, gate, "यस।", -45.0, segment_ms=500.0)
+        await settle_turn()
+        event = level_events(brain)[-1]
+        assert event["action"] == "accepted" and event["reason"] == "background_quiet_repeated_answer"
+        assert handled[-1] == "यस।"
+        assert event["trained"] is False                       # the level verdict is not rewritten by it
+
+    async def test_a_different_answer_is_not_confirmed_and_the_question_is_not_asked_a_third_time(self):
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await settle_turn()
+        asked = len([t for t in _spoken(brain) if t == PERMISSION])
+        await say(brain, gate, "नहीं।", -46.0, segment_ms=500.0)
+        await settle_turn()
+        assert level_events(brain)[-1]["action"] == "held"
+        assert len(handled) == 3
+        assert len([t for t in _spoken(brain) if t == PERMISSION]) == asked
+        assert brain._silence_task is not None                 # the no-response ladder takes over
+
+    async def test_quiet_talk_with_content_is_never_answered_with_the_question(self):
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        await say(brain, gate, "खाना बन गया क्या", -46.0)
+        await settle_turn()
+        assert level_events(brain)[-1]["reason"] == "background_quiet"
+        assert "quiet_answer_reasked" not in brain._recorder.event_kinds()
+        assert PERMISSION not in _spoken(brain)
+        assert brain._silence_task is not None
+
+    async def test_a_question_without_answer_options_keeps_the_silent_hold(self):
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain, options=None)
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await settle_turn()
+        assert level_events(brain)[-1]["reason"] == "background_quiet"
+        assert "quiet_answer_reasked" not in brain._recorder.event_kinds()
+        assert PERMISSION not in _spoken(brain)
+        assert brain._silence_task is not None
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await settle_turn()
+        assert level_events(brain)[-1]["action"] == "held"     # twice held, as before

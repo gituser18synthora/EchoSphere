@@ -21,6 +21,11 @@ where it leads. The runtime then resolves a reply in one order everywhere:
 The start node also declares ``closingFollowups``: after the closing line the
 bot answers at most two follow-ups, each followed by the authored closing
 courtesy and the hang-up (2026-11-25: calls ran up to 170 s past the closing).
+Its ``behavior.max_node_steps`` is raised to ``MAX_NODE_STEPS``: four questions
+have routing chains longer than the platform's 30 nodes per turn, and a reply
+that matched one of their last captures ended on the platform error line.
+And its ``doNotCallNode`` names this flow's own repeated-calls closing, so a
+"do not call me again" request ends on that line at every step.
 
 No route is invented: an option may only lead where that hub could already go
 (an edge or a route of its correction chain), and a plain yes / no keeps the
@@ -37,6 +42,26 @@ import re
 VERSION = 1
 MARKER = "haierAnswerOptionsVersion"
 CLOSING_FOLLOWUPS = 2
+# The interpreter walks at most this many nodes per turn (the platform default
+# is 30; the knob is the workflow's own ``behavior.max_node_steps``). Four
+# questions of this flow have routing chains of 33 to 36 conditions behind
+# them, so a reply that matched one of the last captures ("nahi, koi nahi
+# aaya" at the unit-ok contact question) ran out of budget and the caller
+# heard the platform error line. The longest chain is 36 nodes; 120 leaves
+# room for further captures and still stops an authored loop.
+MAX_NODE_STEPS = 120
+# The engine passes at most this many characters of an option's meaning to the
+# decision model (workflow_engine._MAX_OPTION_MEANING_CHARS). A longer meaning
+# is cut silently, and it is the END that is lost: the first revision's
+# "... is NOT agreement" / "... is NOT this" clauses never reached the model.
+MAX_MEANING_CHARS = 200
+# "Do not call me again" at ANY point of the call (before the first question,
+# at a question, after the closing line) ends on this flow's own closing: the
+# apology for the repeated calls and the outcome ``repeat_calls_noted``, which
+# the summary reports as "Do-not-call requested: Yes". The platform's generic
+# line promises a do-not-call list; the platform keeps no such list (it only
+# records a disposition), so that promise is not made on these calls.
+DO_NOT_CALL_NODE = "m_n_v2_end_repeat_calls"
 
 _ELSE_LABELS = {"else", "other", "default", "fallback", "no match", "otherwise"}
 
@@ -148,16 +173,15 @@ _CONTACT_VISIT = (
     "No technician came to their place. This includes: a call came but nobody visited",
 )
 _SERVICE_NEED = (
-    "They need or want the service, installation or repair for this request. This includes saying the problem "
-    "is still there, that the work was not done or not done properly, or asking that someone come and check",
+    "They need or want the service, installation or repair for this request, including: the problem is still "
+    "there, the work was not done or not done properly, or someone should come and check",
     "They do not need the service for this request (no requirement now, not needed any more)",
 )
 _PERMISSION = (
-    "They agree that the technician-visit request be forwarded (yes, okay, go ahead, do it), with or without "
-    "a preferred day or an extra request such as a different technician. Saying that the product works now "
-    "or has no problem is NOT agreement",
-    "They do not want the request forwarded or do not want a technician visit, including because the product "
-    "works now or there is no problem any more",
+    "They agree that the visit request be forwarded (yes, okay, go ahead), with or without a preferred day or "
+    "request. NOT this: the product works or has no problem, or they will handle it themselves",
+    "They do not want the request forwarded or a technician visit, including: the product works now, there "
+    "is no problem any more, or they will handle it themselves",
 )
 _PAY = (
     "They are ready or agree to pay the service charges",
@@ -214,9 +238,8 @@ _YES_NO_MEANINGS: dict[str, tuple[str, str]] = {
         "The product was not damaged when it was delivered",
     ),
     "n_reason_refused_pay_q": (
-        "They did not pay or declined to pay at the technician's visit (for example it was too expensive or "
-        "they could not afford it). When their reason is that the product is under warranty or should be "
-        "free, the answer is warranty",
+        "They did not pay or declined to pay at the technician's visit (too expensive, could not afford it). "
+        "If their reason is that it is under warranty or should be free, the answer is warranty",
         "They had not refused to pay",
     ),
     "n_reason_unit_ok_q": (
@@ -338,9 +361,8 @@ _CHOICE_TWINS = {
 # when that hub can already reach the target: (option id, target, meaning).
 _TOPIC_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("stop_calling", "m_n_v2_end_repeat_calls",
-     "They ask not to be called again or to stop the calls, or say they are fed up with being called so many "
-     "times. This wins over every other option when they ask not to be called. A question about why the "
-     "calls keep coming is NOT this"),
+     "They ask not to be called again or to stop the calls, or are fed up with so many calls. This wins over "
+     "every other option. NOT this: a question about why the calls keep coming"),
     ("already_done", "n_v2_completed_check",
      "They say the installation or service for this request has already been completed. When they also say "
      "they have paid, the answer is paid"),
@@ -515,12 +537,27 @@ def apply_answer_options_repair(definition: dict) -> dict:
         if node.get("kind") == "start":
             # After the closing line: answer at most this many follow-ups, each
             # followed by the closing courtesy and the hang-up.
-            node.setdefault("config", {})["closingFollowups"] = CLOSING_FOLLOWUPS
+            config = node.setdefault("config", {})
+            config["closingFollowups"] = CLOSING_FOLLOWUPS
+            behavior = dict(config.get("behavior") or {})
+            declared = behavior.get("max_node_steps")
+            behavior["max_node_steps"] = max(
+                declared if isinstance(declared, int) and not isinstance(declared, bool) else 0,
+                MAX_NODE_STEPS,
+            )
+            config["behavior"] = behavior
+            if DO_NOT_CALL_NODE in nodes:
+                config["doNotCallNode"] = DO_NOT_CALL_NODE
     for hub, node in nodes.items():
         if node.get("kind") != "intent" or hub in _UNCHANGED_HUBS:
             continue
         config = node.setdefault("config", {})
         config["answerOptions"] = options_for(hub, nodes, edges_from)
+        for option in config["answerOptions"]:
+            if len(option["meaning"]) > MAX_MEANING_CHARS:
+                raise ValueError(
+                    f"Meaning of option {option['id']} at {hub} has {len(option['meaning'])} characters; "
+                    f"the engine passes {MAX_MEANING_CHARS}")
         if hub in _STATE_HUBS:
             config.pop("answerAgreementWords", None)
         else:

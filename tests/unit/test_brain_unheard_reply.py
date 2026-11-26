@@ -489,6 +489,53 @@ class TestContinuationVersusNewTurn:
         assert "unheard_reply_superseded" in kinds and "unheard_turn_merged_uncommitted" not in kinds
         assert brain._pending_segments == []
 
+    @staticmethod
+    async def _committed_workflow_turn(brain, *, contract, side_effects=False):
+        """A workflow turn whose engine step committed and whose reply has
+        not produced a sound; the caller speaks again 3 s later."""
+        import time
+        brain._workflows = _Workflows()
+        brain._active_workflow = "wf"
+        brain._flow_answer_contract = contract
+        release = asyncio.Event()
+        record = TurnRecord(role="user", text=USER, timestamp=1.0, route="workflow")
+
+        async def _slow_generation():
+            brain._recorder.add_turn(record)
+            brain._history.append({"role": "user", "content": USER})
+            brain._open_turn_record = record
+            brain._open_turn_workflow = ("wf", "wf", USER)
+            brain._open_turn_workflow_committed = True
+            brain._open_turn_workflow_side_effects = side_effects
+            await release.wait()
+
+        brain._pending_segments.append(USER)
+        brain._handle_turn = lambda t: _slow_generation()
+        await brain._consume_pending_turn()
+        await settle()
+        brain._last_vad_stopped_at = time.monotonic() - 3.0
+        await brain.process_frame(UserStartedSpeakingFrame(), DOWN)
+        await settle()
+        return brain._recorder.event_kinds()
+
+    async def test_a_committed_turn_nobody_heard_is_rewound_in_a_flow_with_answer_options(self):
+        # DEMO 2026-11-25, cv_91ba7fb4364a: the pickup "namaste, haan ji" confirmed identity and the
+        # flow moved on to its first question; before a sound of that reply was played the caller
+        # said "haan ji" again, 2 s later. The turn stood, the second "haan ji" answered the question
+        # nobody had asked, and the purpose line was never spoken.
+        brain = make_brain()
+        kinds = await self._committed_workflow_turn(brain, contract=True)
+        assert "unheard_turn_merged_committed" in kinds and "unheard_reply_superseded" not in kinds
+        assert "turn_merged_late_final" in kinds
+        assert brain._pending_segments == [USER]                   # read again together with what follows
+        assert brain._recorder.turns == []
+
+    async def test_a_turn_that_ran_an_action_is_never_rewound(self):
+        brain = make_brain()
+        kinds = await self._committed_workflow_turn(brain, contract=True, side_effects=True)
+        assert "unheard_reply_superseded" in kinds and "unheard_turn_merged_committed" not in kinds
+        assert brain._pending_segments == []
+
     async def test_first_speech_of_the_call_has_no_gap_and_still_merges(self):
         brain = make_brain()
         brain._workflows = _Workflows()

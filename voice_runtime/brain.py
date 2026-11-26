@@ -105,6 +105,9 @@ from shared.orchestration.deterministic_answers import (
     DeterministicAnswer,
     attention_only as _attention_only_reply,
     closing_reaction,
+    contact_check_only as _contact_check_only_reply,
+    reaction_only as _reaction_only_reply,
+    resolve_plain_yes_no,
     resolve_reaction,
     resolve_short_answer,
     yes_no_polarity,
@@ -664,6 +667,9 @@ _HELD_CONTINUATION_WINDOW_S = 5.0
 # the caller's real answer was still coming. Such text is discarded at reply
 # end and the caller's silence is measured instead.
 _HELD_SHORT_MAX_AGE_S = 2.5
+# After a question was asked again because the background guard held a short
+# answer to it, the same answer within this long is taken as the caller's.
+_QUIET_REASK_WINDOW_S = 20.0
 # A multi-word final that lands AFTER its own VAD burst closed carries no
 # speech episode, and the turn controller confirms the barge-in from that
 # very transcript a few milliseconds later. Such a hold is the confirmed
@@ -1236,6 +1242,9 @@ class ConversationBrain(FrameProcessor):
         # When the reply's audio started (monotonic) and, after a barge-in,
         # the cut reply awaiting the router's per-sentence report.
         self._reply_audio_started_at: float | None = None
+        # A synthesis report of a cut reply that arrived before the cut itself
+        # was handled here (ReplyTTSInterruptedFrame).
+        self._reply_cut_report = None
         self._reply_pause_started_at: float | None = None
         self._reply_paused_seconds = 0.0
         self._reply_cut: dict | None = None
@@ -1297,6 +1306,7 @@ class ConversationBrain(FrameProcessor):
         # Monotonic time of the newest final buffered into _pending_segments
         # (the held-short age at reply end, see _drop_stale_held_short_text).
         self._pending_newest_final_at: float | None = None
+        self._pending_newest_spoken_at: float | None = None
         # Latency instrumentation (shared with the VAD probe) and the caller
         # audio gate, which supplies speech energy/echo evidence per segment.
         self._latency = latency or TurnLatencyTracker(session_id=recorder.session_id)
@@ -1468,6 +1478,20 @@ class ConversationBrain(FrameProcessor):
         # Consent revoked this call: the do_not_call disposition/state is
         # authoritative and must survive the policy's own finalization.
         self._dnc = False
+        # Workflow name -> the node at which that flow answers "do not call me
+        # again" with its own closing (engine ``doNotCallNode``), None when it
+        # declares none; looked up once per call, on the first such request.
+        self._flow_dnc_targets: dict[str, str | None] = {}
+        self._flow_dnc_lookups: set[str] = set()
+        # The question asked again because the background guard held a short
+        # answer to it ({"question", "kind", "at"}), see _reask_after_quiet_answer.
+        self._quiet_reask: dict | None = None
+        # The call's workflow uses the answer contract (it declares answer
+        # options / closingFollowups): learnt from its first result.
+        self._flow_answer_contract = False
+        self._open_turn_workflow_side_effects = False
+        # Segments finishing in a task of their own (see _on_transcription).
+        self._detached_segment_tasks: set[asyncio.Task] = set()
         # Human speech naturalness: how the reply is DELIVERED (occasional
         # fillers/acknowledgements, tool-lookup prefaces, sparse backchannels).
         # Semantic content is never changed and history stays clean — prefaces
@@ -1764,8 +1788,14 @@ class ConversationBrain(FrameProcessor):
                 # outcome is committed). A follow-up turn after the closing
                 # line is ordinary speech: a caller still talking when its
                 # reply is being prepared is finishing that thought, and the
-                # whole of it must be answered — not the last fragment.
-                and (self._completed_workflow is None or self._open_turn_workflow is None)
+                # whole of it must be answered — not the last fragment (a flow
+                # that declares ``closingFollowups``; others keep the rule
+                # they had: nothing is merged once a workflow has completed).
+                and (
+                    self._completed_workflow is None
+                    or (self._open_turn_workflow is None
+                        and self._closing_followup_limit is not None)
+                )
                 and not self._reply_audio_started
                 and (self._generation_in_flight() or self._unheard_reply_merge_window_open())
             )
@@ -1794,8 +1824,32 @@ class ConversationBrain(FrameProcessor):
                     gap_s=None if gap is None else round(gap, 2),
                     workflow=self._active_workflow,
                 )
+            # A workflow turn that DID commit, in a flow that declares answer
+            # options: its reply asked the next question, and not a sound of
+            # it was played. Left standing, the caller's next words answered
+            # a question they never heard (DEMO 2026-11-25, cv_91ba7fb4364a:
+            # the second "haan ji" of the pickup answered "did the technician
+            # come?", and the purpose line was never spoken). Whatever the
+            # gap, the caller is still answering what they last HEARD: the
+            # turn is rewound and both utterances are read together. A turn
+            # that ran an action is never rewound.
+            unheard_committed_turn = (
+                unheard_reply_pending
+                and not continuation
+                and not uncommitted_workflow_turn
+                and self._flow_answer_contract
+                and self._open_turn_workflow is not None
+                and self._open_turn_workflow_committed
+                and not self._open_turn_workflow_side_effects
+            )
+            if unheard_committed_turn:
+                self._recorder.add_event(
+                    "unheard_turn_merged_committed",
+                    gap_s=None if gap is None else round(gap, 2),
+                    workflow=self._open_turn_workflow[0],
+                )
             resumed_before_reply = unheard_reply_pending and (
-                continuation or uncommitted_workflow_turn
+                continuation or uncommitted_workflow_turn or unheard_committed_turn
             )
             superseded_unheard = unheard_reply_pending and not resumed_before_reply
             # Claim the turn's markers NOW, before any await: the generation
@@ -2229,6 +2283,14 @@ class ConversationBrain(FrameProcessor):
         self._note_meaningful_input()
         self._transcript_timing.accepted_segment(new_buffer=not self._pending_segments)
         self._pending_newest_final_at = time.monotonic()
+        # When the newest buffered words were SPOKEN: the start of their
+        # speech episode. A short word's transcript can arrive seconds after
+        # the word itself.
+        started = self._last_vad_started_at
+        self._pending_newest_spoken_at = (
+            started if started is not None and self._pending_newest_final_at - started <= 15.0
+            else self._pending_newest_final_at
+        )
         provenance = dict(provenance or self._final_provenance(None))
         provenance["caller_confirmed"] = (
             self._turn_active or self._confirmed_buffer_continuation(provenance)
@@ -2353,6 +2415,19 @@ class ConversationBrain(FrameProcessor):
         self._arm_silence_timer()
         return True
 
+    def _held_answer_window(self) -> float:
+        """Seconds before the end of the reply within which a short word still
+        answers its closing question: about half of that question's own
+        length (estimated from its share of the reply text), never less than
+        one second and never more than the general limit."""
+        text = (self._reply_text or "").strip()
+        total = self._reply_played_seconds()
+        sentences = [part for part in _FAREWELL_SENTENCE_SPLIT.split(text) if part.strip()]
+        if not sentences or total <= 0.0:
+            return _HELD_SHORT_MAX_AGE_S
+        question = total * len(sentences[-1]) / max(1, len(text))
+        return max(1.0, min(_HELD_SHORT_MAX_AGE_S, 0.5 * question))
+
     def _drop_stale_held_short_text(self) -> bool:
         """Held-segment guard, short text: a backchannel-sized segment held
         during the bot's playback is the answer to the question the reply
@@ -2377,13 +2452,30 @@ class ConversationBrain(FrameProcessor):
         if words >= _HELD_MULTIWORD_MIN_WORDS:
             return False
         age = time.monotonic() - newest
-        if age <= _HELD_SHORT_MAX_AGE_S:
+        limit = _HELD_SHORT_MAX_AGE_S
+        if self._pending_hub_options:
+            # A question that declares answer options reads the word by when
+            # it was SPOKEN and against the length of the question itself: it
+            # answers the question only if the caller had heard about half of
+            # it. "No." 1.7 s into a 6 s question, whose transcript arrived
+            # late, was applied as the answer and cancelled the request
+            # (DEMO 2026-11-25, cv_6652c97047d0).
+            spoken = self._pending_newest_spoken_at
+            if spoken is not None:
+                age = time.monotonic() - spoken
+            limit = self._held_answer_window()
+        if age <= limit:
             return False
         pending = self._pending_ask()
         if (
             self._unheard_reply_guard and self._active_workflow
             and self._reply_nodes and pending.question
-            and self._bare_yes_no_turn(held, None)
+            and (
+                self._bare_yes_no_turn(held, None)
+                # ... and a contact check ("hello?", "haan boliye") said over
+                # the reply gets the question again, not 6 s of silence.
+                or (bool(self._pending_hub_options) and _attention_only_reply(held))
+            )
         ):
             # The word is real, but age alone cannot establish which question
             # it answered. Keep its transcript and ask the current question
@@ -2395,7 +2487,8 @@ class ConversationBrain(FrameProcessor):
             )
             self._recorder.add_event(
                 "stale_held_short_recovered", text=held[:120],
-                age_ms=round(age * 1000.0, 1), pending_kind=pending.kind,
+                age_ms=round(age * 1000.0, 1), max_age_ms=round(limit * 1000.0, 1),
+                pending_kind=pending.kind,
                 action="repeat_pending_question",
             )
             return False
@@ -2404,7 +2497,7 @@ class ConversationBrain(FrameProcessor):
             text=held[:120],
             words=words,
             age_ms=round(age * 1000.0, 1),
-            max_age_ms=round(_HELD_SHORT_MAX_AGE_S * 1000.0, 1),
+            max_age_ms=round(limit * 1000.0, 1),
             pending_kind=pending.kind,
         )
         self._latency.count("stale_held_short_dropped")
@@ -2773,6 +2866,13 @@ class ConversationBrain(FrameProcessor):
                 action, reason = "accepted", "background_quiet_failopen"
                 self._quiet_suspect_holds = 0
                 self._discard_suspects("background_quiet_failopen")
+            elif self._quiet_answer_repeated(text):
+                # The same short answer again, right after the question was
+                # asked again because of it: two matching answers to one
+                # question are the caller, not a television.
+                action, reason = "accepted", "background_quiet_repeated_answer"
+                self._quiet_suspect_holds = 0
+                self._discard_suspects("background_quiet_repeated_answer")
             else:
                 self._suspect_in_turn = True
                 action, reason = "held", "background_quiet"
@@ -2843,8 +2943,70 @@ class ConversationBrain(FrameProcessor):
         if not self._turn_active and not self._bot_speaking:
             # An orphan final (no open turn) would otherwise leave the
             # no-response ladder disarmed: the caller has not shown up.
-            self._arm_silence_timer()
+            # A question with answer options asks again at once instead when
+            # the quiet words were a short answer to it.
+            if not self._reask_after_quiet_answer(text):
+                self._arm_silence_timer()
         return "held"
+
+    @staticmethod
+    def _short_answer_kind(text: str) -> str | None:
+        """"yes" / "no" for a plain yes/no, "attention" for a contact check,
+        None for anything with content."""
+        return yes_no_polarity(text, with_thanks=True) or (
+            "attention" if _attention_only_reply(text) else None)
+
+    def _quiet_answer_question(self) -> str:
+        """The question a quiet short answer would belong to: the pending
+        question of a hub that declares answer options, else ""."""
+        if not self._pending_hub_options or not self._active_workflow or self._closing:
+            return ""
+        return (self._pending_workflow_question or self._pending_ask().question or "").strip()
+
+    def _quiet_answer_repeated(self, text: str) -> bool:
+        asked = self._quiet_reask
+        if asked is None or time.monotonic() - asked["at"] > _QUIET_REASK_WINDOW_S:
+            return False
+        kind = self._short_answer_kind(text)
+        return (
+            kind in ("yes", "no") and kind == asked["kind"]
+            and self._quiet_answer_question() == asked["question"]
+        )
+
+    def _reask_after_quiet_answer(self, text: str) -> bool:
+        """Ask the pending question again at once when the background guard
+        held a short answer to it.
+
+        DEMO 2026-11-25 (cv_533aa87d05dd): a quiet "Yes." to the permission
+        question was held as background; the caller then heard six seconds of
+        silence, "can you hear me?", the question again, and had to say yes
+        three times. The guard still decides who spoke — nothing is accepted
+        here — but a held "yes" / "no" / "hello" is answered with the question
+        itself (the flow's own wording), once per question. Only for a
+        question that declares answer options.
+        """
+        question = self._quiet_answer_question()
+        kind = self._short_answer_kind(text)
+        if not question or kind is None or self._generation_in_flight():
+            return False
+        asked = self._quiet_reask
+        if asked is not None and asked["question"] == question:
+            return False                       # once per question
+        self._quiet_reask = {"question": question, "kind": kind, "at": time.monotonic()}
+        self._recorder.add_event("quiet_answer_reasked", text=text[:80], answer=kind)
+        try:
+            self.create_task(self._say_quiet_reask(question))
+        except Exception:  # noqa: BLE001 — the no-response ladder still runs
+            return False
+        return True
+
+    async def _say_quiet_reask(self, question: str) -> None:
+        if self._closing or self._bot_speaking or self._turn_active:
+            self._arm_silence_timer()
+            return
+        self._begin_reply_tracking()
+        self._reply_text = question
+        await self._say(question)
 
     async def _on_transcription(self, frame: TranscriptionFrame) -> None:
         text = (frame.text or "").strip()
@@ -2871,24 +3033,75 @@ class ConversationBrain(FrameProcessor):
             # language/script label — see transcript_gate.assess_transcript.
             numeric_context=self._identifier_capture is not None,
         )
+        # A rejected segment may be recovered, and an accepted SHORT segment
+        # the auto-detector labelled as a different configured language than
+        # the one this caller has already established (Sarvam wrote a Tamil
+        # "ஆமாம், நான் ..." as Devanagari "आमाम नान ...") is re-transcribed in
+        # the established language. Long utterances are untouched, so a
+        # genuine switch still follows the caller.
+        #
+        # Both re-reads are a network call. The segment that is being re-read
+        # is often the very one that confirmed a barge-in (a short "Hello."
+        # over the bot's speech), and the interruption cancels the handling of
+        # the frame that caused it: the call was left with the bot's speech
+        # cut and nothing heard — silence until the no-response prompt (DEMO
+        # 2026-11-25, "hello" over the greeting and at questions). The re-read
+        # therefore runs shielded, and a cancelled handler hands the segment
+        # to a task of its own instead of dropping it.
+        # Whether a re-read applies is decided without waiting: the handler
+        # yields to the event loop only when one really runs (a segment that
+        # needs none is buffered in the same step as before).
+        plan = (
+            self._plan_unsupported_reread(text, quality, verdict) if not verdict.accepted
+            else self._plan_short_mislabel_reread(text, quality)
+        )
+        outcome = None
+        if plan is not None:
+            reread = asyncio.ensure_future(plan)
+            try:
+                outcome = await asyncio.shield(reread)
+            except asyncio.CancelledError:
+                self._finish_interrupted_segment(reread, frame, text, quality, verdict)
+                raise
+        await self._settle_transcription(frame, text, quality, verdict, outcome)
+
+    def _finish_interrupted_segment(self, reread, frame, text: str, quality, verdict) -> None:
+        """Carry a segment to the end after the interruption it confirmed
+        cancelled its own handling mid re-read."""
+        if self._closing:
+            # The call itself is ending: nothing is carried on.
+            reread.cancel()
+            return
+
+        async def finish() -> None:
+            try:
+                outcome = await reread
+            except Exception:  # noqa: BLE001 — the segment stands as heard
+                outcome = None
+            if self._closing:
+                return
+            self._recorder.add_event(
+                "stt_segment_resumed_after_interruption", text=text[:120],
+                reread=outcome is not None,
+            )
+            await self._settle_transcription(frame, text, quality, verdict, outcome)
+
+        task = asyncio.get_running_loop().create_task(finish())
+        self._detached_segment_tasks.add(task)
+        task.add_done_callback(self._detached_segment_tasks.discard)
+
+    async def _settle_transcription(self, frame, text: str, quality, verdict, outcome) -> None:
+        """The rest of :meth:`_on_transcription` once the optional re-read is
+        known: ``outcome`` is its ``(text, quality, verdict)`` or None."""
         rescued_from: str | None = None
         if not verdict.accepted:
-            rescued = await self._retranscribe_unsupported(text, quality, verdict)
-            if rescued is None:
+            if outcome is None:
                 await self._reject_segment(text, quality, verdict)
                 return
             rescued_from = base_language(quality.language)
-            text, quality, verdict = rescued
-        else:
-            # Accepted, but a SHORT segment the auto-detector labelled as a
-            # different configured language than the one this caller has
-            # already established (Sarvam wrote a Tamil "ஆமாம், நான் ..." as
-            # Devanagari "आमाम नान ..."): re-transcribe it in the established
-            # language. Long utterances are untouched, so a genuine switch
-            # still follows the caller.
-            biased = await self._retranscribe_short_mislabel(text, quality)
-            if biased is not None:
-                text, quality, verdict = biased
+            text, quality, verdict = outcome
+        elif outcome is not None:
+            text, quality, verdict = outcome
         if verdict.reason == "digit_payload" and verdict.normalized_text:
             # A high-quality digit word the auto-detector labelled as an
             # unsupported language/script (Gujarati "સાત" while an order id
@@ -2974,10 +3187,13 @@ class ConversationBrain(FrameProcessor):
             return
         # Consent revocation is equally deterministic and immediate: the
         # caller must never hear another pitch after "don't call me again".
-        if detect_do_not_call(text):
+        if detect_do_not_call(text) and self._known_do_not_call_flow() is None:
             self._append_segment(text, provenance)
             await self._begin_do_not_call(" ".join(self._pending_segments).strip())
             return
+        # A flow that declares its own stop-calling closing takes the request
+        # as an ordinary turn (routed below as call control): the caller hears
+        # that flow's authored line, and its outcome is recorded.
         if self._held_segment_guard:
             # Multi-word speech heard while the bot talks that the turn
             # controller did NOT confirm as a barge-in: hold it. It is only
@@ -3131,7 +3347,16 @@ class ConversationBrain(FrameProcessor):
             await self._schedule_finalize()
 
     async def _retranscribe_unsupported(self, text: str, quality, verdict):
+        """:meth:`_plan_unsupported_reread`, run to its result."""
+        reread = self._plan_unsupported_reread(text, quality, verdict)
+        return await reread if reread is not None else None
+
+    def _plan_unsupported_reread(self, text: str, quality, verdict):
         """Recover a caller turn the auto-detector emitted in the wrong language.
+
+        Decides WITHOUT waiting whether a re-read applies: None when it does
+        not (the common case — the segment handler then never yields), else
+        the coroutine of the re-read itself (one network call).
 
         Runs ONLY for an ``unsupported_language`` / ``unsupported_script``
         rejection, outside identifier mode, when no other segment of the same
@@ -3179,6 +3404,9 @@ class ConversationBrain(FrameProcessor):
         seconds = len(audio) / (rate * 2) if rate else 0.0
         if seconds < _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS:
             return None
+        return self._reread_unsupported(text, quality, audio, rate, seconds)
+
+    async def _reread_unsupported(self, text: str, quality, audio, rate, seconds: float):
         language, basis = self._rescue_language(text)
         self._recorder.add_event(
             "unsupported_language_retranscribe_attempted",
@@ -3313,10 +3541,21 @@ class ConversationBrain(FrameProcessor):
             return False
         if leading_affirmation(stripped) or is_short_complete_reply(stripped):
             return False
+        if _reaction_only_reply(stripped):
+            # "Hello.", "Hi", "Thanks", "Bye": understood exactly as heard.
+            return False
         return True
 
     async def _retranscribe_short_mislabel(self, text: str, quality):
+        """:meth:`_plan_short_mislabel_reread`, run to its result."""
+        reread = self._plan_short_mislabel_reread(text, quality)
+        return await reread if reread is not None else None
+
+    def _plan_short_mislabel_reread(self, text: str, quality):
         """Re-read a short, cross-labelled segment in the caller's language.
+
+        Decides WITHOUT waiting whether a re-read applies: None when it does
+        not, else the coroutine of the re-read itself (one network call).
 
         Runs only when ALL of these hold: the caller has already established
         the conversation language (``_caller_language_confirmed``); the STT
@@ -3379,6 +3618,11 @@ class ConversationBrain(FrameProcessor):
         seconds = len(audio) / (rate * 2) if rate else 0.0
         if seconds < _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS:
             return None
+        return self._reread_short_mislabel(text, quality, detected, current, audio, rate, seconds)
+
+    async def _reread_short_mislabel(
+        self, text: str, quality, detected, current: str, audio, rate, seconds: float,
+    ):
         self._recorder.add_event(
             "short_segment_retranscribe_attempted",
             detected=detected, language=current,
@@ -4998,6 +5242,7 @@ class ConversationBrain(FrameProcessor):
             return
         self._reply_marker += 1
         self._reply_marker_pushed = True
+        self._reply_cut_report = None
         if self._queuing_opening_greeting:
             self._opening_greeting["marker"] = self._reply_marker
             # _record_bot_text already resolved placeholders, voice grammar,
@@ -5073,8 +5318,20 @@ class ConversationBrain(FrameProcessor):
         self._reply_nodes = []
         self._reply_heard = False
         self._reply_tts_complete = False
+        report, self._reply_cut_report = self._reply_cut_report, None
+        if report is not None and report.marker == self._reply_cut["marker"]:
+            self._on_reply_tts_interrupted(report)
 
     def _on_reply_tts_interrupted(self, frame: ReplyTTSInterruptedFrame) -> None:
+        if self._reply_cut is None:
+            # The synthesis report travels upstream on its own path and can
+            # arrive before this processor has handled the interruption
+            # itself: it is kept for that moment (see _on_reply_interrupted).
+            # Without it a reply cut before its question was ever spoken was
+            # taken as heard, and the word that cut it ("haan ji" in the
+            # middle of the purpose line) answered the unasked question.
+            self._reply_cut_report = frame
+            return
         cut, self._reply_cut = self._reply_cut, None
         if not cut or frame.marker != cut["marker"] or not cut["nodes"]:
             return
@@ -5085,6 +5342,10 @@ class ConversationBrain(FrameProcessor):
             # Cut in its first moments: repeat the wording that was spoken.
             pending["text"] = " ".join(texts)
         if len(sentences) < 2:
+            self._recorder.add_event(
+                "reply_cut_measured", played_s=round(float(cut["played"]), 2),
+                sentences=len(sentences), texts=len(texts), heard=None,
+            )
             return                      # a one-sentence reply is heard only in full
         played = float(cut["played"]) + 0.3          # transport latency slack
         heard = 0
@@ -5095,6 +5356,13 @@ class ConversationBrain(FrameProcessor):
                 heard += 1
             else:
                 break
+        # Audit trail of what the caller had heard when they cut the reply.
+        self._recorder.add_event(
+            "reply_cut_measured", played_s=round(float(cut["played"]), 2),
+            sentences=len(sentences), texts=len(texts), heard=heard,
+            sentence_s=[round(float(seconds or 0.0), 2) for _chars, seconds in sentences],
+            ends_with_question=bool(texts and texts[-1].rstrip().endswith("?")),
+        )
         if (
             heard < len(sentences) - 1
             and len(texts) == len(sentences)
@@ -5147,19 +5415,32 @@ class ConversationBrain(FrameProcessor):
             # One repeat per reply: a caller who talks over the repeat as
             # well is answered on what they said — the call cannot loop.
             or record["nodes"] == self._unheard_repeated
-            or not (self._bare_yes_no_turn(text, signal) or self._attention_only_turn(text))
+            or not (self._bare_yes_no_turn(text, signal) or self._attention_reaction(text))
         ):
             return None
         return record
 
     @staticmethod
     def _attention_only_turn(text: str) -> bool:
-        """A contact check contains no answer to a business question.
+        """A contact check contains no answer to a business question (the
+        vocabulary every workflow has always had)."""
+        # Include Indic combining marks by tokenizing punctuation/space instead.
+        words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
+        vocabulary = {
+            "hello", "helo", "hallo", "hi", "hey", "हेलो", "हैलो", "हलो",
+            "ji", "jee", "जी", "sir", "ma'am", "madam", "mam", "सर", "मैडम",
+        }
+        attention = {"hello", "helo", "hallo", "hi", "hey", "हेलो", "हैलो", "हलो"}
+        return bool(words and len(words) <= 6 and set(words) <= vocabulary and set(words) & attention)
 
-        The word category lives in the language packs (``attention_words``):
+    def _attention_reaction(self, text: str) -> bool:
+        """The same for a question that declares answer options: there the
+        whole category counts (``attention_words`` of the language packs —
         every spelling of hello, greetings, "boliye / bataiye", listening
-        hums, with or without a yes word or a form of address."""
-        return _attention_only_reply(text)
+        hums, with or without a yes word or a form of address)."""
+        return self._attention_only_turn(text) or (
+            bool(self._pending_hub_options) and _attention_only_reply(text)
+        )
 
     def _short_barge_in_context(self, text: str) -> str | None:
         """Context for the transcript arbiter; no routing or state mutation.
@@ -5194,7 +5475,14 @@ class ConversationBrain(FrameProcessor):
         if self._hearing_probe_pending is not None and self._presence_check_only(text):
             return "attention"
         pending = self._pending_ask()
-        if self._attention_only_turn(text) and pending.question:
+        # One word may cut the bot's speech only when it is a contact check
+        # ("hello?"; at a question with answer options every spelling of it
+        # and "suniye"). The wider attention category ("boliye", a hum, a
+        # returned greeting) asks the bot to go on: it never interrupts.
+        if pending.question and (
+            self._attention_only_turn(text)
+            or (bool(self._pending_hub_options) and _contact_check_only_reply(text))
+        ):
             return "attention"
         if pending.kind not in ("yes_no", ASK_KIND_HUB) or not self._bare_yes_no_turn(text, None):
             return None
@@ -5207,11 +5495,24 @@ class ConversationBrain(FrameProcessor):
     def _closing_acknowledgement(self, text: str) -> bool:
         """Bounded, content-free farewell reactions must not reopen a flow.
 
-        The whole category, not a word list of one call: acknowledgements,
-        thanks, goodbyes, returned greetings, contact checks and hums in
-        every script and spelling (``deterministic_answers.closing_reaction``).
+        A flow that declares ``closingFollowups`` gets the whole category,
+        not a word list: acknowledgements, thanks, goodbyes, returned
+        greetings, contact checks and hums in every script and spelling
+        (``deterministic_answers.closing_reaction``). Every other flow keeps
+        the vocabulary it has always had.
         """
-        return is_filler_only(text) or closing_reaction(text)
+        if self._closing_followup_limit is not None:
+            return is_filler_only(text) or closing_reaction(text)
+        if self._attention_only_turn(text) or is_filler_only(text):
+            return True
+        words = [w for w in re.split(r"[\s.,!?।…:;]+", (text or "").casefold()) if w]
+        vocabulary = {
+            "yes", "yeah", "yep", "haan", "han", "ha", "हाँ", "हां", "ji", "jee", "जी",
+            "ok", "okay", "theek", "thik", "ठीक", "hai", "है", "thanks", "thank", "you",
+            "thankyou", "dhanyavaad", "dhanyawad", "धन्यवाद", "shukriya", "शुक्रिया",
+            "bye", "goodbye", "sir", "madam", "mam", "सर", "मैडम", "hmm", "hm", "हम्म",
+        }
+        return bool(words and len(words) <= 6 and set(words) <= vocabulary)
 
     async def _retain_completed_close(
         self, text: str, audio_started_at: float | None,
@@ -5232,6 +5533,8 @@ class ConversationBrain(FrameProcessor):
         cut, self._farewell_cut_played = self._farewell_cut_played, None
         if (
             cut is not None and farewell and not self._farewell_replayed
+            # Only for a flow that declares ``closingFollowups``.
+            and self._closing_followup_limit is not None
             # ~14 characters a second: cut before roughly 60% had played.
             and cut < 0.6 * (len(farewell) / 14.0)
         ):
@@ -5453,6 +5756,102 @@ class ConversationBrain(FrameProcessor):
         self._naturalness.set_turn_criticality(True, "compliance_route")
         await self._say(canned("dnc_ack", self._conversation_language))
         await self.push_frame(EndWorkerFrame(reason="do_not_call_request"))
+
+    def _do_not_call_flow_name(self) -> str | None:
+        """The workflow this call is in, has finished or would enter on its
+        opening, when the engine can say what that flow declares."""
+        engine = self._workflows
+        if engine is None or not hasattr(engine, "call_control_target"):
+            return None
+        entry = getattr(self._router, "affirm_entry", None)
+        return self._active_workflow or self._completed_workflow or (entry[1] if entry else None)
+
+    def _known_do_not_call_flow(self) -> str | None:
+        """:meth:`_do_not_call_flow` from what is already known, without
+        waiting: None also while the lookup has not answered yet. The segment
+        handler uses this — it must never wait there (an interruption cancels
+        a waiting handler and the caller's words with it)."""
+        name = self._do_not_call_flow_name()
+        return name if name and self._flow_dnc_targets.get(name) else None
+
+    def _start_do_not_call_lookup(self) -> None:
+        """Learn in the background, once per flow, whether it declares its
+        own stop-calling closing (call start and every flow entered)."""
+        name = self._do_not_call_flow_name()
+        if not name or name in self._flow_dnc_targets or name in self._flow_dnc_lookups:
+            return
+        self._flow_dnc_lookups.add(name)
+        try:
+            self.create_task(self._do_not_call_flow())
+        except Exception:  # noqa: BLE001 — unknown stays unknown: the platform line applies
+            self._flow_dnc_lookups.discard(name)
+
+    async def _learn_do_not_call_target(self, name: str) -> None:
+        """What the flow declares for this layer, asked once: its own
+        stop-calling closing, and whether it uses the answer contract (known
+        from the call's first second, before any workflow turn has run)."""
+        if name in self._flow_dnc_targets:
+            return
+        engine = self._workflows
+        pins = getattr(self._config, "workflow_pins", None) or None
+        target, contract = None, False
+        try:
+            if hasattr(engine, "flow_declarations"):
+                declared = await engine.flow_declarations(
+                    tenant_id=self._config.tenant_id, bot_id=self._config.bot_id,
+                    workflow_name=name, pinned_versions=pins,
+                ) or {}
+                target, contract = declared.get("doNotCallNode"), bool(declared.get("answerContract"))
+            else:
+                target = await engine.call_control_target(
+                    tenant_id=self._config.tenant_id, bot_id=self._config.bot_id,
+                    workflow_name=name, control="do_not_call", pinned_versions=pins,
+                )
+        except Exception:  # noqa: BLE001 — unknown: the platform line applies
+            target = None
+        self._flow_dnc_targets[name] = target if isinstance(target, str) and target else None
+        if contract:
+            self._flow_answer_contract = True
+
+    async def _do_not_call_flow(self) -> str | None:
+        """The workflow that answers "do not call me again" with its own
+        closing, when this call is in one, has finished one or would enter one
+        on its opening; None for every flow that declares no such closing."""
+        name = self._do_not_call_flow_name()
+        if not name:
+            return None
+        await self._learn_do_not_call_target(name)
+        return name if self._flow_dnc_targets.get(name) else None
+
+    async def _close_with_flow_do_not_call(self, text: str, started: float) -> bool:
+        """End the call on the workflow's own stop-calling closing.
+
+        The revocation is recorded exactly as on the platform path (the
+        do-not-call disposition and call state); only the spoken line and the
+        outcome are the flow's own. False when the flow declares no such
+        closing — the platform acknowledgement then applies.
+        """
+        name = await self._do_not_call_flow()
+        if name is None or self._closing:
+            return False
+        if self._completed_workflow is not None:
+            # Said after the closing line: that line's hang-up is withdrawn,
+            # the flow's stop-calling closing is spoken, then the call ends.
+            self._cancel_workflow_close("do_not_call")
+            self._workflow_farewell_active = False
+        self._dnc = True
+        self._recorder.disposition = "do_not_call"
+        self._recorder.call_state = {
+            **(self._recorder.call_state or {}),
+            "last_disposition": "do_not_call",
+        }
+        self._recorder.flush_event_soon("call_control", action="do_not_call", closing="workflow")
+        await self._handle_workflow(
+            RouteDecision(kind=RouteKind.WORKFLOW, action=name, confidence=1.0,
+                          reason="do_not_call"),
+            text, started, signal_authoritative=True, call_control="do_not_call",
+        )
+        return True
 
     async def _close_call_completed(self, reason: str = "") -> None:
         """Bot-initiated clean close: the completion evaluator approved it.
@@ -6480,6 +6879,8 @@ class ConversationBrain(FrameProcessor):
                 silence_task.cancel()
         await self._stop_backchannel_monitor()
         self._end_backchannel_window()
+        for task in list(self._detached_segment_tasks):
+            task.cancel()
         await self._cancel_finalize()
         self._discard_speculation("cleanup")
         self._discard_extraction_ahead()
@@ -6702,7 +7103,10 @@ class ConversationBrain(FrameProcessor):
         """
         opening = self._opening_greeting
         if (
-            not opening or opening["heard"] or opening["recovered"]
+            # Only for a flow that uses the answer contract (learnt in the
+            # call's first second); every other bot keeps the opening it had.
+            not self._flow_answer_contract
+            or not opening or opening["heard"] or opening["recovered"]
             or not opening["interrupted"]
         ):
             return False
@@ -7476,7 +7880,9 @@ class ConversationBrain(FrameProcessor):
 
         try:
             if decision.kind == RouteKind.CALL_CONTROL:
-                await self._handle_call_control(decision)
+                if not (decision.action == "do_not_call"
+                        and await self._close_with_flow_do_not_call(text, started)):
+                    await self._handle_call_control(decision)
             elif decision.kind == RouteKind.HANDOFF:
                 await self._handle_handoff(decision)
             elif signal == "hold" and decision.kind in (
@@ -8034,13 +8440,25 @@ class ConversationBrain(FrameProcessor):
                 return reaction
             if (
                 self._pending_hub_plain_yes == "explicit"
-                and yes_no_polarity(text) is not None
-                and yes_no_polarity(text, agreement=False) is None
+                and yes_no_polarity(text, with_thanks=True) is not None
+                and yes_no_polarity(text, agreement=False, with_thanks=True) is None
             ):
                 # "ठीक है" / "ok" at a question about a state ("is there
                 # still a problem?") may describe that state: the decision
                 # reads it against the hub's options, no word list does.
                 return None
+            # A plain yes / no of any length ("थैंक यू मैडम, ठीक है।") is that
+            # answer: it is never handed to the decision, which could ask the
+            # caller to clarify a yes.
+            hub_edges = self._pending_hub_edges
+            if hub_edges is None:
+                hub_edges = [{"tokens": [], "signals": [s]}
+                             for s in sorted(self._pending_hub_signals or ())]
+            plain = resolve_plain_yes_no(
+                text, hub_edges, agreement=self._pending_hub_plain_yes != "explicit",
+            )
+            if plain is not None:
+                return plain
         if self._pending_ask_shape is None and (
             self._pending_hub_edges is not None or self._pending_hub_signals is not None
         ):
@@ -8049,7 +8467,11 @@ class ConversationBrain(FrameProcessor):
                 # An engine reporting only the hub's signals: edges with no
                 # tokens, so only a yes / no can resolve.
                 edges = [{"tokens": [], "signals": [s]} for s in sorted(self._pending_hub_signals)]
-            return resolve_short_answer(text, ASK_KIND_HUB, edges=edges)
+            return resolve_short_answer(
+                text, ASK_KIND_HUB, edges=edges,
+                # "ठीक है, थैंक यू" is a yes where the hub declares answer options.
+                with_thanks=bool(self._pending_hub_options),
+            )
         return resolve_short_answer(
             text, pending.kind, options=pending.options, question=pending.question,
             synonyms=(self._pending_ask_shape or {}).get("synonyms"),
@@ -9037,6 +9459,7 @@ class ConversationBrain(FrameProcessor):
         context_question_needs_clarification: bool = False,
         answer_option: str | None = None,
         answer_option_judged: bool = False,
+        call_control: str | None = None,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
         if (self._pending_context_clarification is not None
@@ -9084,6 +9507,7 @@ class ConversationBrain(FrameProcessor):
             signal_authoritative=signal_authoritative,
             **({"answer_option": answer_option} if answer_option else {}),
             **({"answer_option_judged": True} if answer_option_judged else {}),
+            **({"call_control": call_control} if call_control else {}),
             **({"identity_resolution": identity_resolution} if identity_resolution is not None else {}),
             session_id=self._recorder.session_id,
             tenant_id=self._config.tenant_id,
@@ -9106,6 +9530,18 @@ class ConversationBrain(FrameProcessor):
             **({"extraction_ahead": extraction_ahead} if extraction_ahead is not None else {}),
         )
         self._open_turn_workflow_committed = True
+        self._open_turn_workflow_side_effects = bool(result.get("turnSideEffects"))
+        if result.get("closingFollowups") is not None or result.get("awaitingOptions"):
+            self._flow_answer_contract = True
+        if workflow_name not in self._flow_dnc_targets and workflow_name not in self._flow_dnc_lookups:
+            # A flow entered later than the opening: learn what it declares.
+            engine = self._workflows
+            if engine is not None and hasattr(engine, "call_control_target"):
+                self._flow_dnc_lookups.add(workflow_name)
+                try:
+                    self.create_task(self._learn_do_not_call_target(workflow_name))
+                except Exception:  # noqa: BLE001 — unknown: the platform line applies
+                    self._flow_dnc_lookups.discard(workflow_name)
         accepted_identity = result.get("identityConfirmation")
         if (accepted_identity is None and identity_resolution in ("confirmed", "denied")
                 and not result.get("identityGateEncountered")
@@ -9204,7 +9640,10 @@ class ConversationBrain(FrameProcessor):
             self._terminal_turn = {
                 "workflow": workflow_name,
                 "question": self._open_turn_pending_question,
-                "options": list(self._open_turn_pending_hub_options or []),
+                # A stop-calling request answered no question: nothing the
+                # caller says after that closing re-enters the flow.
+                "options": ([] if result.get("callControlHandled")
+                            else list(self._open_turn_pending_hub_options or [])),
                 "plain_yes": self._open_turn_pending_hub_plain_yes,
                 "signals": self._open_turn_pending_hub_signals,
                 "edges": self._open_turn_pending_hub_edges,
@@ -11032,6 +11471,7 @@ class ConversationBrain(FrameProcessor):
         # prefix and routinely overran its budget. Background, once per call,
         # never awaited by the pipeline (voice_runtime.brain._run_decision_warmup).
         self._start_decision_warmup()
+        self._start_do_not_call_lookup()
         if self._previous_memory is not None and await self._speak_memory_greeting():
             return
         self._naturalness.set_turn_criticality(

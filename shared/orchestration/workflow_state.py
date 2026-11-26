@@ -81,6 +81,12 @@ class WorkflowState(TypedDict, total=False):
     # api or handover node. Both are per-turn and overwritten every turn.
     answered_option: str | None
     turn_side_effects: bool
+    # Input-only: a call-control request ("do_not_call") the delivery layer
+    # hands to a flow that declares its own closing for it; cleared every
+    # turn. ``call_control_handled`` is the turn's answer: the request when
+    # the flow took it, None otherwise.
+    call_control: str | None
+    call_control_handled: str | None
     # Validated CURRENT identity reply, consumed only by an ask explicitly
     # authored with confirmationRole=identity and confirmationValues. Never
     # retained as authority for the next utterance.

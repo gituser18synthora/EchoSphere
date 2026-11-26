@@ -84,7 +84,9 @@ _POLITE_WORDS = frozenset({"ji", "jee", "जी"})
 _COURTESY_WORDS = frozenset({
     "sir", "madam", "mam", "maam", "ma'am", "सर", "मैडम", "मैम", "मेम",
 }) | _lang.union("courtesy_words")
-_NEUTRAL_WORDS = _lang.union("fillers") | _COURTESY_WORDS | _POLITE_WORDS
+_NEUTRAL_WORDS = (
+    _lang.union("fillers") | _COURTESY_WORDS | _POLITE_WORDS | _lang.union("lead_in_words")
+)
 # "bilkul" strengthens whichever answer it stands next to: "बिल्कुल" is a yes,
 # "बिल्कुल नहीं" a no.
 _INTENSIFIER_WORDS = _lang.union("intensifier_words")
@@ -95,6 +97,7 @@ _COPULA_WORDS = frozenset({"hai", "hain", "है", "हैं"})
 # "hmm", "haan boliye"), thanks and a goodbye never answer a business
 # question: no permission, no refusal, no option.
 _ATTENTION_WORDS = _lang.union("attention_words")
+_CONTACT_WORDS = _lang.union("contact_words")
 _THANKS_WORDS = _lang.union("thanks_words")
 _FAREWELL_WORDS = _lang.union("farewell_words")
 _REACTION_MAX_WORDS = 6
@@ -102,7 +105,8 @@ _REACTION_MAX_WORDS = 6
 _REACTION_PHRASES = (
     (re.compile(
         r"\bgood\s*(?:morning|afternoon|evening)\b|गुड\s*(?:मॉर्निंग|मार्निंग|इवनिंग|ईवनिंग|आफ्टरनून)",
-        re.I), " hello "),
+        # a returned greeting: attention, but not a contact check
+        re.I), " namaste "),
     (re.compile(
         r"\bthank\s*(?:you|u)\b(?:\s+(?:so|very)\s+much)?|\bthanks\s+a\s+lot\b"
         r"|थैंक\s*(?:यू|यु|ऊ)(?:\s+(?:सो|वेरी)\s+मच)?|बहुत[\s-]*बहुत\s+(?=धन्यवाद|शुक्रिया)|बहुत\s+(?=धन्यवाद|शुक्रिया)",
@@ -143,17 +147,27 @@ def _only_neutral(tokens: list[str], extra: frozenset[str] = frozenset()) -> boo
     return all(t in _NEUTRAL_WORDS or t in extra for t in tokens)
 
 
-def yes_no_polarity(text: str, *, agreement: bool = True) -> str | None:
+def yes_no_polarity(
+    text: str, *, agreement: bool = True, with_thanks: bool = False,
+) -> str | None:
     """"yes" / "no" when every word is a yes/no, filler or courtesy word and
     only one polarity is present; None otherwise.
 
     ``agreement=False`` is for a question that asks about a STATE rather than
     proposing something: "ठीक है" / "सही है" / "ok" / "fine" there may describe
     the state ("is there still a problem?" — "ठीक है" means it works), so a
-    reply containing such a word is not read as a plain yes."""
+    reply containing such a word is not read as a plain yes.
+
+    ``with_thanks=True`` is for a question that declares answer options:
+    "ठीक है, थैंक यू" is then still a yes and "no, thank you" still a no.
+    Elsewhere thanks or a goodbye beside the word keeps the reply out of this
+    deterministic reading ("okay, thank you" after "anything else?" declines),
+    exactly as before."""
     yes = no = polite = intensifier = thanks = False
     for token in _reaction_tokens(text):
         if not agreement and token in _AGREEMENT_WORDS:
+            return None
+        if not with_thanks and (token in _THANKS_WORDS or token in _FAREWELL_WORDS):
             return None
         if token in _NO_WORDS:
             no = True
@@ -212,6 +226,14 @@ def attention_only(text: str) -> bool:
     return any(t in _ATTENTION_WORDS for t in tokens) or "?" in (text or "")
 
 
+def contact_check_only(text: str) -> bool:
+    """The part of :func:`attention_only` that may cut the bot's speech with a
+    single word: "hello?", "हेलो हेलो", "सुनिए" — the caller cannot hear the
+    bot or wants the floor. "बोलिए" / "बताइए", a hum and a returned greeting
+    invite the bot to go on; they are no reason to stop it mid-sentence."""
+    return attention_only(text) and any(t in _CONTACT_WORDS for t in _reaction_tokens(text))
+
+
 def thanks_only(text: str) -> bool:
     """Thanks or a goodbye with no answer in it: "thank you", "धन्यवाद",
     "bye". With a yes or no word beside it the reply is that answer said
@@ -223,7 +245,7 @@ def thanks_only(text: str) -> bool:
     return (
         all(t in core or t in _NEUTRAL_WORDS for t in tokens)
         and any(t in core for t in tokens)
-        and yes_no_polarity(text) is None
+        and yes_no_polarity(text, with_thanks=True) is None
     )
 
 
@@ -309,12 +331,13 @@ def _phrase_has_token(phrase: str, token: str) -> bool:
     return False
 
 
-def _hub(text: str, edges: list[dict]) -> DeterministicAnswer | None:
+def _hub(text: str, edges: list[dict], *, with_thanks: bool = False) -> DeterministicAnswer | None:
     """A reply at an intent hub: a plain yes / no when an edge carries that
     signal, else the one edge whose authored token the reply IS — the engine
     then takes that edge on the literal match (signal None), as it would
-    after a decision that named no signal."""
-    polarity = yes_no_polarity(text)
+    after a decision that named no signal. ``with_thanks`` is the reading of
+    a hub that declares answer options (see :func:`yes_no_polarity`)."""
+    polarity = yes_no_polarity(text, with_thanks=with_thanks)
     if polarity is not None:
         wanted = _YES_EDGE_SIGNALS if polarity == "yes" else _NO_EDGE_SIGNALS
         if any(wanted & set(e.get("signals") or ()) for e in edges):
@@ -342,6 +365,31 @@ def _hub(text: str, edges: list[dict]) -> DeterministicAnswer | None:
     if others:
         return None
     return DeterministicAnswer(ASK_KIND_HUB, RESOLVER_EDGE, said)
+
+
+def resolve_plain_yes_no(
+    text: str, edges: list[dict], *, agreement: bool = True,
+) -> DeterministicAnswer | None:
+    """A reply of ANY length made of nothing but yes / no, courtesy, filler
+    and thanks words ("थैंक यू मैडम, ठीक है।", "जी, जी, बिल्कुल ठीक है"), at a
+    hub that declares answer options and has an edge for that answer.
+
+    :func:`resolve_short_answer` stops at ``MAX_WORDS``; past it such a reply
+    went to the decision model, which now and then asked the caller to
+    clarify a plain yes. ``agreement=False`` is a question about a state
+    (see :func:`yes_no_polarity`)."""
+    stripped = (text or "").strip()
+    if not stripped or "?" in stripped or looks_like_question(stripped):
+        return None
+    polarity = yes_no_polarity(stripped, agreement=agreement, with_thanks=True)
+    if polarity is None:
+        return None
+    wanted = _YES_EDGE_SIGNALS if polarity == "yes" else _NO_EDGE_SIGNALS
+    if not any(wanted & set(e.get("signals") or ()) for e in edges or ()):
+        return None
+    return DeterministicAnswer(
+        ASK_KIND_HUB, RESOLVER_YES_NO, polarity, SIGNAL_YES if polarity == "yes" else SIGNAL_NO,
+    )
 
 
 def _number(text: str) -> str | None:
@@ -399,6 +447,7 @@ def resolve_short_answer(
     timezone: str | None = None,
     synonyms: dict[str, list[str]] | None = None,
     edges: list[dict] | None = None,
+    with_thanks: bool = False,
 ) -> DeterministicAnswer | None:
     """The deterministic reading of ``text`` as the answer to a pending ask of
     ``kind``, or None when the reply needs the decision LLM. ``synonyms`` are
@@ -423,7 +472,7 @@ def resolve_short_answer(
             SIGNAL_YES if polarity == "yes" else SIGNAL_NO,
         )
     if kind == ASK_KIND_HUB:
-        return _hub(stripped, list(edges or ()))
+        return _hub(stripped, list(edges or ()), with_thanks=with_thanks)
     if yes_no_polarity(stripped) == "no":
         # "नहीं" at a choice / number / date ask refuses it; the model reads
         # what the caller means instead.
