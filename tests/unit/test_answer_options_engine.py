@@ -229,8 +229,38 @@ def test_explicit_yes_words_are_a_yes_at_every_option_hub(text):
 
 
 def test_an_authored_phrase_containing_a_yes_word_is_not_a_generic_token():
-    from shared.orchestration.workflow_engine import _bare_yes_no_token
+    from shared.orchestration.deterministic_answers import bare_yes_no_token as _bare_yes_no_token
     for token in ("नहीं", "ठीक है", "जी हाँ", "haan ji", "no", "जी", "ok"):
         assert _bare_yes_no_token(token), token
     for token in ("अब ठीक है", "कोई विजिट नहीं", "पैसे नहीं", "ho gaya", "theek ho gaya", "service chahiye"):
         assert not _bare_yes_no_token(token), token
+
+
+def test_a_short_reply_the_decision_could_not_place_stays_with_the_authored_labels(graph):
+    plain = build_definition_graph(definition(captures=False), MemorySaver())
+    # two words, an authored content token of the yes edge: the label reads it
+    short = turn(plain, "service चाहिए", judged=True)
+    assert outcome(short) == "yes"
+    # a bare yes/no word alone in a short remark still decides nothing
+    assert outcome(turn(plain, "पता नहीं", judged=True)) is None
+    # the same words inside a long remark are the decision's to judge
+    long = turn(plain, "देखिए service चाहिए या नहीं ये तो घर पर पूछ कर बताऊँगा", judged=True)
+    assert outcome(long) is None and long["awaiting"] == "hub" and long["off_script"]
+    # a short question or "please repeat" is never handed to the labels or captures
+    for signal in ("question", "clarify", "hold", "complaint"):
+        result = turn(graph, "फिर से बोलिए", signal=signal, judged=True)
+        assert result["awaiting"] == "hub" and result["off_script"]
+
+
+def test_an_option_marked_not_on_question_is_never_taken_on_a_question():
+    spec = definition()
+    hub = next(n for n in spec["nodes"] if n["id"] == "hub")
+    hub["config"]["answerOptions"] = [*OPTIONS[:3], {
+        "id": "stop", "meaning": "asks not to be called again", "to": "m_stop", "notOnQuestion": True}]
+    graph = build_definition_graph(spec, MemorySaver())
+    asked = turn(graph, "क्या बार-बार आप लोग कॉल कर रहे हो? क्या कर रहे हो?", signal="complaint", option="stop", judged=True)
+    assert outcome(asked) is None and asked["awaiting"] == "hub" and asked["off_script"]
+    told = turn(graph, "बार-बार फोन मत करो यार।", signal="complaint", option="stop", judged=True)
+    assert outcome(told) == "stop"
+    # an ordinary option is still taken on a question-shaped reply
+    assert outcome(turn(graph, "बाद में करवा लूँ क्या?", option="later", judged=True)) == "later"

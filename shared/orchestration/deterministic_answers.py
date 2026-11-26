@@ -89,6 +89,8 @@ _NEUTRAL_WORDS = _lang.union("fillers") | _COURTESY_WORDS | _POLITE_WORDS
 # "बिल्कुल नहीं" a no.
 _INTENSIFIER_WORDS = _lang.union("intensifier_words")
 _AGREEMENT_WORDS = _lang.union("agreement_words")
+# "है" after a yes word ("ठीक है", "सही है") adds nothing to it.
+_COPULA_WORDS = frozenset({"hai", "hain", "है", "हैं"})
 # Replies that are a reaction, not an answer. A contact check ("hello",
 # "hmm", "haan boliye"), thanks and a goodbye never answer a business
 # question: no permission, no refusal, no option.
@@ -175,6 +177,18 @@ def yes_no_polarity(text: str, *, agreement: bool = True) -> str | None:
     # The courtesy "जी" alone is a yes; beside thanks or a goodbye it is only
     # the polite form of that ("जी, धन्यवाद").
     return "yes" if polite and not thanks else None
+
+
+def bare_yes_no_token(token: str) -> bool:
+    """An authored edge token that is nothing but yes/no words ("नहीं", "ठीक
+    है", "जी हाँ"). A phrase that merely contains one ("अब ठीक है", "कोई विजिट
+    नहीं", "पैसे नहीं") is a content token: it keeps deciding where a bare
+    yes/no word inside a longer reply does not."""
+    words = _tokens(token)
+    if not words or len(token or "") < 3:
+        return True
+    plain = _YES_WORDS | _NO_WORDS | _POLITE_WORDS | _COURTESY_WORDS | _COPULA_WORDS
+    return all(word in plain for word in words)
 
 
 def _reaction_tokens(text: str) -> list[str]:

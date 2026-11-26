@@ -37,7 +37,9 @@ from shared.orchestration.response_modes import (
     resolve_response_must_include,
 )
 from shared.orchestration.router import classify_user_signal, looks_like_question
-from shared.orchestration.deterministic_answers import attention_only, thanks_only, yes_no_polarity
+from shared.orchestration.deterministic_answers import (
+    attention_only, bare_yes_no_token as _bare_yes_no_token, thanks_only, yes_no_polarity,
+)
 from shared.orchestration.value_readback import configured_readback, retain_readback_values
 from shared.orchestration.behavior import WorkflowBehavior, resolve_behavior
 from shared.orchestration import lang as _lang
@@ -362,6 +364,9 @@ _MAX_UNANSWERED_OPTION_TURNS = 2
 # overrides it: a clarification hub that is already the second wording of a
 # question declares 0.
 _DEFAULT_OPTION_MISSES = 1
+# Replies up to this many words keep the authored labels as their reader when
+# the decision chose no option.
+_SHORT_REPLY_WORDS = 3
 
 
 def _option_misses_allowed(node: dict | None) -> int:
@@ -393,6 +398,10 @@ def _answer_options(node: dict | None, node_ids) -> dict[str, dict]:
         options[option_id] = {
             "id": option_id, "meaning": meaning[:_MAX_OPTION_MEANING_CHARS],
             "to": target, "signal": signal if signal in _OPTION_SIGNALS else None,
+            # ``notOnQuestion``: never taken on a reply that is itself a
+            # question ("why do you keep calling?" asks; it does not tell the
+            # bot to stop). The question is answered and the hub keeps waiting.
+            "not_on_question": entry.get("notOnQuestion") is True,
         }
     return options
 
@@ -405,20 +414,6 @@ def _awaiting_plain_yes(definition: dict | None, node: dict | None) -> str | Non
     if _awaiting_options(definition, node) is None:
         return None
     return "agreement" if _node_config(node or {}).get("answerAgreementWords") is True else "explicit"
-
-
-_BARE_ANSWER_WORDS = (
-    _lang.union("bare_yes") | _lang.union("bare_no")
-    | frozenset({"ji", "jee", "जी", "hai", "hain", "है", "हैं", "sir", "madam", "mam", "सर", "मैडम", "मैम"})
-)
-
-
-def _bare_yes_no_token(token: str) -> bool:
-    """An edge token that is nothing but yes/no words ("नहीं", "ठीक है", "जी
-    हाँ"). An authored phrase that merely contains one ("अब ठीक है", "कोई
-    विजिट नहीं", "पैसे नहीं") is a content token and keeps deciding."""
-    words = [w for w in re.split(r"[\s,.;:!?।]+", (token or "").lower()) if w]
-    return not words or len(token) < 3 or all(w in _BARE_ANSWER_WORDS for w in words)
 
 
 def _closing_followups(definition: dict | None) -> int | None:
@@ -1667,7 +1662,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         else:
                             chosen, why = None, "reaction"
                             reaction_reply = _reask_text(node, lang)
-                    elif requested in options:
+                    elif requested in options and not (
+                        options[requested]["not_on_question"]
+                        and ("?" in text or looks_like_question(text))
+                    ):
                         option_pick, why = options[requested], "option"
                     elif polarity is not None:
                         wanted = "affirm" if polarity == "yes" else "refusal"
@@ -1676,11 +1674,17 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         if option_pick is not None:
                             why = "option_signal"
                     if (not reaction and option_pick is None
-                            and state.get("option_judged") is True):
+                            and state.get("option_judged") is True
+                            and (signal in ("question", "clarify", "hold", "complaint")
+                                 or len(text.split()) > _SHORT_REPLY_WORDS)):
                         # The decision read the whole reply against every
                         # option and found none: the caller has not answered
                         # yet (a question, "please repeat", a remark). No
                         # label or capture may guess an answer from its words.
+                        # A reply of a word or two stays with the authored
+                        # labels: they were written for exactly those ("हो
+                        # गया", "आया था"), and a bare yes/no word alone in
+                        # them is still ignored below.
                         chosen, why = None, "no_option"
                     answer_hub = awaiting
                     if option_pick is not None:

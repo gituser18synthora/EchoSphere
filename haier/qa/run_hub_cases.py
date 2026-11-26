@@ -113,6 +113,9 @@ async def run_case(config, definition, payload: dict, case: dict, decision_timeo
         brain._pending_hub_edges = peek.get("awaitingEdges")
         if hasattr(brain, "_pending_hub_options"):
             brain._pending_hub_options = peek.get("awaitingOptions") or None
+        if hasattr(brain, "_pending_hub_plain_yes"):
+            brain._pending_hub_plain_yes = (
+                peek.get("awaitingPlainYes") if brain._pending_hub_options else None)
         brain._pending_exact_ahead = bool(peek.get("awaitingExactAhead"))
         brain._last_bot_reply = spoken
         brain._history.append({"role": "user", "content": IDENTITY_YES})

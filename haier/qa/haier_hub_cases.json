@@ -1287,7 +1287,12 @@
    "expect": {
     "to": [
      "n_v2_completed_check",
-     "n_reason_unit_ok_q"
+     "n_reason_unit_ok_q",
+     "(stay)",
+     "(no workflow turn)"
+    ],
+    "not_to": [
+     "n_apologize_no_visit"
     ]
    },
    "source_calls": [
@@ -2587,6 +2592,145 @@
    "expect": {
     "to": [
      "n_rtp_warn_q"
+    ]
+   }
+  },
+  {
+   "id": "FACT-N01",
+   "hub": "n_intro_unit_ok",
+   "say": "सही है।",
+   "category": "contact-new",
+   "expect": {
+    "to": [
+     "n_reason_unit_ok_q"
+    ]
+   }
+  },
+  {
+   "id": "FACT-N02",
+   "hub": "n_intro_refused_visit",
+   "say": "Right.",
+   "category": "contact-new",
+   "reason": "customer_refused_visit",
+   "expect": {
+    "to": [
+     "n_reason_refused_q"
+    ]
+   }
+  },
+  {
+   "id": "STATE-N06",
+   "hub": "n_reason_ecom_q",
+   "say": "ठीक था।",
+   "category": "status-question-new",
+   "reason": "ecom_damaged_delivery",
+   "expect": {
+    "not_to": [
+     "n_ecom_cancel_info"
+    ]
+   }
+  },
+  {
+   "id": "REG-06",
+   "hub": "n_reason_refused_pay_q",
+   "say": "हाँ, पेमेंट नहीं किया था।",
+   "category": "qa-suite-regression",
+   "reason": "refused_to_pay",
+   "expect": {
+    "to": [
+     "n_rtp_warn_q"
+    ]
+   }
+  },
+  {
+   "id": "REG-07",
+   "hub": "n_reason_delivered_q",
+   "say": "हो गया।",
+   "category": "qa-suite-regression",
+   "reason": "product_not_delivered",
+   "expect": {
+    "to": [
+     "n_v2_delivery_check"
+    ]
+   }
+  },
+  {
+   "id": "REG-08",
+   "hub": "n_reason_refused_pay_q",
+   "say": "हाँ, क्योंकि मेरा प्रोडक्ट वारंटी में है और वो एक्स्ट्रा चार्ज मांग रहे थे।",
+   "category": "qa-suite-regression",
+   "reason": "refused_to_pay",
+   "expect": {
+    "to": [
+     "m_warranty_claimed"
+    ]
+   }
+  },
+  {
+   "id": "REG-09",
+   "hub": "n_intro_not_delivered",
+   "say": "आया था।",
+   "category": "qa-suite-regression",
+   "reason": "product_not_delivered",
+   "expect": {
+    "to": [
+     "n_reason_delivered_q"
+    ]
+   }
+  },
+  {
+   "id": "REG-10",
+   "hub": "n_reason_delivered_q",
+   "say": "नहीं हुआ।",
+   "category": "qa-suite-regression",
+   "reason": "product_not_delivered",
+   "expect": {
+    "to": [
+     "m_n_end_not_delivered"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N25",
+   "hub": "n_haier_audit_redispatch_confirm",
+   "say": "कोई दिक्कत नहीं, दिक्कत नहीं थी उसमें। वो बस बता के रहे कि ऐसे होता है। ठीक है, मैं करूँगा।",
+   "category": "permission-new",
+   "expect": {
+    "not_to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N26",
+   "hub": "n_redispatch",
+   "say": "नहीं मैम, ठीक हो गई। अब मैकेनिक आए थे।",
+   "category": "permission-new",
+   "expect": {
+    "not_to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N27",
+   "hub": "n_redispatch",
+   "say": "अब तो चल रहा है, कोई प्रॉब्लम नहीं है।",
+   "category": "permission-new",
+   "expect": {
+    "not_to": [
+     "m_n_end_redispatch_thanks"
+    ]
+   }
+  },
+  {
+   "id": "PERM-N28",
+   "hub": "n_redispatch",
+   "say": "हाँ ठीक है, भेज दो किसी को।",
+   "category": "permission-new",
+   "expect": {
+    "to": [
+     "m_n_end_redispatch_thanks"
     ]
    }
   }

@@ -219,6 +219,11 @@ def test_stop_calling_is_offered_wherever_the_hub_could_already_end_that_way(rep
         result = replay(repaired, hub, "आप कॉल ही मत करो", option="stop_calling", judged=True)
         assert result["slots"]["outcome"] == "repeat_calls_noted"
     assert "stop_calling" not in [option["id"] for option in hubs["n_resolved_how_q"]]
+    stop = next(option for option in hubs["n_service_need"] if option["id"] == "stop_calling")
+    assert stop["notOnQuestion"] is True
+    asked = replay(repaired, "n_service_need", "क्या बार-बार आप लोग कॉल कर रहे हो?", "complaint",
+                   option="stop_calling", judged=True)
+    assert asked["awaiting"] == "n_service_need" and asked["slots"].get("outcome") is None
 
 
 def test_the_authored_tables_are_consistent():
@@ -234,15 +239,32 @@ def test_the_authored_tables_are_consistent():
         assert not plain & {option_id for option_id, _target, _meaning in options}
 
 
-def test_theek_hai_is_agreement_at_a_proposal_and_not_at_a_status_question(repaired):
+def test_theek_hai_is_a_yes_except_where_it_may_describe_a_state():
+    from haier.setup.haier_answer_options_repair import _STATE_HUBS
+    assert "n_reason_unit_ok_q" in _STATE_HUBS and "n_redispatch" not in _STATE_HUBS
+    definition = fixture()
+    question = "क्या आपके product में अभी भी कोई problem है?"
+    definition["nodes"].append({"id": "n_reason_unit_ok_q", "kind": "intent", "config": {
+        "prompt": question, "textByLanguage": {"hi": question}, "elseIsAnswer": False}})
+    definition["nodes"].append({"id": "n_unit_ok_pending_apology", "kind": "message", "config": {"text": "sorry"}})
+    definition["edges"] += [
+        {"id": "u1", "from": "n_reason_unit_ok_q", "to": "n_unit_ok_pending_apology", "label": "yes/haan/हाँ/ठीक"},
+        {"id": "u2", "from": "n_reason_unit_ok_q", "to": "n_resolved_how_q", "label": "no/nahi/नहीं/अब ठीक है"},
+        {"id": "u3", "from": "n_reason_unit_ok_q", "to": "m_n_v2_end_unverified", "label": "else"},
+        {"id": "u4", "from": "n_unit_ok_pending_apology", "to": "n_redispatch"},
+    ]
+    repaired = apply_answer_options_repair(definition)
     nodes = {n["id"]: n for n in repaired["nodes"]}
     assert nodes["n_redispatch"]["config"]["answerAgreementWords"] is True
-    assert nodes["n_haier_audit_redispatch_confirm"]["config"]["answerAgreementWords"] is True
-    assert "answerAgreementWords" not in nodes["n_service_need"]["config"]
-    # Read by the decision there (the brain skips its yes/no lexicon): with no
-    # option chosen the question stays open instead of becoming a yes.
-    status = replay(repaired, "n_service_need", "ठीक है।", None, judged=True)
-    assert status["awaiting"] == "n_service_need" and status["slots"].get("outcome") is None
-    assert replay(repaired, "n_service_need", "हाँ जी।", "affirm")["answered_option"] == "yes"
+    assert nodes["n_service_need"]["config"]["answerAgreementWords"] is True
+    assert "answerAgreementWords" not in nodes["n_reason_unit_ok_q"]["config"]
+    # the decision reads it there: with no option chosen the question stays open
+    status = replay(repaired, "n_reason_unit_ok_q", "ठीक है।", None, judged=True)
+    assert status["awaiting"] == "n_reason_unit_ok_q"
+    assert "n_unit_ok_pending_apology" not in status["trace"]
+    assert "n_unit_ok_pending_apology" in replay(repaired, "n_reason_unit_ok_q", "हाँ जी।", "affirm")["trace"]
+    # an authored phrase of the "no problem" edge still decides when nothing was judged
+    assert "n_resolved_how_q" in replay(repaired, "n_reason_unit_ok_q", "नहीं, अब ठीक है।")["trace"]
+    assert replay(repaired, "n_service_need", "सही है।", "affirm")["answered_option"] == "yes"
     start = next(n for n in repaired["nodes"] if n["kind"] == "start")
     assert start["config"]["closingFollowups"] == 2

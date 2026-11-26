@@ -154,8 +154,10 @@ _SERVICE_NEED = (
 )
 _PERMISSION = (
     "They agree that the technician-visit request be forwarded (yes, okay, go ahead, do it), with or without "
-    "a preferred day or an extra request such as a different technician",
-    "They do not want the request forwarded or do not want a technician visit",
+    "a preferred day or an extra request such as a different technician. Saying that the product works now "
+    "or has no problem is NOT agreement",
+    "They do not want the request forwarded or do not want a technician visit, including because the product "
+    "works now or there is no problem any more",
 )
 _PAY = (
     "They are ready or agree to pay the service charges",
@@ -212,8 +214,9 @@ _YES_NO_MEANINGS: dict[str, tuple[str, str]] = {
         "The product was not damaged when it was delivered",
     ),
     "n_reason_refused_pay_q": (
-        "They had declined to pay at the time of the technician's visit, for whatever reason "
-        "(too expensive, could not afford it, should have been free)",
+        "They did not pay or declined to pay at the technician's visit (for example it was too expensive or "
+        "they could not afford it). When their reason is that the product is under warranty or should be "
+        "free, the answer is warranty",
         "They had not refused to pay",
     ),
     "n_reason_unit_ok_q": (
@@ -347,9 +350,10 @@ _TOPIC_OPTIONS: tuple[tuple[str, str, str], ...] = (
      "They want it only after a longer wait: next week or later, after some days, weeks or months. "
      "A day within the next few days is NOT this"),
     ("warranty", "m_warranty_claimed",
-     "They say the product is under warranty or AMC, or that the service should be free, as the reason not to pay"),
+     "They say the product is under warranty or AMC, or that the service should be free. This includes asking "
+     "why they should pay when it is under warranty"),
     ("charges_question", "n_charges_info_q",
-     "They ask what the charges are, how much must be paid, or why charges apply"),
+     "They ask what the charges are or how much must be paid (the amount), without claiming warranty"),
     ("paid", "n_v2_paid_status_check",
      "They say they have already paid, or that the technician already took the money, whether or not the "
      "work was also done"),
@@ -393,19 +397,27 @@ _TOPIC_EXCLUDED: dict[str, tuple[str, ...]] = {
     "after_some_time": ("n_v2_future_when", "n_future_confirm"),
     "installation_case": ("n_v2_no_response_status",),
 }
+# Never taken on a reply that is itself a question: "kya baar-baar call kar rahe
+# ho?" is answered with an apology and the question is asked again; only a
+# statement or a request ("call mat karo") ends the call on this closing.
+_NOT_ON_QUESTION = ("stop_calling",)
+
 # Only a question about what happened at the visit may hear "nobody came":
 # after the service question it would loop back into the same apology.
 _TOPIC_ONLY_AT_PREFIX = {"no_visit_happened": ("n_reason_", "n_haier_bill_state_")}
 
-# Questions that PROPOSE something. There "theek hai" / "ok" / "sahi hai" is
-# agreement (the user's rule of 2026-11-25 for the permission question). At
-# every other question such a word may describe a state ("does it still have a
-# problem?" — "theek hai" means it works) and the decision reads the reply.
-_PROPOSAL_HUBS = (
-    "n_redispatch", "n_haier_audit_redispatch_confirm", "n_end_bill_dealer",
-    "n_warranty_claim_q", "n_warranty_claim_q_clarify",
-    "n_bill_charge_q", "n_bill_charge_q_clarify", "n_rtp_warn_q", "n_charges_info_q",
-    "n_future_confirm",
+# Questions about a STATE where "theek hai" / "sahi hai" / "ok" / "fine" may
+# describe that state and then means the opposite of yes: "does it still have a
+# problem?" - "theek hai" (it works); "is any work still pending?" - "sab theek
+# hai"; "was it delivered damaged?" - "theek tha". There only an explicit yes
+# (haan / ji / yes) is a plain yes and everything else is read by the decision.
+# At every other question - a proposal ("may I forward it?", the user's rule of
+# 2026-11-25) or a fact ("did you receive a call?" - "correct") - those words
+# are the plain yes they have always been.
+_STATE_HUBS = (
+    "n_reason_unit_ok_q",
+    "n_v2_completed_check", "n_v2_completed_check_clarify",
+    "n_reason_ecom_q", "n_reason_ecom_q_clarify",
 )
 
 # Hubs deliberately left on their authored labels: an information step whose
@@ -479,7 +491,10 @@ def options_for(hub: str, nodes: dict, edges_from: dict) -> list[dict]:
         prefixes = _TOPIC_ONLY_AT_PREFIX.get(option_id)
         if prefixes and not hub.startswith(prefixes):
             continue
-        options.append({"id": option_id, "meaning": meaning, "to": target})
+        option = {"id": option_id, "meaning": meaning, "to": target}
+        if option_id in _NOT_ON_QUESTION:
+            option["notOnQuestion"] = True
+        options.append(option)
         taken.add(target)
     for option in options:
         if option["to"] not in nodes:
@@ -506,10 +521,10 @@ def apply_answer_options_repair(definition: dict) -> dict:
             continue
         config = node.setdefault("config", {})
         config["answerOptions"] = options_for(hub, nodes, edges_from)
-        if hub in _PROPOSAL_HUBS:
-            config["answerAgreementWords"] = True
-        else:
+        if hub in _STATE_HUBS:
             config.pop("answerAgreementWords", None)
+        else:
+            config["answerAgreementWords"] = True
         config[MARKER] = VERSION
     return result
 

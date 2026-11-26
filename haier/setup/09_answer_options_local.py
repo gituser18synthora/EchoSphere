@@ -70,7 +70,8 @@ def main() -> None:
             return
         release = next_release(bot.get("liveVersion") or "v0.1.0")
         print(f"\nWRITE 1  PUT /bots/{BOT}/workflow  -> revision v{current['version'] + 1} "
-              f"(nodes {digest(candidate['nodes'])}; only node config keys answerOptions + {MARKER} added)")
+              f"(nodes {digest(candidate['nodes'])}; node config only: answerOptions, answerAgreementWords, "
+              f"{MARKER} on the hubs and closingFollowups on the start node; no text, no edge)")
         print(f"WRITE 2  POST /bots/{BOT}/releases  -> {release}, then approve + publish "
               f"(pins {current['id']} v{current['version'] + 1}; prompts and summary policy unchanged)")
         if not _common.APPLY:

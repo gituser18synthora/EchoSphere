@@ -5,7 +5,8 @@
   "The caller turns of the DEMO phone calls of 2026-11-25, in order, as Sarvam STT returned them (table row = CALL-nn in haier/qa/REPORT_2026-11-25.md).",
   "Turns spoken after the original closing line carry post_close. Calls without any caller speech are not listed.",
   "Text level only: timing, barge-in, held or dropped audio of the real call are not reproduced. Names and long digit runs are replaced.",
-  "expect: the outcome a correct agent reaches from what the caller said; open_ok where the real caller hung up before a conclusion."
+  "expect: the outcome a correct agent reaches from what the caller said; open_ok where the real caller hung up before a conclusion.",
+  "CALL-70a = CALL-70 without the caller's answer to a question the bot no longer repeats; a replay of the unchanged turns drifts by one question from there."
  ],
  "payloads": {
   "bill_not_available": {
@@ -2524,6 +2525,43 @@
    ],
    "expect": {
     "open_ok": true
+   }
+  },
+  {
+   "id": "CALL-70a",
+   "reason": "unit_ok_no_defect",
+   "category": "call-replay",
+   "priority": "P1",
+   "repeat": 1,
+   "modes": [
+    "text"
+   ],
+   "title": "DEMO call cv_e0494c888008 of 2026-11-25, caller turns replayed in order (adapted: without the second 'Yes.' that answered the repeated contact question)",
+   "patterns": [],
+   "source_calls": [
+    "cv_e0494c888008"
+   ],
+   "turns": [
+    {
+     "say": "हेलो।"
+    },
+    {
+     "say": "Yes."
+    },
+    {
+     "say": "हाँ, लेट हुई थी बट लेट हुई थी।"
+    },
+    {
+     "say": "No."
+    },
+    {
+     "say": "अपने आप।"
+    }
+   ],
+   "expect": {
+    "outcome_in": [
+     "cancel_resolved"
+    ]
    }
   }
  ]
