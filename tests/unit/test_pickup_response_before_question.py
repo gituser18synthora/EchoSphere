@@ -116,3 +116,20 @@ async def test_the_contract_is_learnt_from_the_flow_before_its_first_turn():
     finally:
         await asyncio.sleep(0)
         await learner.cleanup()
+
+
+@pytest.mark.parametrize("text", ["हाँ जी, बोलिए। के?", "ए हाँ जी", "हाँ। का", "जी बोलिए अ"])
+async def test_a_stray_recognition_fragment_does_not_turn_a_pickup_phrase_into_an_answer(brain, text):
+    """LOCAL voice run 2026-11-26: speech-to-text wrote "हाँ जी, बोलिए। के?"
+    for a pickup phrase spoken over the greeting; the stray "के?" made it
+    "content", identity was confirmed and the purpose line was read out."""
+    await greet(brain)
+    await cut(brain, played=1.2)
+    assert brain._pickup_response_before_question(text)
+
+
+@pytest.mark.parametrize("text", ["हाँ जी, रोहन बोल रहा हूँ", "नहीं जी", "हाँ जी बताइए क्या काम है"])
+async def test_real_words_are_never_dropped_as_fragments(brain, text):
+    await greet(brain)
+    await cut(brain, played=1.2)
+    assert not brain._pickup_response_before_question(text)

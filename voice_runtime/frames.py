@@ -156,6 +156,12 @@ class ReplyTTSCompleteFrame(SystemFrame):
 
     marker: int = 0
     failed: bool = False
+    # (chars, audio_seconds) per aggregated sentence and the sentence texts,
+    # as in :class:`ReplyTTSInterruptedFrame`: a reply whose synthesis had
+    # finished can still be cut while it PLAYS, and the brain then needs the
+    # same facts to tell whether the closing question had started.
+    sentences: list = field(default_factory=list)
+    texts: list = field(default_factory=list)
 
 
 @dataclass

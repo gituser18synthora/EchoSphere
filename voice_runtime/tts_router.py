@@ -1403,9 +1403,15 @@ class StreamingTTSRouter(TTSService):
             # Tell the brain the marked reply's synthesis is complete (all
             # audio handed downstream). An interrupted generation is popped in
             # on_audio_context_interrupted and never reports completion.
+            per_sample = float(self.sample_rate * 2) or 1.0
             await self.push_frame(
                 ReplyTTSCompleteFrame(
                     marker=state.marker, failed=failed or not state.audio_bytes,
+                    sentences=[
+                        (len(text), (state.sentence_bytes[i] if i < len(state.sentence_bytes) else 0) / per_sample)
+                        for i, text in enumerate(state.texts)
+                    ],
+                    texts=list(state.texts),
                 ),
                 FrameDirection.UPSTREAM,
             )

@@ -110,6 +110,7 @@ from shared.orchestration.deterministic_answers import (
     resolve_plain_yes_no,
     resolve_reaction,
     resolve_short_answer,
+    without_stray_fragments,
     yes_no_polarity,
 )
 from shared.orchestration.phrases import canned
@@ -670,6 +671,12 @@ _HELD_SHORT_MAX_AGE_S = 2.5
 # After a question was asked again because the background guard held a short
 # answer to it, the same answer within this long is taken as the caller's.
 _QUIET_REASK_WINDOW_S = 20.0
+# A caller whose speech began this soon after a reply started to play was
+# still finishing their previous answer (they cannot have heard a question).
+_EARLY_CUT_SPEECH_S = 1.2
+# ... or at most this long before its first audio (the reply was already
+# generated and being synthesised when they went on).
+_EARLY_CUT_LEAD_S = 1.0
 # A multi-word final that lands AFTER its own VAD burst closed carries no
 # speech episode, and the turn controller confirms the barge-in from that
 # very transcript a few milliseconds later. Such a hold is the confirmed
@@ -1490,6 +1497,12 @@ class ConversationBrain(FrameProcessor):
         # options / closingFollowups): learnt from its first result.
         self._flow_answer_contract = False
         self._open_turn_workflow_side_effects = False
+        # Markers of the workflow turn whose reply has just started to play
+        # (kept for the reply's first moments, see ``early_cut``).
+        self._early_cut_turn: dict | None = None
+        # The speech episode count when the open turn was dispatched: a later
+        # episode is speech the turn did not contain.
+        self._open_turn_vad_episode = 0
         # Segments finishing in a task of their own (see _on_transcription).
         self._detached_segment_tasks: set[asyncio.Task] = set()
         # Human speech naturalness: how the reply is DELIVERED (occasional
@@ -1781,6 +1794,33 @@ class ConversationBrain(FrameProcessor):
             # instead of leaving a fragment in history and treating the rest as
             # a second turn. Once the reply has actually been heard, this is a
             # genuine interruption and the turn stands.
+            # A flow with the answer contract: the reply to a workflow turn
+            # that the caller cut in its first moments. They were still
+            # finishing their answer ("हाँ, …अब installation चाहिए": the "हाँ"
+            # was answered at once and the rest landed on the next question,
+            # which it then "answered" — a consent nobody gave, LOCAL voice
+            # runs 2026-11-26). Nothing of the new question was heard, so the
+            # words belong to the previous one: the turn is rewound and read
+            # again together with them, exactly like a reply that had not
+            # started to play.
+            early_cut = False
+            if isinstance(frame, UserStartedSpeakingFrame) and self._reply_audio_started:
+                kept, self._early_cut_turn = self._early_cut_turn, None
+                if (
+                    self._flow_answer_contract and self._completed_workflow is None
+                    and self._reply_cut_early()
+                ):
+                    if self._open_turn_text is None and kept is not None:
+                        self._open_turn_text, self._open_turn_record = kept["text"], kept["record"]
+                        self._open_turn_workflow = kept["workflow"]
+                        if self._open_turn_semantic_snapshot is None:
+                            self._open_turn_semantic_snapshot = kept["snapshot"]
+                    early_cut = bool(
+                        self._open_turn_text is not None
+                        and self._open_turn_workflow is not None
+                        and self._open_turn_workflow_committed
+                        and not self._open_turn_workflow_side_effects
+                    )
             unheard_reply_pending = (
                 isinstance(frame, UserStartedSpeakingFrame)
                 and self._open_turn_text is not None
@@ -1796,8 +1836,9 @@ class ConversationBrain(FrameProcessor):
                     or (self._open_turn_workflow is None
                         and self._closing_followup_limit is not None)
                 )
-                and not self._reply_audio_started
-                and (self._generation_in_flight() or self._unheard_reply_merge_window_open())
+                and (not self._reply_audio_started or early_cut)
+                and (self._generation_in_flight() or self._unheard_reply_merge_window_open()
+                     or early_cut)
             )
             # Continuation or a new turn? A caller who resumes within the
             # pause window (plus slack) is finishing the thought we answered
@@ -1848,8 +1889,19 @@ class ConversationBrain(FrameProcessor):
                     gap_s=None if gap is None else round(gap, 2),
                     workflow=self._open_turn_workflow[0],
                 )
+            if early_cut and unheard_reply_pending:
+                self._recorder.add_event(
+                    "early_cut_turn_merged", played_s=round(self._reply_played_seconds(), 2),
+                    workflow=self._open_turn_workflow[0],
+                )
+                # The cut reply asked nothing: it is neither heard nor "unheard
+                # and to be repeated" — the rewound turn produces it afresh.
+                for node in self._reply_nodes:
+                    if node in self._heard_nodes:
+                        self._heard_nodes.remove(node)
+                self._begin_reply_tracking()
             resumed_before_reply = unheard_reply_pending and (
-                continuation or uncommitted_workflow_turn or unheard_committed_turn
+                continuation or uncommitted_workflow_turn or unheard_committed_turn or early_cut
             )
             superseded_unheard = unheard_reply_pending and not resumed_before_reply
             # Claim the turn's markers NOW, before any await: the generation
@@ -1974,7 +2026,16 @@ class ConversationBrain(FrameProcessor):
                 # The turn's reply is audible now: speech from here is a
                 # barge-in of THIS reply, never a merge into the turn that
                 # produced it. (While the generation still streams, the
-                # markers stay for the straggler-final merge.)
+                # markers stay for the straggler-final merge.) A flow with
+                # the answer contract keeps them aside for the reply's first
+                # moments (see ``early_cut``).
+                self._early_cut_turn = (
+                    {"text": self._open_turn_text, "record": self._open_turn_record,
+                     "workflow": self._open_turn_workflow,
+                     "snapshot": self._open_turn_semantic_snapshot}
+                    if self._flow_answer_contract and self._open_turn_text is not None
+                    and self._open_turn_workflow is not None else None
+                )
                 self._open_turn_text = self._open_turn_record = None
                 self._open_turn_workflow = None
             if self._last_buffered_final is not None:
@@ -2031,6 +2092,13 @@ class ConversationBrain(FrameProcessor):
                     segments=self._suspects_held_during_bot_audio,
                 )
                 self._suspects_held_during_bot_audio = 0
+                # A short answer among them ("हाँ" over the last words of the
+                # question) gets that question again at once, where the flow
+                # declares answer options — not six seconds of silence and
+                # "can you hear me?".
+                newest = self._suspect_segments[-1] if self._suspect_segments else None
+                if newest and newest.get("during_bot_audio"):
+                    self._reask_after_quiet_answer(str(newest.get("text") or ""))
             if self._held_multiword:
                 # Unconfirmed multi-word speech heard during this reply is
                 # NOT dispatched now: the caller has this long to continue
@@ -2414,6 +2482,26 @@ class ConversationBrain(FrameProcessor):
         # Nothing was answered: the no-response ladder resumes.
         self._arm_silence_timer()
         return True
+
+    def _reply_cut_early(self) -> bool:
+        """The caller began to speak before they could have heard a question
+        of the reply now playing: within its first moments, by when their
+        speech STARTED (a barge-in is confirmed up to a second later)."""
+        started = self._reply_audio_started_at
+        if started is None:
+            return False
+        if self._reply_played_seconds() < _REPLY_HEARD_MIN_S:
+            return True
+        spoke = self._last_vad_started_at
+        if spoke is None or self._vad_episode <= self._open_turn_vad_episode:
+            # These words have no speech episode of their own on record (a
+            # turn start confirmed by its transcript alone): when they began
+            # is unknown, and the start of the utterance that produced this
+            # reply must not stand in for it.
+            return False
+        # An episode from well before the reply (a cough after the answer) is
+        # not the start of what is being said now either.
+        return -_EARLY_CUT_LEAD_S <= (spoke - started) < _EARLY_CUT_SPEECH_S
 
     def _held_answer_window(self) -> float:
         """Seconds before the end of the reply within which a short word still
@@ -2940,12 +3028,14 @@ class ConversationBrain(FrameProcessor):
         })
         del self._suspect_segments[:-_SUSPECT_BUFFER_MAX]
         self._interim_texts.clear()
-        if not self._turn_active and not self._bot_speaking:
-            # An orphan final (no open turn) would otherwise leave the
-            # no-response ladder disarmed: the caller has not shown up.
-            # A question with answer options asks again at once instead when
-            # the quiet words were a short answer to it.
-            if not self._reask_after_quiet_answer(text):
+        if not self._bot_speaking:
+            # A question with answer options asks again at once when the quiet
+            # words were a short answer to it (also while the caller's turn is
+            # still open: the question follows once it has closed).
+            asked = self._reask_after_quiet_answer(text)
+            if not asked and not self._turn_active:
+                # An orphan final (no open turn) would otherwise leave the
+                # no-response ladder disarmed: the caller has not shown up.
                 self._arm_silence_timer()
         return "held"
 
@@ -3001,9 +3091,21 @@ class ConversationBrain(FrameProcessor):
         return True
 
     async def _say_quiet_reask(self, question: str) -> None:
-        if self._closing or self._bot_speaking or self._turn_active:
-            self._arm_silence_timer()
+        # The held word's own turn closes first (nothing of it was buffered).
+        deadline = time.monotonic() + 2.0
+        while (self._turn_active or self._physical_speech_active) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.15)                  # a straggler final lands first
+        asked = self._quiet_reask
+        if (
+            self._closing or self._bot_speaking or self._turn_active or self._pending_segments
+            or self._generation_in_flight() or asked is None or asked["question"] != question
+            or self._quiet_answer_question() != question
+        ):
+            # Something else happened meanwhile (the caller spoke up, the flow
+            # moved on): the ordinary handling of that applies.
             return
+        self._disarm_silence_timer()
         self._begin_reply_tracking()
         self._reply_text = question
         await self._say(question)
@@ -4656,6 +4758,7 @@ class ConversationBrain(FrameProcessor):
         # text existed nowhere and the continuation ran without its first
         # half. The turn record fills in once _handle_turn builds it.
         self._open_turn_text, self._open_turn_record = text, None
+        self._open_turn_vad_episode = self._vad_episode
         self._open_turn_semantic_snapshot = None
         self._open_turn_completed_at = None
         # The workflow marker belongs to ONE dispatched turn: it is set only
@@ -5269,6 +5372,14 @@ class ConversationBrain(FrameProcessor):
             self._reply_nodes = []
             return
         self._reply_tts_complete = True
+        if getattr(frame, "sentences", None):
+            # Synthesis runs ahead of playback: a cut that comes while the
+            # reply is still PLAYING gets no interruption report from the
+            # router any more. Keep what it reported now.
+            self._reply_cut_report = ReplyTTSInterruptedFrame(
+                marker=frame.marker, sentences=list(frame.sentences),
+                texts=list(getattr(frame, "texts", None) or []),
+            )
         if not self._bot_speaking:
             # The audio already played out before synthesis was reported
             # complete (short reply, fast transport): heard now.
@@ -7110,7 +7221,10 @@ class ConversationBrain(FrameProcessor):
             or not opening["interrupted"]
         ):
             return False
-        if not (_attention_only_reply(text) or yes_no_polarity(text) == "yes"):
+        # What speech-to-text adds around a short phrase heard over the
+        # greeting ("हाँ जी, बोलिए। के?") does not make it an answer.
+        heard = without_stray_fragments(text)
+        if not (_attention_only_reply(heard) or yes_no_polarity(heard) == "yes"):
             return False
         return float(opening["played"] or 0.0) < self._greeting_question_heard_after(opening["text"])
 

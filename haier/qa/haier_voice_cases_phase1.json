@@ -26,7 +26,7 @@
    "modes": [
     "voice"
    ],
-   "title": "Pickup 'haan' 1.0 s into the greeting, then silence -> greeting again, no purpose line on that word",
+   "title": "Pickup 'haan' 1.0 s into the greeting, then silence -> the greeting is heard out, no purpose line on that word",
    "patterns": [
     "P2"
    ],
@@ -52,12 +52,9 @@
     "say_none": [
      "के regarding है"
     ],
-    "events_any": [
-     "pickup_hello_answered",
-     "opening_greeting_recovered"
-    ],
     "open_ok": true
-   }
+   },
+   "note": "One word does not cut the greeting (it is below the barge-in gate): the greeting plays to its end and the word is not its answer."
   },
   {
    "id": "VP2-02",
@@ -108,7 +105,7 @@
    "modes": [
     "voice"
    ],
-   "title": "Pickup 'ji' 0.8 s into the greeting, then silence -> greeting again, no purpose line",
+   "title": "Pickup 'ji' 0.8 s into the greeting, then silence -> the greeting is heard out, no purpose line",
    "patterns": [
     "P2"
    ],
@@ -132,12 +129,9 @@
     "say_none": [
      "के regarding है"
     ],
-    "events_any": [
-     "pickup_hello_answered",
-     "opening_greeting_recovered"
-    ],
     "open_ok": true
-   }
+   },
+   "note": "One word does not cut the greeting (it is below the barge-in gate): the greeting plays to its end and the word is not its answer."
   },
   {
    "id": "VP2-04",
@@ -1458,7 +1452,7 @@
    "expect": {
     "user_turns_all": [
      "बात",
-     "फोन"
+     "फ़?ोन"
     ],
     "max_gap_after": {
      "6": 6.0

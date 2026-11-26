@@ -14,8 +14,15 @@ Order: deploy the code first and restart the DEMO services, then run this.
 The revision is safe on a runtime that does not know ``answerOptions`` (such a
 runtime ignores the new keys), but it only takes effect on the matching one.
 
-Roll back: publish the previous release again in the Studio (Releases), which
-pins the previous workflow revision; the API keeps every revision.
+Roll back: roll the CODE back and restart. The previous runtime ignores
+``answerOptions``, ``closingFollowups`` and ``doNotCallNode``, so the flow
+behaves as it did before (``behavior.max_node_steps`` stays in force; it only
+lifts the per-turn node budget). Do NOT use the Studio's Rollback button for
+this: it marks the bot ``rolled_back``, and the runtime refuses the calls of a
+bot that is not ``published`` until a release is published again. To return to
+the previous workflow content while keeping the new code, save that content as
+a new revision and publish a new release (every revision stays in the
+database).
 
 The script refuses a DEMO workflow that is not the reviewed one (it compares
 what the flow does, not where its nodes sit on the canvas).

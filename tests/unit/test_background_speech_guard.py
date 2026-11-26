@@ -505,6 +505,12 @@ def _spoken(brain):
     return [f.text for f in brain._pushed if isinstance(f, TextFrame)]
 
 
+async def _asked_again():
+    """The question follows once the held word's own turn has closed."""
+    import asyncio
+    await asyncio.sleep(0.4)
+
+
 class TestQuietShortAnswer:
     async def test_a_quiet_yes_is_still_held_but_the_question_is_asked_again_at_once(self):
         brain, gate, _ = make_brain()
@@ -513,6 +519,7 @@ class TestQuietShortAnswer:
         _at_a_question(brain)
         await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
         await settle_turn()
+        await _asked_again()
         event = level_events(brain)[-1]
         assert event["action"] == "held" and event["reason"] == "background_quiet"
         assert len(handled) == 3                               # nothing was accepted
@@ -540,9 +547,12 @@ class TestQuietShortAnswer:
         _at_a_question(brain)
         await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
         await settle_turn()
+        await _asked_again()
         asked = len([t for t in _spoken(brain) if t == PERMISSION])
+        assert asked == 1
         await say(brain, gate, "नहीं।", -46.0, segment_ms=500.0)
         await settle_turn()
+        await _asked_again()
         assert level_events(brain)[-1]["action"] == "held"
         assert len(handled) == 3
         assert len([t for t in _spoken(brain) if t == PERMISSION]) == asked
@@ -574,3 +584,32 @@ class TestQuietShortAnswer:
         await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
         await settle_turn()
         assert level_events(brain)[-1]["action"] == "held"     # twice held, as before
+
+
+    async def test_the_question_follows_once_the_callers_open_turn_has_closed(self):
+        import asyncio
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        brain._turn_active = True                              # the quiet word's own turn is still open
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        await asyncio.sleep(0.1)
+        assert "quiet_answer_reasked" in brain._recorder.event_kinds()
+        assert PERMISSION not in _spoken(brain)                # not over the caller
+        brain._turn_active = False
+        await asyncio.sleep(0.4)
+        assert _spoken(brain)[-1] == PERMISSION
+
+    async def test_nothing_is_asked_when_the_caller_speaks_up_meanwhile(self):
+        import asyncio
+        brain, gate, _ = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        _at_a_question(brain)
+        brain._turn_active = True
+        await say(brain, gate, "Yes.", -46.0, segment_ms=500.0)
+        brain._pending_segments.append("हाँ, कर दीजिए।")       # the caller said it again, clearly
+        brain._turn_active = False
+        await asyncio.sleep(0.5)
+        assert PERMISSION not in _spoken(brain)

@@ -581,3 +581,39 @@ async def test_a_report_of_an_earlier_reply_is_never_applied_to_the_next_one():
     _cut(brain, 21.32)
     assert brain._unheard_reply is None and brain._reply_cut_report is None
     await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_while_playing_after_its_synthesis_finished_is_measured_too():
+    """LOCAL voice run 2026-11-26: synthesis runs ahead of playback, so the
+    router had already reported the purpose line complete when "haan ji" cut
+    it 6 s in; no interruption report followed and the question that line
+    had not asked yet was taken as answered."""
+    brain = make_brain()
+    brain._unheard_reply_guard = True
+    brain._active_workflow = "wf"
+    brain._reply_nodes, brain._reply_text = ["n_ivr"], " ".join(IVR)
+    brain._reply_marker = 9
+    brain._bot_speaking = True
+    brain._on_reply_tts_complete(ReplyTTSCompleteFrame(
+        marker=9, sentences=[(len(t), s) for t, s in zip(IVR, [5.0, 6.0, 7.0, 6.5, 4.0])], texts=list(IVR)))
+    assert brain._reply_tts_complete and brain._unheard_reply is None
+    _cut(brain, 21.32)                                       # inside step four, the question not started
+    record = brain._unheard_reply
+    assert record is not None and record["reason"] == "question_not_started"
+    assert record["text"] == " ".join(IVR[3:])
+    await brain.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_complete_report_without_sentences_changes_nothing():
+    brain = make_brain()
+    brain._unheard_reply_guard = True
+    brain._active_workflow = "wf"
+    brain._reply_nodes, brain._reply_text = ["n_ivr"], " ".join(IVR)
+    brain._reply_marker = 9
+    brain._bot_speaking = True
+    brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=9))
+    _cut(brain, 21.32)
+    assert brain._unheard_reply is None and brain._reply_cut_report is None
+    await brain.cleanup()

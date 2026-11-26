@@ -536,6 +536,95 @@ class TestContinuationVersusNewTurn:
         assert "unheard_reply_superseded" in kinds and "unheard_turn_merged_committed" not in kinds
         assert brain._pending_segments == []
 
+    @staticmethod
+    async def _reply_just_started(brain, *, contract, played_s, speech_after_s, side_effects=False,
+                                  own_episode=True):
+        """A committed workflow turn whose reply started to play ``played_s``
+        ago; the caller's speech began ``speech_after_s`` after the reply did.
+        ``own_episode=False``: the turn start was confirmed by a transcript
+        alone, so the last speech episode on record is the one that
+        produced this reply."""
+        import time
+        from pipecat.frames.frames import BotStartedSpeakingFrame
+        brain._workflows = _Workflows()
+        brain._active_workflow = "wf"
+        brain._flow_answer_contract = contract
+        record = TurnRecord(role="user", text=USER, timestamp=1.0, route="workflow")
+        brain._recorder.add_turn(record)
+        brain._history.append({"role": "user", "content": USER})
+        brain._open_turn_text, brain._open_turn_record = USER, record
+        brain._open_turn_workflow = ("wf", "wf", USER)
+        brain._open_turn_workflow_committed = True
+        brain._open_turn_workflow_side_effects = side_effects
+        await brain.process_frame(BotStartedSpeakingFrame(), DOWN)   # the reply becomes audible
+        assert brain._open_turn_text is None                         # ordinary barge-in rules from here
+        now = time.monotonic()
+        brain._reply_audio_started_at = now - played_s
+        brain._last_vad_started_at = brain._reply_audio_started_at + speech_after_s
+        if own_episode:
+            brain._vad_episode += 1                                  # speech the turn did not contain
+        brain._last_vad_stopped_at = now - 3.0
+        await brain.process_frame(UserStartedSpeakingFrame(), DOWN)
+        await settle()
+        return brain._recorder.event_kinds()
+
+    async def test_speech_that_cuts_the_reply_in_its_first_moments_is_the_rest_of_the_previous_answer(self):
+        # "haan, ...ab installation chahiye": the "haan" was answered at once, the next question started,
+        # and the rest of the sentence cut it after 0.9 s and was read as its answer (a consent nobody gave).
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=True, played_s=0.9, speech_after_s=0.1)
+        assert "early_cut_turn_merged" in kinds and "turn_merged_late_final" in kinds
+        assert "barge_in" not in kinds and brain._unheard_reply is None
+        assert brain._pending_segments == [USER]                    # read again with what follows
+        assert brain._recorder.turns == []
+
+    async def test_speech_that_began_early_counts_even_when_the_barge_in_is_confirmed_late(self):
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=True, played_s=2.4, speech_after_s=0.8)
+        assert "early_cut_turn_merged" in kinds and brain._pending_segments == [USER]
+
+    async def test_a_reply_that_has_played_for_a_while_is_interrupted_as_before(self):
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=True, played_s=4.0, speech_after_s=3.2)
+        assert "early_cut_turn_merged" not in kinds and "turn_merged_late_final" not in kinds
+        assert "barge_in" in kinds and brain._pending_segments == []
+
+    async def test_without_the_answer_contract_an_early_cut_is_a_barge_in_as_before(self):
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=False, played_s=0.9, speech_after_s=0.1)
+        assert "early_cut_turn_merged" not in kinds and "barge_in" in kinds
+        assert brain._pending_segments == []
+
+    async def test_a_turn_that_ran_an_action_is_not_rewound_by_an_early_cut(self):
+        brain = make_brain()
+        kinds = await self._reply_just_started(
+            brain, contract=True, played_s=0.9, speech_after_s=0.1, side_effects=True)
+        assert "early_cut_turn_merged" not in kinds and "barge_in" in kinds
+
+    async def test_a_barge_in_confirmed_by_its_transcript_alone_is_not_an_early_cut(self):
+        # No speech episode of its own: the last one on record is the answer that
+        # produced this reply (it began before the reply did). The reply has been
+        # heard for four seconds, so this is an interruption of it, not a merge.
+        brain = make_brain()
+        kinds = await self._reply_just_started(
+            brain, contract=True, played_s=4.0, speech_after_s=-3.0, own_episode=False)
+        assert "early_cut_turn_merged" not in kinds and "turn_merged_late_final" not in kinds
+        assert "barge_in" in kinds and brain._pending_segments == []
+
+    async def test_a_sound_from_well_before_the_reply_is_not_the_start_of_the_interruption(self):
+        # A cough after the answer is an episode of its own; the caller interrupts
+        # four seconds into the reply and only the transcript confirms it.
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=True, played_s=4.0, speech_after_s=-2.5)
+        assert "early_cut_turn_merged" not in kinds and "barge_in" in kinds
+        assert brain._pending_segments == []
+
+    async def test_speech_that_began_just_before_the_first_audio_still_counts(self):
+        # The reply was generated and being synthesised when the caller went on.
+        brain = make_brain()
+        kinds = await self._reply_just_started(brain, contract=True, played_s=2.3, speech_after_s=-0.4)
+        assert "early_cut_turn_merged" in kinds and brain._pending_segments == [USER]
+
     async def test_first_speech_of_the_call_has_no_gap_and_still_merges(self):
         brain = make_brain()
         brain._workflows = _Workflows()

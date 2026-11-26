@@ -226,6 +226,22 @@ def attention_only(text: str) -> bool:
     return any(t in _ATTENTION_WORDS for t in tokens) or "?" in (text or "")
 
 
+def without_stray_fragments(text: str) -> str:
+    """``text`` without the one- or two-character tokens that belong to no
+    word category: what speech-to-text adds around a short phrase heard over
+    other audio ("हाँ जी, बोलिए। के?"). Known short words (जी, ना, no, ok …)
+    stay; so does everything longer."""
+    known = (_NEUTRAL_WORDS | _YES_WORDS | _NO_WORDS | _INTENSIFIER_WORDS | _ATTENTION_WORDS
+             | _THANKS_WORDS | _FAREWELL_WORDS)
+    kept = []
+    for raw in (text or "").split():
+        core = "".join(_tokens(raw))
+        if core and len(core) <= 2 and core not in known:
+            continue
+        kept.append(raw)
+    return " ".join(kept)
+
+
 def contact_check_only(text: str) -> bool:
     """The part of :func:`attention_only` that may cut the bot's speech with a
     single word: "hello?", "हेलो हेलो", "सुनिए" — the caller cannot hear the

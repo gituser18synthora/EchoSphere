@@ -11,6 +11,11 @@ touches DEMO or production, copies no code and restarts no service.
 The running local API / voice worker keep the code they were started with:
 restart them yourself to pick up the matching runtime (the workflow revision
 alone changes nothing on a runtime that does not know ``answerOptions``).
+Restart the API BEFORE running this with --apply: an API process that was
+started before the runtime code changed stores the revision and then answers
+HTTP 500 (it imports the changed engine lazily, after the commit). If that
+happened, restart the API and run this again: it sees the stored revision
+and creates only the release.
 DEMO has its own script, ``10_answer_options_demo.py``.
 """
 from __future__ import annotations
